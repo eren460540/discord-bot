@@ -252,6 +252,97 @@ async def daily(ctx):
 
 
 # --------------------------------------------------------------
+#        GUESS THE COLOR (ADMIN ONLY + AUTOMATIC PRIZE)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def guessthecolor(ctx, prize: str):
+    """
+    Admin-only game.
+    Usage: !guessthecolor 100m
+    If admin guesses the color correctly, they receive the prize automatically.
+    """
+
+    # Parse the prize amount
+    ensure_user(ctx.author.id)
+    admin_user = data[str(ctx.author.id)]
+    prize_amount = parse_amount(prize, None, allow_all=False)
+
+    if prize_amount is None or prize_amount <= 0:
+        return await ctx.send("❌ Invalid prize amount.")
+
+    colors = [
+        "red", "blue", "green", "yellow", "purple",
+        "pink", "orange", "white", "black", "cyan"
+    ]
+
+    secret = random.choice(colors)
+
+    embed = discord.Embed(
+        title="🎨 Guess The Color!",
+        description=(
+            "**Admin Only Event**\n\n"
+            f"Prize: **{fmt(prize_amount)} gems** 💎\n\n"
+            "I picked one of these colors:\n"
+            f"`{', '.join(colors)}`\n\n"
+            f"Type your guess below 👇 (20 seconds)"
+        ),
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
+
+    def check(m):
+        return (
+            m.author.id == ctx.author.id
+            and m.channel.id == ctx.channel.id
+        )
+
+    try:
+        guess_msg = await bot.wait_for("message", check=check, timeout=20)
+    except:
+        return await ctx.send("⏳ **Timed out!** No guess received.")
+
+    guess = guess_msg.content.lower().strip()
+
+    # WIN
+    if guess == secret:
+        admin_user["gems"] += prize_amount
+        save_data(data)
+
+        add_history(ctx.author.id, {
+            "game": "guess_color",
+            "bet": 0,
+            "result": "win",
+            "earned": prize_amount,
+            "timestamp": time.time()
+        })
+
+        win_embed = discord.Embed(
+            title="✅ Correct!",
+            description=(
+                f"You guessed **{secret}**!\n"
+                f"You won **{fmt(prize_amount)}** gems 🎉"
+            ),
+            color=discord.Color.green()
+        )
+        return await ctx.send(embed=win_embed)
+
+    # LOSE
+    else:
+        lose_embed = discord.Embed(
+            title="❌ Wrong!",
+            description=(
+                f"You guessed **{guess}**.\n"
+                f"The correct color was **{secret}**.\n\n"
+                f"No gems awarded."
+            ),
+            color=discord.Color.red()
+        )
+        return await ctx.send(embed=lose_embed)
+
+
+
+# --------------------------------------------------------------
 #                      WORK (10m–15m)
 # --------------------------------------------------------------
 @bot.command()
