@@ -332,10 +332,7 @@ async def coinflip(ctx, bet: float, choice: str):
 #                      SLOTS (3x3, STYLE A)
 # --------------------------------------------------------------
 # --------------------------------------------------------------
-#                      SLOTS (SLOWER / HARDER)
-# --------------------------------------------------------------
-# --------------------------------------------------------------
-#                      SLOTS (SLOW MODE + DOUBLE MATCH)
+#                   SLOTS (4 SYMBOL VERSION)
 # --------------------------------------------------------------
 @bot.command()
 async def slots(ctx, bet: float):
@@ -345,55 +342,60 @@ async def slots(ctx, bet: float):
     if bet <= 0 or bet > user["gems"]:
         return await ctx.send("❌ Invalid bet.")
 
-    # Subtract bet up front
+    # subtract bet upfront
     user["gems"] -= bet
     save_data(data)
 
-    # Slow mode: More symbols = harder to match
-    symbols = [
-        "🍋", "🍒", "🍇", "🍉",
-        "⭐", "💎", "💰", "🔔",
-        "🥝", "🍊", "🪙", "7️⃣"
-    ]
+    # ONLY 4 symbols in rotation (clean version)
+    symbols = ["🍒", "🍋", "⭐", "💎"]
 
     def spin_row():
-        return [random.choice(symbols) for _ in range(3)]
+        return [random.choice(symbols) for _ in range(4)]
 
+    # 3 rows × 4 columns
     row1 = spin_row()
-    row2 = spin_row()
-    row3 = spin_row()
+    row2 = spin_row()   # pays
+    row3 = spin_row()   # pays
 
-    s1, s2, s3 = row2  # middle row
+    # count matches in a row
+    def row_matches(row):
+        counts = {}
+        for s in row:
+            counts[s] = counts.get(s, 0) + 1
+        most = max(counts.values())
+        symbol = max(counts, key=counts.get)
+        return most, symbol
 
-    # Determine multiplier
+    # check row2 & row3
+    r2_match, r2_sym = row_matches(row2)
+    r3_match, r3_sym = row_matches(row3)
+
+    best_match = 0
+    best_symbol = None
+
+    for m, s in [(r2_match, r2_sym), (r3_match, r3_sym)]:
+        if m > best_match:
+            best_match = m
+            best_symbol = s
+
+    # multipliers for 3-match
+    three_match_values = {
+        "💎": 8.0,
+        "⭐": 5.0,
+        "🍒": 3.0,
+        "🍋": 2.0
+    }
+
     multiplier = 0.0
     result_text = "No match."
 
-    # 3-of-a-kind payouts
-    if s1 == s2 == s3:
-        if s1 == "7️⃣":
-            multiplier = 15.0
-        elif s1 == "💎":
-            multiplier = 10.0
-        elif s1 == "💰":
-            multiplier = 8.0
-        elif s1 == "⭐":
-            multiplier = 6.0
-        elif s1 == "🔔":
-            multiplier = 4.0
-        elif s1 in ("🍇", "🍉"):
-            multiplier = 3.0
-        elif s1 == "🍒":
-            multiplier = 2.5
-        elif s1 in ("🥝", "🍊"):
-            multiplier = 2.0
-        else:
-            multiplier = 1.5  # 🍋, 🪙
+    # BIG WIN
+    if best_match >= 3:
+        multiplier = three_match_values.get(best_symbol, 2.0)
+        result_text = f"3x {best_symbol}! BIG WIN!"
 
-        result_text = f"3x {s1}! BIG WIN!"
-
-    # 2-of-a-kind: 1.2x
-    elif s1 == s2 or s2 == s3 or s1 == s3:
+    # SMALL WIN (double match)
+    elif best_match == 2:
         multiplier = 1.2
         result_text = "Two of a kind! Small win."
 
@@ -404,15 +406,15 @@ async def slots(ctx, bet: float):
         user["gems"] += reward
         save_data(data)
 
-    # Visual slot grid
+    # Display 3×4 grid
     grid = (
-        f"{row1[0]} {row1[1]} {row1[2]}\n"
-        f"➡ {row2[0]} {row2[1]} {row2[2]} ⬅\n"
-        f"{row3[0]} {row3[1]} {row3[2]}"
+        f"{row1[0]} {row1[1]} {row1[2]} {row1[3]}\n"
+        f"➡ {row2[0]} {row2[1]} {row2[2]} {row2[3]} ⬅\n"
+        f"➡ {row3[0]} {row3[1]} {row3[2]} {row3[3]} ⬅"
     )
 
     embed = discord.Embed(
-        title="🎰 Slots",
+        title="🎰 Slots (3×4 • 4 Symbols)",
         description=(
             f"**Bet:** {bet}\n"
             f"**Multiplier:** {multiplier:.2f}x\n"
@@ -433,6 +435,7 @@ async def slots(ctx, bet: float):
     })
 
     await ctx.send(embed=embed)
+
 
 # --------------------------------------------------------------
 #                      MINES
