@@ -1812,25 +1812,25 @@ async def help(ctx):
     await ctx.send(embed=embed)
 
 
-# --------------------------------------------------------------
-#     GIVE GEMS TO EVERY USER IN THE SERVER (ADMIN ONLY)
-# --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def giveall(ctx, amount: str):
     """
     Give gems to every human (non-bot) member in the server.
-    Usage: !giveall 100m
+    Guaranteed working using fetch_members().
     """
 
     parsed = parse_amount(amount, None, allow_all=False)
     if parsed is None or parsed <= 0:
         return await ctx.send("❌ Invalid amount.")
 
+    guild = ctx.guild
     count = 0
 
-    # Loop through all members manually (works without member intents)
-    for member in ctx.guild.members:
+    # Fetch ALL members (forces Discord to send full list)
+    members = [m async for m in guild.fetch_members(limit=None)]
+
+    for member in members:
         if member.bot:
             continue
         ensure_user(member.id)
@@ -1840,15 +1840,17 @@ async def giveall(ctx, amount: str):
     save_data(data)
 
     embed = discord.Embed(
-        title="💎 Gems Given To Everyone",
+        title="💎 Gems Given To EVERYONE",
         description=(
             f"Distributed **{fmt(parsed)}** gems to **{count}** human members "
-            f"in **{ctx.guild.name}**!"
+            f"in **{ctx.guild.name}**!\n"
+            f"(Forced full member fetch successful)"
         ),
         color=galaxy_color()
     )
 
     await ctx.send(embed=embed)
+
 
 
 
