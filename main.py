@@ -331,6 +331,9 @@ async def coinflip(ctx, bet: float, choice: str):
 # --------------------------------------------------------------
 #                      SLOTS (3x3, STYLE A)
 # --------------------------------------------------------------
+# --------------------------------------------------------------
+#                      SLOTS (SLOWER / HARDER)
+# --------------------------------------------------------------
 @bot.command()
 async def slots(ctx, bet: float):
     if not await check_cooldown_and_spam(ctx, "slots"):
@@ -342,14 +345,19 @@ async def slots(ctx, bet: float):
     if bet <= 0 or bet > user["gems"]:
         return await ctx.send("❌ Invalid bet.")
 
+    # take bet up front
     user["gems"] -= bet
     save_data(data)
 
-    symbols = ["🍒", "🍋", "🔔", "⭐", "💎"]
-    weights = [35, 30, 20, 10, 5]  # 💎 rare
+    # More symbols = much lower chance to match
+    symbols = [
+        "🍋", "🍒", "🍇", "🍉",
+        "⭐", "💎", "💰", "🔔",
+        "🥝", "🍊", "🪙", "7️⃣"
+    ]
 
     def spin_row():
-        return random.choices(symbols, weights=weights, k=3)
+        return [random.choice(symbols) for _ in range(3)]
 
     row1 = spin_row()
     row2 = spin_row()
@@ -358,30 +366,35 @@ async def slots(ctx, bet: float):
     middle = row2
     s1, s2, s3 = middle
 
+    # Only 3-of-a-kind pays (no more 2-of-a-kind wins)
     multiplier = 0.0
-    result_text = ""
+    result_text = "No match."
 
     if s1 == s2 == s3:
-        if s1 == "💎":
-            multiplier = 20.0
-        elif s1 == "⭐":
+        # Different payouts per symbol
+        if s1 == "7️⃣":
+            multiplier = 15.0
+        elif s1 == "💎":
             multiplier = 10.0
+        elif s1 == "💰":
+            multiplier = 8.0
+        elif s1 == "⭐":
+            multiplier = 6.0
         elif s1 == "🔔":
-            multiplier = 5.0
-        elif s1 == "🍒":
             multiplier = 4.0
-        else:
+        elif s1 in ("🍇", "🍉"):
             multiplier = 3.0
-        result_text = f"JACKPOT! 3x {s1}"
-    elif s1 == s2 or s2 == s3 or s1 == s3:
-        multiplier = 1.5
-        result_text = "Two of a kind! Small win."
-    else:
-        multiplier = 0.0
-        result_text = "No match on middle row."
+        elif s1 == "🍒":
+            multiplier = 2.5
+        elif s1 in ("🥝", "🍊"):
+            multiplier = 2.0
+        else:
+            # 🍋, 🪙
+            multiplier = 1.5
+        result_text = f"3x {s1}! BIG WIN!"
 
     reward = bet * multiplier
-    profit = reward - bet  # can be negative
+    profit = reward - bet  # will be negative if reward == 0
 
     if reward > 0:
         user["gems"] += reward
@@ -416,7 +429,6 @@ async def slots(ctx, bet: float):
     })
 
     await ctx.send(embed=embed)
-
 # --------------------------------------------------------------
 #                      MINES
 # --------------------------------------------------------------
