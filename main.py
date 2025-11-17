@@ -1,13 +1,18 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import json
 import os
 import random
 from discord.ui import Button, View
 import time
+import io
+from datetime import datetime
 
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "casino_data.json"
+
+# Channel used for JSON backups
+BACKUP_CHANNEL_ID = 1431610647921295451
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -140,6 +145,51 @@ def consume_rig(u):
     return mode
 
 
+# ---------------------- BACKUP SYSTEM ---------------------- #
+
+async def backup_to_channel(reason: str = "auto"):
+    """Sends current data as JSON file to the backup channel."""
+    channel = bot.get_channel(BACKUP_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
+        except Exception:
+            return  # can't backup, invalid channel or no access
+
+    try:
+        stamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
+        payload = json.dumps(data, indent=2)
+        fp = io.BytesIO(payload.encode("utf-8"))
+        filename = f"casino_backup_{stamp}.json"
+
+        embed = discord.Embed(
+            title="💾 Galaxy Casino Backup",
+            description=f"Reason: **{reason}**\nTimestamp (UTC): `{stamp}`",
+            color=galaxy_color()
+        )
+        await channel.send(embed=embed, file=discord.File(fp, filename=filename))
+    except Exception:
+        # don't crash the bot if backup fails
+        pass
+
+
+@tasks.loop(minutes=10)
+async def auto_backup_task():
+    await backup_to_channel("auto")
+
+
+@auto_backup_task.before_loop
+async def before_auto_backup():
+    await bot.wait_until_ready()
+
+
+@bot.event
+async def on_ready():
+    if not auto_backup_task.is_running():
+        auto_backup_task.start()
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+
 # --------------------------------------------------------------
 #                      BALANCE
 # --------------------------------------------------------------
@@ -194,7 +244,7 @@ async def daily(ctx):
     })
 
     embed = discord.Embed(
-       title="🎁 Daily Reward",
+        title="🎁 Daily Reward",
         description=f"{ctx.author.mention} claimed **{fmt(reward)}** gems from the galaxy!",
         color=galaxy_color()
     )
@@ -357,7 +407,7 @@ async def coinflip(ctx, bet: str, choice: str):
 
 
 # --------------------------------------------------------------
-#                      SLOTS (3x4, nerfed, rig-aware)
+#                      SLOTS (3x4, rig-aware, 2x max)
 # --------------------------------------------------------------
 @bot.command()
 async def slots(ctx, bet: str):
@@ -389,26 +439,30 @@ async def slots(ctx, bet: str):
         best_sym = max(counts, key=counts.get)
         return counts[best_sym], best_sym
 
-    # Generate rows with rig logic
-    for _ in range(50):
-        row1 = spin_row()
+    # Base first row
+    row1 = spin_row()
+
+    if rig == "bless":
+        # Guaranteed winning line (at least 3 of a kind)
+        win_symbol = random.choice(symbols)
+        row2 = [win_symbol, win_symbol, win_symbol, random.choice(symbols)]
+        random.shuffle(row2)
+        row3 = spin_row()
+    elif rig == "curse":
+        # Guaranteed losing rows (no 3-of-a-kind)
+        def spin_lose_row():
+            while True:
+                r = spin_row()
+                m, _ = row_best_match(r)
+                if m < 3:
+                    return r
+
+        row2 = spin_lose_row()
+        row3 = spin_lose_row()
+    else:
+        # Normal random
         row2 = spin_row()
         row3 = spin_row()
-
-        r2_match, r2_sym = row_best_match(row2)
-        r3_match, r3_sym = row_best_match(row3)
-        best_match = max(r2_match, r3_match)
-
-        if rig == "curse":
-            # try to avoid any 3-of-kind
-            if best_match < 3:
-                break
-        elif rig == "bless":
-            # try to guarantee at least one 3-of-kind
-            if best_match >= 3:
-                break
-        else:
-            break
 
     r2_match, r2_sym = row_best_match(row2)
     r3_match, r3_sym = row_best_match(row3)
@@ -539,7 +593,7 @@ async def mines(ctx, bet: str, mines: int = 3):
             if revealed[self.index] is not None:
                 return await interaction.response.send_message("❌ Already clicked!", ephemeral=True)
 
-            # CURSE: first click always treated as bomb
+            # CURSE: first click always bomb
             if rig == "curse" and first_click:
                 first_click = False
                 exploded_index = self.index
@@ -549,7 +603,6 @@ async def mines(ctx, bet: str, mines: int = 3):
                 for i, btn in enumerate(view.children):
                     if isinstance(btn, Tile):
                         btn.disabled = True
-                        # show bombs visually according to bomb_positions
                         if i in bomb_positions:
                             btn.label = "💣"
                             btn.style = discord.ButtonStyle.danger
@@ -571,7 +624,7 @@ async def mines(ctx, bet: str, mines: int = 3):
 
             first_click = False
 
-            # BLESS: all tiles treated as safe, bombs only matter on reveal
+            # BLESS: every tile treated as safe
             if rig == "bless":
                 revealed[self.index] = True
                 self.label = SAFE
@@ -583,7 +636,7 @@ async def mines(ctx, bet: str, mines: int = 3):
                     pass
                 return
 
-            # NORMAL: real bombs
+            # NORMAL
             if self.index in bomb_positions:
                 exploded_index = self.index
                 revealed[self.index] = False
@@ -630,12 +683,43 @@ async def mines(ctx, bet: str, mines: int = 3):
             super().__init__(label="💰 Cashout", style=discord.ButtonStyle.primary, row=4)
 
         async def callback(self, interaction):
-            nonlocal game_over
+            nonlocal game_over, exploded_index, correct_clicks
 
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
                 return await interaction.response.send_message("❌ Game already ended!", ephemeral=True)
+
+            # CURSE: cashout still loses full amount
+            if rig == "curse":
+                game_over = True
+                exploded_index = 0  # mark as exploded so reward shows 0
+                for i, btn in enumerate(view.children):
+                    if isinstance(btn, Tile):
+                        btn.disabled = True
+                        if i in bomb_positions:
+                            btn.label = "💣"
+                            btn.style = discord.ButtonStyle.danger
+
+                add_history(ctx.author.id, {
+                    "game": "mines",
+                    "bet": amount,
+                    "result": "lose_cashout",
+                    "earned": -amount,
+                    "timestamp": time.time()
+                })
+
+                try:
+                    await interaction.response.edit_message(embed=embed_update(), view=view)
+                except:
+                    pass
+
+                await ctx.send(f"💥 You panicked and lost **{fmt(amount)}** gems.")
+                return
+
+            # BLESS: ensure at least some profit even if they cashout instantly
+            if rig == "bless" and correct_clicks == 0:
+                correct_clicks = 1
 
             game_over = True
             reward = calc_reward()
@@ -765,20 +849,18 @@ async def tower(ctx, bet: str):
 
             bomb_col = bomb_positions[current_row]
 
-            # CURSE: first pick of the game is always bomb
+            # CURSE: first row chosen = bomb
             if rig == "curse" and current_row == 0:
                 bomb_positions[current_row] = self.pos
                 bomb_col = self.pos
 
-            # BLESS: always safe - move bomb away from chosen tile
+            # BLESS: always safe
             if rig == "bless":
                 if self.pos == bomb_col:
-                    # move bomb to another column
                     new_col = (self.pos + 1) % 3
                     bomb_positions[current_row] = new_col
                     bomb_col = new_col
 
-            # normal lose logic (if this ends up being bomb)
             if self.pos == bomb_col and rig != "bless":
                 grid[current_row][self.pos] = False
                 exploded_cell = (current_row, self.pos)
@@ -802,7 +884,6 @@ async def tower(ctx, bet: str):
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
                 return await ctx.send(f"💥 BOOM! You lost **{fmt(amount)}** gems!")
 
-            # safe
             grid[current_row][self.pos] = True
             correct_count += 1
             current_row += 1
@@ -839,12 +920,39 @@ async def tower(ctx, bet: str):
             super().__init__(label="💰 Cashout", style=discord.ButtonStyle.primary)
 
         async def callback(self, interaction):
-            nonlocal game_over, earned_on_end
+            nonlocal game_over, earned_on_end, correct_count, current_row
 
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
                 return await interaction.response.send_message("❌ Game ended!", ephemeral=True)
+
+            # CURSE: even cashout is a loss
+            if rig == "curse":
+                game_over = True
+                earned_on_end = 0
+
+                for r in range(TOTAL_ROWS):
+                    bc = bomb_positions[r]
+                    grid[r][bc] = False
+
+                for b in view.children:
+                    b.disabled = True
+
+                add_history(ctx.author.id, {
+                    "game": "tower",
+                    "bet": amount,
+                    "result": "lose_cashout",
+                    "earned": -amount,
+                    "timestamp": time.time()
+                })
+                await interaction.response.edit_message(embed=embed_update(True), view=view)
+                await ctx.send(f"💥 BOOM! You lost **{fmt(amount)}** gems!")
+                return
+
+            # BLESS: guarantee at least one safe row worth of profit
+            if rig == "bless" and correct_count == 0:
+                correct_count = 1
 
             game_over = True
             reward = calc_reward()
@@ -919,9 +1027,8 @@ async def blackjack(ctx, bet: str):
     u["gems"] -= amount
     save_data(data)
 
-    # If rigged: instant-looking game, no buttons (but still normal text)
+    # Rigged: instant-looking game
     if rig in ("bless", "curse"):
-        # generate plausible final hands
         def random_hand(target_min, target_max):
             while True:
                 hand = [draw_card(), draw_card()]
@@ -934,19 +1041,16 @@ async def blackjack(ctx, bet: str):
                     return hand
 
         if rig == "curse":
-            # Player loses
-            player = random_hand(22, 28)  # bust
+            player = random_hand(22, 28)
             dealer = random_hand(17, 21)
             profit = -amount
             result_text = "You busted over 21. Dealer wins."
             res = "lose"
         else:
-            # bless -> player wins medium
             player = random_hand(19, 21)
             dealer = random_hand(15, 19)
             while hand_value(dealer) >= hand_value(player):
                 dealer = random_hand(15, 19)
-            # medium win: about 1.7x
             profit = int(amount * 1.7)
             u["gems"] += amount + profit
             save_data(data)
@@ -978,7 +1082,7 @@ async def blackjack(ctx, bet: str):
         })
         return
 
-    # Normal interactive blackjack (no rig)
+    # Normal interactive blackjack
     player = [draw_card(), draw_card()]
     dealer = [draw_card(), draw_card()]
 
@@ -1007,7 +1111,6 @@ async def blackjack(ctx, bet: str):
     async def finish_game(interaction=None):
         pv = hand_value(player)
         dv = hand_value(dealer)
-        # dealer hits to 17+
         while dv < 17:
             dealer.append(draw_card())
             dv = hand_value(dealer)
@@ -1291,7 +1394,6 @@ async def bless(ctx, member: discord.Member, amount: str = None):
     u = data[str(member.id)]
 
     if amount is None:
-        # infinite until off
         u["bless_infinite"] = True
     else:
         a = amount.lower()
@@ -1350,6 +1452,83 @@ async def curse(ctx, member: discord.Member, amount: str = None):
 
 
 # --------------------------------------------------------------
+#                      BACKUP RESTORE COMMANDS
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def restorelatest(ctx):
+    """Restore data from the latest backup file in the backup channel."""
+    channel = bot.get_channel(BACKUP_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
+        except Exception:
+            return await ctx.send("❌ Cannot access backup channel.")
+
+    latest_msg = None
+    latest_time = None
+
+    async for msg in channel.history(limit=50):
+        if not msg.attachments:
+            continue
+        att = msg.attachments[0]
+        if att.filename.startswith("casino_backup_") and att.filename.endswith(".json"):
+            if latest_time is None or msg.created_at > latest_time:
+                latest_msg = msg
+                latest_time = msg.created_at
+
+    if latest_msg is None:
+        return await ctx.send("❌ No backup files found in the backup channel.")
+
+    att = latest_msg.attachments[0]
+    try:
+        raw = await att.read()
+        new_data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return await ctx.send("❌ Failed to load backup file (invalid JSON).")
+
+    global data
+    data = new_data
+    save_data(data)
+
+    embed = discord.Embed(
+        title="✅ Restore Complete",
+        description=f"Restored from latest backup: `{att.filename}`.",
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def restorebackup(ctx):
+    """
+    Restore from a backup JSON attached to this command.
+    Usage: attach a backup file and run !restorebackup
+    """
+    if not ctx.message.attachments:
+        return await ctx.send("❌ Please attach a backup JSON file to this command.")
+
+    att = ctx.message.attachments[0]
+    try:
+        raw = await att.read()
+        new_data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return await ctx.send("❌ Failed to read or parse the attached file.")
+
+    global data
+    data = new_data
+    save_data(data)
+
+    embed = discord.Embed(
+        title="✅ Manual Restore Complete",
+        description=f"Restored data from file: `{att.filename}`.",
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
+
+
+# --------------------------------------------------------------
 #                      HELP
 # --------------------------------------------------------------
 @bot.command()
@@ -1398,7 +1577,9 @@ async def help(ctx):
         value=(
             "`!admin give/remove @user amount`\n"
             "`!dropbox @user amount`\n"
-            # bless/curse are hidden 🙂
+            "`!restorelatest`\n"
+            "`!restorebackup` (with attached file)\n"
+            # bless/curse stay hidden 😉
         ),
         inline=False
     )
