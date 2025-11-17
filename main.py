@@ -1416,6 +1416,7 @@ async def lottery(ctx, subcmd: str = None, *args):
 # --------------------------------------------------------------
 #                      HELP
 # --------------------------------------------------------------
+
 @bot.command()
 async def help(ctx):
     embed = discord.Embed(
@@ -1439,7 +1440,7 @@ async def help(ctx):
         name="🎲 Games",
         value=(
             "`?coinflip amount heads/tails`\n"
-            "`?slots amount` (3x4, 4 symbols)\n"
+            "`?slots amount`\n"
             "`?mines bet mines`\n"
             "`?tower bet`\n"
             "`?blackjack bet`\n"
@@ -1468,12 +1469,11 @@ async def help(ctx):
     )
 
     embed.add_field(
-        name="🛠 Admin / Fun",
+        name="🛠 Admin",
         value=(
             "`?admin give/remove @user amount`\n"
             "`?dropbox @user amount`\n"
-            "`?bless @user streak`\n"
-            "`?curse @user streak`\n"
+            # bless/curse removed
         ),
         inline=False
     )
