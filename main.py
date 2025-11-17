@@ -1687,38 +1687,55 @@ async def restorebackup(ctx):
 
 
 # --------------------------------------------------------------
-#               GIVE GEMS TO EVERYONE IN A ROLE
+#        GIVE GEMS TO EVERYONE WITH A ROLE (FIXED)
 # --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def giverole(ctx, role: discord.Role, amount: str):
     """Give gems to all members of a specific role."""
-    # Parse amount
-    sample_user_id = str(ctx.author.id)
-    ensure_user(sample_user_id)
-    parsed = parse_amount(amount, None, allow_all=False)
 
+    # parse the amount safely
+    parsed = parse_amount(amount, None, allow_all=False)
     if parsed is None or parsed <= 0:
         return await ctx.send("❌ Invalid amount.")
 
-    count = 0
+    # count how many members will receive gems
+    members_to_give = [m for m in role.members if not m.bot]
 
-    for member in role.members:
+    if len(members_to_give) == 0:
+        return await ctx.send("❌ No human members in that role.")
+
+    for member in members_to_give:
         ensure_user(member.id)
         data[str(member.id)]["gems"] += parsed
-        count += 1
 
     save_data(data)
 
     embed = discord.Embed(
-        title="💎 Role Gem Distribution",
+        title="💎 Gems Given To Role",
         description=(
-            f"Gave **{fmt(parsed)}** gems to **{count}** members\n"
+            f"Distributed **{fmt(parsed)}** gems to **{len(members_to_give)}** members\n"
             f"of the role {role.mention}."
         ),
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
+# --------------------------------------------------------------
+#                MANUAL BACKUP COMMAND
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def savebackup(ctx):
+    """Create an instant backup and upload it to the backup channel."""
+    await backup_to_channel("manual")
+
+    embed = discord.Embed(
+        title="💾 Manual Backup Saved",
+        description="A fresh backup has been uploaded to the backup channel.",
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
+
 
 
 # --------------------------------------------------------------
