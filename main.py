@@ -1600,6 +1600,43 @@ async def restorebackup(ctx):
     await ctx.send(embed=embed)
 
 
+
+
+# --------------------------------------------------------------
+#               GIVE GEMS TO EVERYONE IN A ROLE
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def giverole(ctx, role: discord.Role, amount: str):
+    """Give gems to all members of a specific role."""
+    # Parse amount
+    sample_user_id = str(ctx.author.id)
+    ensure_user(sample_user_id)
+    parsed = parse_amount(amount, None, allow_all=False)
+
+    if parsed is None or parsed <= 0:
+        return await ctx.send("❌ Invalid amount.")
+
+    count = 0
+
+    for member in role.members:
+        ensure_user(member.id)
+        data[str(member.id)]["gems"] += parsed
+        count += 1
+
+    save_data(data)
+
+    embed = discord.Embed(
+        title="💎 Role Gem Distribution",
+        description=(
+            f"Gave **{fmt(parsed)}** gems to **{count}** members\n"
+            f"of the role {role.mention}."
+        ),
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
+
+
 # --------------------------------------------------------------
 #                      HELP
 # --------------------------------------------------------------
