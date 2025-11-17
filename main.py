@@ -1745,63 +1745,112 @@ async def savebackup(ctx):
 
 
 # --------------------------------------------------------------
-#                      HELP
+#                      HELP (UPDATED FULL LIST)
 # --------------------------------------------------------------
 @bot.command()
 async def help(ctx):
     embed = discord.Embed(
-        title="🌌 Galaxy Casino Help",
-        description="Use `!command` to play.",
+        title="🌌 Galaxy Casino — Command List",
+        description="Use `!command` to play.\nHere is a full list of all available commands:",
         color=galaxy_color()
     )
 
+    # ---------------- Economy ----------------
     embed.add_field(
         name="💰 Economy",
         value=(
-            "`!balance` — Check your gems\n"
-            "`!daily` — Daily reward\n"
-            "`!work` — Earn 10m–15m\n"
-            "`!gift @user amount` — Gift gems\n"
+            "**!balance** — Check your gems\n"
+            "**!daily** — Claim your daily reward\n"
+            "**!work** — Earn 10–15m gems\n"
+            "**!gift @user amount** — Gift gems"
         ),
         inline=False
     )
 
+    # ---------------- Games ----------------
     embed.add_field(
-        name="🎲 Games",
+        name="🎮 Games",
         value=(
-            "`!coinflip amount heads/tails`\n"
-            "`!slots amount`\n"
-            "`!mines bet mines`\n"
-            "`!tower bet`\n"
-            "`!blackjack bet`\n"
+            "**!coinflip amount heads/tails** — 50/50 gamble\n"
+            "**!slots amount** — 3×4 slot machine\n"
+            "**!mines amount [mines]** — Pick safe tiles\n"
+            "**!tower amount** — Climb the 10-row tower\n"
+            "**!blackjack amount** — Interactive blackjack"
         ),
         inline=False
     )
 
+    # ---------------- Player Info ----------------
     embed.add_field(
-        name="📊 Info",
+        name="📊 Player Info",
         value=(
-            "`!history` — Last 10 games\n"
-            "`!leaderboard` — Top players\n"
-            "`!stats` — Your stats\n"
+            "**!history** — Last 10 games\n"
+            "**!stats** — Full win/loss statistics\n"
+            "**!leaderboard** — Top 10 richest players"
         ),
         inline=False
     )
 
+    # ---------------- Admin Commands ----------------
     embed.add_field(
-        name="🛠 Admin",
+        name="🛠 Admin Commands",
         value=(
-            "`!admin give/remove @user amount`\n"
-            "`!dropbox @user amount`\n"
-            "`!restorelatest`\n"
-            "`!restorebackup` (with attached file)\n"
-            # bless/curse stay hidden 😉
+            "**!admin give @user amount** — Give gems\n"
+            "**!admin remove @user amount** — Remove gems\n"
+            "**!giverole @role amount** — Give gems to all humans with a role\n"
+            "**!dropbox @user amount** — Drop a claim-only mystery box\n"
+            "**!guessthecolor amount** — Start infinite guessing event\n"
+            "**!status** — View current rig status (admin only)\n"
+            "**!savebackup** — Upload an instant backup\n"
+            "**!restorelatest** — Restore newest backup\n"
+            "**!restorebackup** — Restore from uploaded JSON"
         ),
         inline=False
     )
 
-    embed.set_footer(text="Galaxy Casino • Good luck, gambler 😈💎")
+    embed.set_footer(text="Galaxy Casino • May luck be with you 💎🌌")
     await ctx.send(embed=embed)
+
+
+# --------------------------------------------------------------
+#     GIVE GEMS TO EVERY USER IN THE SERVER (ADMIN ONLY)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def giveall(ctx, amount: str):
+    """
+    Give gems to every human (non-bot) member in the server.
+    Usage: !giveall 100m
+    """
+
+    parsed = parse_amount(amount, None, allow_all=False)
+    if parsed is None or parsed <= 0:
+        return await ctx.send("❌ Invalid amount.")
+
+    count = 0
+
+    # Loop through all members manually (works without member intents)
+    for member in ctx.guild.members:
+        if member.bot:
+            continue
+        ensure_user(member.id)
+        data[str(member.id)]["gems"] += parsed
+        count += 1
+
+    save_data(data)
+
+    embed = discord.Embed(
+        title="💎 Gems Given To Everyone",
+        description=(
+            f"Distributed **{fmt(parsed)}** gems to **{count}** human members "
+            f"in **{ctx.guild.name}**!"
+        ),
+        color=galaxy_color()
+    )
+
+    await ctx.send(embed=embed)
+
+
 
 
 bot.run(TOKEN)
