@@ -334,22 +334,22 @@ async def coinflip(ctx, bet: float, choice: str):
 # --------------------------------------------------------------
 #                      SLOTS (SLOWER / HARDER)
 # --------------------------------------------------------------
+# --------------------------------------------------------------
+#                      SLOTS (SLOW MODE + DOUBLE MATCH)
+# --------------------------------------------------------------
 @bot.command()
 async def slots(ctx, bet: float):
-    if not await check_cooldown_and_spam(ctx, "slots"):
-        return
-
     ensure_user(ctx.author.id)
     user = data[str(ctx.author.id)]
 
     if bet <= 0 or bet > user["gems"]:
         return await ctx.send("❌ Invalid bet.")
 
-    # take bet up front
+    # Subtract bet up front
     user["gems"] -= bet
     save_data(data)
 
-    # More symbols = much lower chance to match
+    # Slow mode: More symbols = harder to match
     symbols = [
         "🍋", "🍒", "🍇", "🍉",
         "⭐", "💎", "💰", "🔔",
@@ -363,69 +363,65 @@ async def slots(ctx, bet: float):
     row2 = spin_row()
     row3 = spin_row()
 
-    middle = row2
-    s1, s2, s3 = middle
+    s1, s2, s3 = row2  # middle row
 
-    # Only 3-of-a-kind pays (no more 2-of-a-kind wins)
+    # Determine multiplier
     multiplier = 0.0
     result_text = "No match."
 
-# Only 3-of-a-kind gives big wins
-multiplier = 0.0
-result_text = "No match."
+    # 3-of-a-kind payouts
+    if s1 == s2 == s3:
+        if s1 == "7️⃣":
+            multiplier = 15.0
+        elif s1 == "💎":
+            multiplier = 10.0
+        elif s1 == "💰":
+            multiplier = 8.0
+        elif s1 == "⭐":
+            multiplier = 6.0
+        elif s1 == "🔔":
+            multiplier = 4.0
+        elif s1 in ("🍇", "🍉"):
+            multiplier = 3.0
+        elif s1 == "🍒":
+            multiplier = 2.5
+        elif s1 in ("🥝", "🍊"):
+            multiplier = 2.0
+        else:
+            multiplier = 1.5  # 🍋, 🪙
 
-# 3-of-a-kind
-if s1 == s2 == s3:
-    if s1 == "7️⃣":
-        multiplier = 15.0
-    elif s1 == "💎":
-        multiplier = 10.0
-    elif s1 == "💰":
-        multiplier = 8.0
-    elif s1 == "⭐":
-        multiplier = 6.0
-    elif s1 == "🔔":
-        multiplier = 4.0
-    elif s1 in ("🍇", "🍉"):
-        multiplier = 3.0
-    elif s1 == "🍒":
-        multiplier = 2.5
-    elif s1 in ("🥝", "🍊"):
-        multiplier = 2.0
-    else:
-        multiplier = 1.5  # 🍋, 🪙
-    result_text = f"3x {s1}! BIG WIN!"
+        result_text = f"3x {s1}! BIG WIN!"
 
-# NEW: 2-of-a-kind (1.2x)
-elif s1 == s2 or s2 == s3 or s1 == s3:
-    multiplier = 1.2
-    result_text = "Two of a kind! Small win."
+    # 2-of-a-kind: 1.2x
+    elif s1 == s2 or s2 == s3 or s1 == s3:
+        multiplier = 1.2
+        result_text = "Two of a kind! Small win."
 
     reward = bet * multiplier
-    profit = reward - bet  # will be negative if reward == 0
+    profit = reward - bet
 
     if reward > 0:
         user["gems"] += reward
         save_data(data)
 
+    # Visual slot grid
     grid = (
         f"{row1[0]} {row1[1]} {row1[2]}\n"
-        f"➡ {row2[0]} {row2[1]} {row2[2]} ⬅ (pays)\n"
+        f"➡ {row2[0]} {row2[1]} {row2[2]} ⬅\n"
         f"{row3[0]} {row3[1]} {row3[2]}"
     )
-
-    color = discord.Color.green() if reward > 0 else discord.Color.red()
 
     embed = discord.Embed(
         title="🎰 Slots",
         description=(
-            f"Bet: **{bet}**\n"
-            f"Multiplier: **{multiplier:.2f}x**\n"
-            f"Result: **{result_text}**\n"
-            f"Net: **{profit:.2f} gems**"
+            f"**Bet:** {bet}\n"
+            f"**Multiplier:** {multiplier:.2f}x\n"
+            f"**Result:** {result_text}\n"
+            f"**Net:** {profit:.2f} gems"
         ),
-        color=color
+        color=discord.Color.green() if reward > 0 else discord.Color.red()
     )
+
     embed.add_field(name="Reels", value=f"```{grid}```", inline=False)
 
     add_history(ctx.author.id, {
@@ -437,6 +433,7 @@ elif s1 == s2 or s2 == s3 or s1 == s3:
     })
 
     await ctx.send(embed=embed)
+
 # --------------------------------------------------------------
 #                      MINES
 # --------------------------------------------------------------
