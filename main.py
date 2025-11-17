@@ -5,7 +5,6 @@ import os
 import random
 from discord.ui import Button, View
 import time
-import asyncio
 
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "casino_data.json"
@@ -22,50 +21,60 @@ if not os.path.exists(DATA_FILE):
     with open(DATA_FILE, "w") as f:
         json.dump({}, f)
 
+
 def load_data():
     with open(DATA_FILE, "r") as f:
         return json.load(f)
+
 
 def save_data(d):
     with open(DATA_FILE, "w") as f:
         json.dump(d, f, indent=4)
 
+
 data = load_data()
 
-# ---------------------- NUMBER FORMATTER ---------------------- #
+# ---------------------- HELPERS ---------------------- #
+
+
 def fmt(n):
+    """Format numbers with commas, no decimals."""
     try:
         return format(int(round(float(n))), ",")
     except Exception:
         return str(n)
 
-# ---------------------- GALAXY THEME ---------------------- #
+
 GALAXY_COLORS = [
-    discord.Color.from_rgb(138, 43, 226),   # Electric Purple
-    discord.Color.from_rgb(75, 0, 130),     # Indigo
-    discord.Color.from_rgb(106, 13, 173),   # Cosmic Purple
-    discord.Color.from_rgb(148, 0, 211),    # Dark Violet
-    discord.Color.from_rgb(218, 112, 214),  # Orchid
-    discord.Color.from_rgb(0, 191, 255),    # Deep Sky Blue
+    discord.Color.from_rgb(138, 43, 226),
+    discord.Color.from_rgb(75, 0, 130),
+    discord.Color.from_rgb(106, 13, 173),
+    discord.Color.from_rgb(148, 0, 211),
+    discord.Color.from_rgb(218, 112, 214),
+    discord.Color.from_rgb(0, 191, 255),
 ]
+
 
 def galaxy_color():
     return random.choice(GALAXY_COLORS)
 
-# ---------------------- USER MANAGEMENT ---------------------- #
+
 def ensure_user(user_id):
     uid = str(user_id)
     if uid not in data:
         data[uid] = {}
-    user = data[uid]
-    user.setdefault("gems", 25.0)
-    user.setdefault("last_daily", 0.0)
-    user.setdefault("last_work", 0.0)
-    user.setdefault("history", [])
-    # single-use bless / curse charges
-    user.setdefault("bless_charges", 0)
-    user.setdefault("curse_charges", 0)
+    u = data[uid]
+    u.setdefault("gems", 25.0)
+    u.setdefault("last_daily", 0.0)
+    u.setdefault("last_work", 0.0)
+    u.setdefault("history", [])
+    # bless/curse system
+    u.setdefault("bless_infinite", False)
+    u.setdefault("curse_infinite", False)
+    u.setdefault("bless_charges", 0)
+    u.setdefault("curse_charges", 0)
     save_data(data)
+
 
 def add_history(user_id, entry):
     ensure_user(user_id)
@@ -77,37 +86,11 @@ def add_history(user_id, entry):
     data[uid]["history"] = hist
     save_data(data)
 
-# ---------------------- LOTTERY STATE ---------------------- #
-if "_lottery" not in data:
-    data["_lottery"] = {
-        "active": False,
-        "ticket_price": 0.0,
-        "end_time": 0.0,
-        "tickets": [],
-        "message_id": None,
-        "channel_id": None,
-    }
-    save_data(data)
 
-def get_lottery_state():
-    return data.get("_lottery", {
-        "active": False,
-        "ticket_price": 0.0,
-        "end_time": 0.0,
-        "tickets": [],
-        "message_id": None,
-        "channel_id": None,
-    })
-
-def set_lottery_state(state):
-    data["_lottery"] = state
-    save_data(data)
-
-# ---------------------- PARSERS ---------------------- #
 def parse_amount(text, user_gems=None, allow_all=False):
     """
-    Parses: 200000000, 200,000,000, 200m, 0.2b, 150k, etc.
-    Returns float or None.
+    Parses amounts like:
+    200000000, 200,000,000, 200m, 0.2b, 150k, all
     """
     if isinstance(text, (int, float)):
         return float(text)
@@ -129,50 +112,33 @@ def parse_amount(text, user_gems=None, allow_all=False):
     except ValueError:
         return None
 
-def parse_duration(text):
-    """
-    basic duration parser: 30m, 2h, 1h30m, 45s, 1d
-    """
-    t = text.lower().replace(" ", "")
-    total = 0
-    num = ""
-    for ch in t:
-        if ch.isdigit() or ch == ".":
-            num += ch
-        else:
-            if not num:
-                return None
-            val = float(num)
-            if ch == "s":
-                total += val
-            elif ch == "m":
-                total += val * 60
-            elif ch == "h":
-                total += val * 3600
-            elif ch == "d":
-                total += val * 86400
-            else:
-                return None
-            num = ""
-    if num:
-        return None
-    return int(total)
 
-# ---------------------- BLESS / CURSE HELPERS ---------------------- #
-def consume_bless_curse(user):
+# ---------------------- BLESS / CURSE SYSTEM ---------------------- #
+
+
+def consume_rig(u):
     """
-    Single-use. Returns 'bless', 'curse' or None.
-    If both set, curse wins.
+    Returns 'curse', 'bless' or None.
+    - If curse_infinite or curse_charges > 0 → 'curse'
+    - Else if bless_infinite or bless_charges > 0 → 'bless'
+    For finite charges, decreases count by 1.
+    Infinite flags stay until turned off.
+    Curse has priority over bless.
     """
     mode = None
-    if user.get("curse_charges", 0) > 0:
-        user["curse_charges"] -= 1
+    # curse first
+    if u.get("curse_infinite") or u.get("curse_charges", 0) > 0:
         mode = "curse"
-    elif user.get("bless_charges", 0) > 0:
-        user["bless_charges"] -= 1
+        if u.get("curse_charges", 0) > 0:
+            u["curse_charges"] -= 1
+    elif u.get("bless_infinite") or u.get("bless_charges", 0) > 0:
         mode = "bless"
+        if u.get("bless_charges", 0) > 0:
+            u["bless_charges"] -= 1
+
     save_data(data)
     return mode
+
 
 # --------------------------------------------------------------
 #                      BALANCE
@@ -184,11 +150,12 @@ async def balance(ctx):
     gems = u["gems"]
     embed = discord.Embed(
         title="🌌 Galaxy Balance",
-        description=f"✨ {ctx.author.mention}\nYou currently hold **{fmt(gems)}** gems in the cosmos.",
+        description=f"✨ {ctx.author.mention}\nYou currently hold **{fmt(gems)}** gems.",
         color=galaxy_color()
     )
     embed.set_footer(text="Galaxy Casino • Reach for the stars ✨")
     await ctx.send(embed=embed)
+
 
 # --------------------------------------------------------------
 #                      DAILY
@@ -227,11 +194,12 @@ async def daily(ctx):
     })
 
     embed = discord.Embed(
-        title="🎁 Daily Reward",
+       title="🎁 Daily Reward",
         description=f"{ctx.author.mention} claimed **{fmt(reward)}** gems from the galaxy!",
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
+
 
 # --------------------------------------------------------------
 #                      WORK (10m–15m)
@@ -241,7 +209,7 @@ async def work(ctx):
     ensure_user(ctx.author.id)
     u = data[str(ctx.author.id)]
     now = time.time()
-    cooldown = 3600  # 1h
+    cooldown = 3600  # 1 hour
     last = u.get("last_work", 0)
 
     if now - last < cooldown:
@@ -277,6 +245,7 @@ async def work(ctx):
     embed.set_footer(text="Hard work shines brightest among the stars. 🌌")
     await ctx.send(embed=embed)
 
+
 # --------------------------------------------------------------
 #                      GIFT
 # --------------------------------------------------------------
@@ -290,7 +259,6 @@ async def gift(ctx, member: discord.Member, amount: str):
     val = parse_amount(amount, sender["gems"], allow_all=False)
     if val is None or val <= 0:
         return await ctx.send("❌ Invalid amount.")
-
     if val > sender["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
@@ -321,6 +289,7 @@ async def gift(ctx, member: discord.Member, amount: str):
     )
     await ctx.send(embed=embed)
 
+
 # --------------------------------------------------------------
 #                      COINFLIP
 # --------------------------------------------------------------
@@ -331,9 +300,8 @@ async def coinflip(ctx, bet: str, choice: str):
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
         return await ctx.send("❌ Invalid bet.")
-
     if amount > MAX_BET:
-        return await ctx.send("❌ Max bet is **200m** gems.")
+        return await ctx.send("❌ Max bet is **200m**.")
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
@@ -344,35 +312,28 @@ async def coinflip(ctx, bet: str, choice: str):
     u["gems"] -= amount
     save_data(data)
 
-    mode = consume_bless_curse(u)
+    rig = consume_rig(u)
 
-    if mode == "curse":
-        # instant lose
-        result = "heads" if choice == "tails" else "tails"
-        profit = -amount
+    if rig == "curse":
+        result = "tails" if choice == "heads" else "heads"
+    elif rig == "bless":
+        result = choice
     else:
-        if mode == "bless":
-            result = choice
-        else:
-            result = random.choice(["heads", "tails"])
+        result = random.choice(["heads", "tails"])
 
-        if result == choice:
-            # net +amount (2x total)
-            u["gems"] += amount * 2
-            profit = amount
-        else:
-            profit = -amount
-
-    save_data(data)
-
-    if profit > 0:
+    if result == choice:
+        u["gems"] += amount * 2
+        profit = amount
+        res = "win"
         title = "🪙 Coinflip — You Won!"
         color = discord.Color.green()
-        res = "win"
     else:
+        profit = -amount
+        res = "lose"
         title = "🪙 Coinflip — You Lost"
         color = discord.Color.red()
-        res = "lose"
+
+    save_data(data)
 
     embed = discord.Embed(
         title=title,
@@ -394,8 +355,9 @@ async def coinflip(ctx, bet: str, choice: str):
         "timestamp": time.time()
     })
 
+
 # --------------------------------------------------------------
-#                      SLOTS (3x4, nerfed)
+#                      SLOTS (3x4, nerfed, rig-aware)
 # --------------------------------------------------------------
 @bot.command()
 async def slots(ctx, bet: str):
@@ -413,14 +375,12 @@ async def slots(ctx, bet: str):
     u["gems"] -= amount
     save_data(data)
 
+    rig = consume_rig(u)
+
     symbols = ["🍒", "🍋", "⭐", "💎"]
 
     def spin_row():
         return [random.choice(symbols) for _ in range(4)]
-
-    row1 = spin_row()
-    row2 = spin_row()
-    row3 = spin_row()
 
     def row_best_match(row):
         counts = {}
@@ -429,29 +389,26 @@ async def slots(ctx, bet: str):
         best_sym = max(counts, key=counts.get)
         return counts[best_sym], best_sym
 
-    mode = consume_bless_curse(u)
+    # Generate rows with rig logic
+    for _ in range(50):
+        row1 = spin_row()
+        row2 = spin_row()
+        row3 = spin_row()
 
-    # adjust outcome for bless/curse
-    if mode == "curse":
-        # try to avoid any 3-match in row2/row3
-        for _ in range(50):
-            row1 = spin_row()
-            row2 = spin_row()
-            row3 = spin_row()
-            r2_m, _ = row_best_match(row2)
-            r3_m, _ = row_best_match(row3)
-            if r2_m < 3 and r3_m < 3:
+        r2_match, r2_sym = row_best_match(row2)
+        r3_match, r3_sym = row_best_match(row3)
+        best_match = max(r2_match, r3_match)
+
+        if rig == "curse":
+            # try to avoid any 3-of-kind
+            if best_match < 3:
                 break
-    elif mode == "bless":
-        # try to force a 3-of-kind in row2 or row3
-        for _ in range(50):
-            row1 = spin_row()
-            row2 = spin_row()
-            row3 = spin_row()
-            r2_m, _ = row_best_match(row2)
-            r3_m, _ = row_best_match(row3)
-            if r2_m >= 3 or r3_m >= 3:
+        elif rig == "bless":
+            # try to guarantee at least one 3-of-kind
+            if best_match >= 3:
                 break
+        else:
+            break
 
     r2_match, r2_sym = row_best_match(row2)
     r3_match, r3_sym = row_best_match(row3)
@@ -465,14 +422,17 @@ async def slots(ctx, bet: str):
 
     if best_match >= 3:
         multiplier = 2.0
-        result_text = f"3x {best_symbol}! **WIN**"
         reward = amount * multiplier
         profit = reward - amount
         u["gems"] += reward
+        result_text = f"3x {best_symbol}! You win."
+        res = "win"
     else:
         multiplier = 0.0
-        result_text = "No match."
+        reward = 0
         profit = -amount
+        result_text = "No match."
+        res = "lose"
 
     save_data(data)
 
@@ -499,13 +459,14 @@ async def slots(ctx, bet: str):
     add_history(ctx.author.id, {
         "game": "slots",
         "bet": amount,
-        "result": "win" if profit > 0 else "lose",
+        "result": res,
         "earned": profit,
         "timestamp": time.time()
     })
 
+
 # --------------------------------------------------------------
-#                      MINES
+#                      MINES (rig-aware)
 # --------------------------------------------------------------
 @bot.command()
 async def mines(ctx, bet: str, mines: int = 3):
@@ -525,9 +486,12 @@ async def mines(ctx, bet: str, mines: int = 3):
     u["gems"] -= amount
     save_data(data)
 
+    rig = consume_rig(u)  # 'bless', 'curse', or None
+
     owner = ctx.author.id
     game_over = False
     correct_clicks = 0
+    first_click = True
 
     TOTAL = 24
     ROW_SLOTS = 5
@@ -566,7 +530,7 @@ async def mines(ctx, bet: str, mines: int = 3):
             self.index = index
 
         async def callback(self, interaction):
-            nonlocal correct_clicks, game_over, exploded_index
+            nonlocal correct_clicks, game_over, exploded_index, first_click
 
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
@@ -575,17 +539,17 @@ async def mines(ctx, bet: str, mines: int = 3):
             if revealed[self.index] is not None:
                 return await interaction.response.send_message("❌ Already clicked!", ephemeral=True)
 
-            # bless/curse check on first click decision
-            mode = consume_bless_curse(u)
-
-            if mode == "curse":
-                # instant bomb
+            # CURSE: first click always treated as bomb
+            if rig == "curse" and first_click:
+                first_click = False
                 exploded_index = self.index
                 revealed[self.index] = False
                 game_over = True
+
                 for i, btn in enumerate(view.children):
                     if isinstance(btn, Tile):
                         btn.disabled = True
+                        # show bombs visually according to bomb_positions
                         if i in bomb_positions:
                             btn.label = "💣"
                             btn.style = discord.ButtonStyle.danger
@@ -602,38 +566,24 @@ async def mines(ctx, bet: str, mines: int = 3):
                     await interaction.response.edit_message(embed=embed_update(), view=view)
                 except:
                     pass
-                await ctx.send(f"💥 Cursed! You instantly hit a mine and lost **{fmt(amount)}** gems.")
+                await ctx.send(f"💥 You hit a mine and lost **{fmt(amount)}** gems.")
                 return
 
-            if mode == "bless":
-                # instant cashout on first click, treat as nice win
-                reward = amount * 2
-                u["gems"] += reward
-                game_over = True
-                for i, btn in enumerate(view.children):
-                    if isinstance(btn, Tile):
-                        btn.disabled = True
-                        if i in bomb_positions:
-                            btn.label = "💣"
-                            btn.style = discord.ButtonStyle.danger
+            first_click = False
 
-                save_data(data)
-                add_history(ctx.author.id, {
-                    "game": "mines",
-                    "bet": amount,
-                    "result": "bless_win",
-                    "earned": reward - amount,
-                    "timestamp": time.time()
-                })
-
+            # BLESS: all tiles treated as safe, bombs only matter on reveal
+            if rig == "bless":
+                revealed[self.index] = True
+                self.label = SAFE
+                self.style = discord.ButtonStyle.success
+                correct_clicks += 1
                 try:
                     await interaction.response.edit_message(embed=embed_update(), view=view)
                 except:
                     pass
-                await ctx.send(f"✨ Blessed! You auto-won **{fmt(reward - amount)}** gems in Mines.")
                 return
 
-            # normal logic
+            # NORMAL: real bombs
             if self.index in bomb_positions:
                 exploded_index = self.index
                 revealed[self.index] = False
@@ -717,8 +667,9 @@ async def mines(ctx, bet: str, mines: int = 3):
     view.add_item(Cashout())
     await ctx.send(embed=embed_update(), view=view)
 
+
 # --------------------------------------------------------------
-#                      TOWER
+#                      TOWER (rig-aware)
 # --------------------------------------------------------------
 @bot.command()
 async def tower(ctx, bet: str):
@@ -735,6 +686,8 @@ async def tower(ctx, bet: str):
 
     u["gems"] -= amount
     save_data(data)
+
+    rig = consume_rig(u)
 
     TOTAL_ROWS = 10
     current_row = 0
@@ -810,61 +763,23 @@ async def tower(ctx, bet: str):
             if game_over:
                 return await interaction.response.send_message("❌ Game ended!", ephemeral=True)
 
-            mode = consume_bless_curse(u)
-
-            if mode == "curse":
-                # instant bomb
-                grid[current_row][self.pos] = False
-                exploded_cell = (current_row, self.pos)
-                game_over = True
-                earned_on_end = 0
-
-                for r in range(TOTAL_ROWS):
-                    bc = bomb_positions[r]
-                    grid[r][bc] = False
-
-                for b in view.children:
-                    b.disabled = True
-
-                add_history(ctx.author.id, {
-                    "game": "tower",
-                    "bet": amount,
-                    "result": "lose",
-                    "earned": -amount,
-                    "timestamp": time.time()
-                })
-                await interaction.response.edit_message(embed=embed_update(True), view=view)
-                return await ctx.send(f"💥 Cursed! You instantly lost **{fmt(amount)}** gems in Tower!")
-
-            if mode == "bless":
-                # instant good win
-                game_over = True
-                reward = amount * 2
-                earned_on_end = reward
-                u["gems"] += reward
-                save_data(data)
-
-                for r in range(TOTAL_ROWS):
-                    bc = bomb_positions[r]
-                    if grid[r][bc] is None:
-                        grid[r][bc] = False
-
-                for b in view.children:
-                    b.disabled = True
-
-                add_history(ctx.author.id, {
-                    "game": "tower",
-                    "bet": amount,
-                    "result": "bless_win",
-                    "earned": reward - amount,
-                    "timestamp": time.time()
-                })
-                await interaction.response.edit_message(embed=embed_update(True), view=view)
-                return await ctx.send(f"✨ Blessed! You auto-won **{fmt(reward - amount)}** gems in Tower!")
-
             bomb_col = bomb_positions[current_row]
 
-            if self.pos == bomb_col:
+            # CURSE: first pick of the game is always bomb
+            if rig == "curse" and current_row == 0:
+                bomb_positions[current_row] = self.pos
+                bomb_col = self.pos
+
+            # BLESS: always safe - move bomb away from chosen tile
+            if rig == "bless":
+                if self.pos == bomb_col:
+                    # move bomb to another column
+                    new_col = (self.pos + 1) % 3
+                    bomb_positions[current_row] = new_col
+                    bomb_col = new_col
+
+            # normal lose logic (if this ends up being bomb)
+            if self.pos == bomb_col and rig != "bless":
                 grid[current_row][self.pos] = False
                 exploded_cell = (current_row, self.pos)
                 game_over = True
@@ -887,6 +802,7 @@ async def tower(ctx, bet: str):
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
                 return await ctx.send(f"💥 BOOM! You lost **{fmt(amount)}** gems!")
 
+            # safe
             grid[current_row][self.pos] = True
             correct_count += 1
             current_row += 1
@@ -961,8 +877,9 @@ async def tower(ctx, bet: str):
 
     await ctx.send(embed=embed_update(False), view=view)
 
+
 # --------------------------------------------------------------
-#                      BLACKJACK (NERFED + instant bless/curse)
+#                      BLACKJACK (rig-aware; medium)
 # --------------------------------------------------------------
 CARD_VALUES = {
     "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
@@ -971,8 +888,10 @@ CARD_VALUES = {
 }
 CARD_ORDER = list(CARD_VALUES.keys())
 
+
 def draw_card():
     return random.choice(CARD_ORDER)
+
 
 def hand_value(hand):
     total = sum(CARD_VALUES[c] for c in hand)
@@ -981,6 +900,7 @@ def hand_value(hand):
         total -= 10
         aces -= 1
     return total
+
 
 @bot.command()
 async def blackjack(ctx, bet: str):
@@ -995,47 +915,70 @@ async def blackjack(ctx, bet: str):
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
-    mode = consume_bless_curse(u)
+    rig = consume_rig(u)
     u["gems"] -= amount
     save_data(data)
 
-    # A) instant auto-win/lose on bless/curse
-    if mode == "curse":
-        profit = -amount
+    # If rigged: instant-looking game, no buttons (but still normal text)
+    if rig in ("bless", "curse"):
+        # generate plausible final hands
+        def random_hand(target_min, target_max):
+            while True:
+                hand = [draw_card(), draw_card()]
+                while hand_value(hand) < target_min:
+                    hand.append(draw_card())
+                    if len(hand) > 6:
+                        break
+                v = hand_value(hand)
+                if target_min <= v <= target_max:
+                    return hand
+
+        if rig == "curse":
+            # Player loses
+            player = random_hand(22, 28)  # bust
+            dealer = random_hand(17, 21)
+            profit = -amount
+            result_text = "You busted over 21. Dealer wins."
+            res = "lose"
+        else:
+            # bless -> player wins medium
+            player = random_hand(19, 21)
+            dealer = random_hand(15, 19)
+            while hand_value(dealer) >= hand_value(player):
+                dealer = random_hand(15, 19)
+            # medium win: about 1.7x
+            profit = int(amount * 1.7)
+            u["gems"] += amount + profit
+            save_data(data)
+            result_text = "Your hand is higher. You win."
+            res = "win"
+
+        pv = hand_value(player)
+        dv = hand_value(dealer)
+
+        desc = (
+            f"🧑 Your hand: {' '.join(player)} (Total: **{pv}**)\n"
+            f"🂠 Dealer hand: {' '.join(dealer)} (Total: **{dv}**)\n\n"
+            f"{result_text}\n**Net:** {fmt(profit)} gems"
+        )
+        embed = discord.Embed(
+            title="🃏 Galaxy Blackjack",
+            description=desc,
+            color=galaxy_color()
+        )
+        embed.set_footer(text="Galaxy Blackjack • Game finished.")
+        await ctx.send(embed=embed)
+
         add_history(ctx.author.id, {
             "game": "blackjack",
             "bet": amount,
-            "result": "lose",
+            "result": res,
             "earned": profit,
             "timestamp": time.time()
         })
-        embed = discord.Embed(
-            title="🃏 Galaxy Blackjack — Cursed Loss",
-            description=f"💀 You were cursed and instantly lost **{fmt(amount)}** gems.",
-            color=galaxy_color()
-        )
-        return await ctx.send(embed=embed)
+        return
 
-    if mode == "bless":
-        # treat as strong win: net +1.7x
-        profit = int(amount * 1.7)
-        u["gems"] += amount + profit
-        save_data(data)
-        add_history(ctx.author.id, {
-            "game": "blackjack",
-            "bet": amount,
-            "result": "win",
-            "earned": profit,
-            "timestamp": time.time()
-        })
-        embed = discord.Embed(
-            title="🃏 Galaxy Blackjack — Blessed Win",
-            description=f"✨ The cosmos blessed you.\nYou instantly won **{fmt(profit)}** gems.",
-            color=galaxy_color()
-        )
-        return await ctx.send(embed=embed)
-
-    # Normal blackjack logic (nerfed payout)
+    # Normal interactive blackjack (no rig)
     player = [draw_card(), draw_card()]
     dealer = [draw_card(), draw_card()]
 
@@ -1077,7 +1020,7 @@ async def blackjack(ctx, bet: str):
             res = "lose"
             text = "You busted over 21."
         elif dv > 21:
-            mult = 2.0 if blackjack_player else 1.7
+            mult = 1.7
             profit = int(amount * (mult - 1))
             res = "win"
             text = "Dealer busted. You win!"
@@ -1085,7 +1028,7 @@ async def blackjack(ctx, bet: str):
             mult = 2.0
             profit = int(amount * (mult - 1))
             res = "win"
-            text = "Blackjack! You win with a cosmic hand."
+            text = "Blackjack! You win."
         elif blackjack_dealer and not blackjack_player:
             profit = -amount
             res = "lose"
@@ -1107,7 +1050,7 @@ async def blackjack(ctx, bet: str):
         if profit > 0:
             u["gems"] += amount + profit
         elif profit == 0:
-            u["gems"] += amount  # refund
+            u["gems"] += amount
         save_data(data)
 
         add_history(ctx.author.id, {
@@ -1155,6 +1098,7 @@ async def blackjack(ctx, bet: str):
 
     await ctx.send(embed=make_embed(), view=view)
 
+
 # --------------------------------------------------------------
 #                      LEADERBOARD
 # --------------------------------------------------------------
@@ -1162,7 +1106,7 @@ async def blackjack(ctx, bet: str):
 async def leaderboard(ctx):
     lb = []
     for user_id, info in data.items():
-        if user_id == "_lottery":
+        if not user_id.isdigit():
             continue
         lb.append((int(user_id), info.get("gems", 0)))
     lb.sort(key=lambda x: x[1], reverse=True)
@@ -1180,12 +1124,13 @@ async def leaderboard(ctx):
         try:
             user_obj = await bot.fetch_user(user_id)
             name = user_obj.name
-        except:
+        except Exception:
             name = f"User {user_id}"
         embed.add_field(name=f"#{i} — {name}", value=f"💎 {fmt(gems)} gems", inline=False)
 
     embed.set_footer(text="Top 10 richest players in the galaxy 💰")
     await ctx.send(embed=embed)
+
 
 # --------------------------------------------------------------
 #                      HISTORY
@@ -1212,6 +1157,7 @@ async def history(ctx):
         )
 
     await ctx.send(embed=embed)
+
 
 # --------------------------------------------------------------
 #                      STATS
@@ -1247,6 +1193,7 @@ async def stats(ctx):
     embed.set_footer(text="Galaxy Stats • May the odds be ever in your favor 🌌")
     await ctx.send(embed=embed)
 
+
 # --------------------------------------------------------------
 #                      ADMIN (give/remove)
 # --------------------------------------------------------------
@@ -1259,10 +1206,10 @@ async def admin(ctx, action: str, member: discord.Member, amount: str):
     if val is None or val <= 0:
         return await ctx.send("❌ Invalid amount.")
 
-    if action == "give":
+    if action.lower() == "give":
         u["gems"] += val
         msg = f"Gave **{fmt(val)} gems** to {member.mention}"
-    elif action == "remove":
+    elif action.lower() == "remove":
         u["gems"] = max(0, u["gems"] - val)
         msg = f"Removed **{fmt(val)} gems** from {member.mention}"
     else:
@@ -1275,6 +1222,7 @@ async def admin(ctx, action: str, member: discord.Member, amount: str):
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
+
 
 # --------------------------------------------------------------
 #                      MYSTERY BOX (!dropbox @user amount)
@@ -1332,212 +1280,74 @@ async def dropbox(ctx, member: discord.Member, amount: str):
 
     await ctx.send(embed=embed, view=view)
 
+
 # --------------------------------------------------------------
-#                      BLESS / CURSE (single-use)
+#                      BLESS / CURSE (invisible rig)
 # --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def bless(ctx, member: discord.Member):
+async def bless(ctx, member: discord.Member, amount: str = None):
     ensure_user(member.id)
     u = data[str(member.id)]
-    u["bless_charges"] = u.get("bless_charges", 0) + 1
-    save_data(data)
 
+    if amount is None:
+        # infinite until off
+        u["bless_infinite"] = True
+    else:
+        a = amount.lower()
+        if a == "off" or a == "0":
+            u["bless_infinite"] = False
+            u["bless_charges"] = 0
+        else:
+            try:
+                n = int(a)
+            except ValueError:
+                return await ctx.send("❌ Amount must be a number, or `off`.")
+            if n <= 0:
+                return await ctx.send("❌ Amount must be > 0.")
+            u["bless_infinite"] = False
+            u["bless_charges"] = n
+
+    save_data(data)
     embed = discord.Embed(
         title="✨ Galaxy Bless",
-        description=f"{member.mention} has been **blessed** for the **next game**.",
+        description=f"{member.mention} has been adjusted for upcoming games.",
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
 
+
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def curse(ctx, member: discord.Member):
+async def curse(ctx, member: discord.Member, amount: str = None):
     ensure_user(member.id)
     u = data[str(member.id)]
-    u["curse_charges"] = u.get("curse_charges", 0) + 1
-    save_data(data)
 
+    if amount is None:
+        u["curse_infinite"] = True
+    else:
+        a = amount.lower()
+        if a == "off" or a == "0":
+            u["curse_infinite"] = False
+            u["curse_charges"] = 0
+        else:
+            try:
+                n = int(a)
+            except ValueError:
+                return await ctx.send("❌ Amount must be a number, or `off`.")
+            if n <= 0:
+                return await ctx.send("❌ Amount must be > 0.")
+            u["curse_infinite"] = False
+            u["curse_charges"] = n
+
+    save_data(data)
     embed = discord.Embed(
-        title="💀 Galaxy Curse",
-        description=f"{member.mention} has been **cursed** for the **next game**.",
+        title="💀 Galaxy Adjustment",
+        description=f"{member.mention} has been adjusted for upcoming games.",
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
 
-# --------------------------------------------------------------
-#                      LOTTERY (manual, self-funded)
-# --------------------------------------------------------------
-class BuyTicketButton(Button):
-    def __init__(self):
-        super().__init__(label="🎟 Buy Ticket", style=discord.ButtonStyle.primary)
-
-    async def callback(self, interaction: discord.Interaction):
-        state = get_lottery_state()
-        if not state["active"]:
-            return await interaction.response.send_message("❌ No active lottery.", ephemeral=True)
-
-        ensure_user(interaction.user.id)
-        u = data[str(interaction.user.id)]
-        price = state["ticket_price"]
-        if u["gems"] < price:
-            return await interaction.response.send_message("❌ Not enough gems to buy a ticket.", ephemeral=True)
-
-        u["gems"] -= price
-        state["tickets"].append(interaction.user.id)
-        set_lottery_state(state)
-        save_data(data)
-
-        embed = build_lottery_embed(state)
-        try:
-            await interaction.response.edit_message(embed=embed, view=build_lottery_view())
-        except:
-            await interaction.response.send_message("✅ Ticket bought!", ephemeral=True)
-
-def build_lottery_embed(state):
-    remaining = max(0, int(state["end_time"] - time.time()))
-    minutes = remaining // 60
-    seconds = remaining % 60
-    total_tickets = len(state["tickets"])
-    unique_players = len(set(state["tickets"]))
-    prize = state["ticket_price"] * total_tickets
-
-    embed = discord.Embed(
-        title="🌌 Galaxy Lottery",
-        description=(
-            f"🎟 **Ticket price:** {fmt(state['ticket_price'])}\n"
-            f"💰 **Current prize:** {fmt(prize)}\n"
-            f"👥 **Tickets sold:** {total_tickets}\n"
-            f"🧑 **Participants:** {unique_players}\n"
-            f"⏳ **Time left:** {minutes}m {seconds}s"
-        ),
-        color=galaxy_color()
-    )
-    embed.set_footer(text="Buy tickets before the galaxy closes the portal ✨")
-    return embed
-
-def build_lottery_view():
-    view = View(timeout=None)
-    view.add_item(BuyTicketButton())
-    return view
-
-async def lottery_timer():
-    await bot.wait_until_ready()
-    state = get_lottery_state()
-    if not state["active"]:
-        return
-    channel = bot.get_channel(state["channel_id"])
-    if channel is None:
-        return
-
-    while True:
-        await asyncio.sleep(5)
-        state = get_lottery_state()
-        if not state["active"]:
-            return
-        if time.time() >= state["end_time"]:
-            break
-
-    state = get_lottery_state()
-    state["active"] = False
-    set_lottery_state(state)
-
-    if not state["tickets"]:
-        embed = discord.Embed(
-            title="🌌 Galaxy Lottery Ended",
-            description="No tickets were sold. The galaxy keeps its secrets.",
-            color=galaxy_color()
-        )
-        return await channel.send(embed=embed)
-
-    winner_id = random.choice(state["tickets"])
-    ensure_user(winner_id)
-    winner = data[str(winner_id)]
-    prize = state["ticket_price"] * len(state["tickets"])
-    winner["gems"] += prize
-    save_data(data)
-
-    add_history(winner_id, {
-        "game": "lottery",
-        "bet": state["ticket_price"],
-        "result": "win",
-        "earned": prize,
-        "timestamp": time.time()
-    })
-
-    user_obj = await bot.fetch_user(winner_id)
-    embed = discord.Embed(
-        title="🎉 Galaxy Lottery Winner",
-        description=(
-            f"👑 Winner: {user_obj.mention}\n"
-            f"💰 Prize: **{fmt(prize)}** gems\n"
-            f"🎟 Tickets sold: {len(state['tickets'])}"
-        ),
-        color=galaxy_color()
-    )
-    await channel.send(embed=embed)
-
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def lottery(ctx, subcmd: str = None, *args):
-    if subcmd is None or subcmd.lower() == "info":
-        state = get_lottery_state()
-        if not state["active"]:
-            return await ctx.send("❌ No active lottery.")
-        embed = build_lottery_embed(state)
-        return await ctx.send(embed=embed)
-
-    subcmd = subcmd.lower()
-    if subcmd == "start":
-        if len(args) < 2:
-            return await ctx.send("Usage: `!lottery start <ticket_price> <duration>` (e.g. `!lottery start 1000 2h`)")
-
-        price_text = args[0]
-        duration_text = args[1]
-        price = parse_amount(price_text, None, allow_all=False)
-        if price is None or price <= 0:
-            return await ctx.send("❌ Invalid ticket price.")
-        dur = parse_duration(duration_text)
-        if dur is None or dur <= 0:
-            return await ctx.send("❌ Invalid duration. Use like `30m`, `2h`.")
-
-        state = get_lottery_state()
-        if state["active"]:
-            return await ctx.send("❌ A lottery is already running. Use `!lottery cancel` first.")
-
-        end_time = time.time() + dur
-        state = {
-            "active": True,
-            "ticket_price": price,
-            "end_time": end_time,
-            "tickets": [],
-            "message_id": None,
-            "channel_id": ctx.channel.id,
-        }
-        set_lottery_state(state)
-
-        embed = build_lottery_embed(state)
-        msg = await ctx.send(embed=embed, view=build_lottery_view())
-        state["message_id"] = msg.id
-        set_lottery_state(state)
-
-        bot.loop.create_task(lottery_timer())
-        return
-
-    if subcmd == "cancel":
-        state = get_lottery_state()
-        if not state["active"]:
-            return await ctx.send("❌ No active lottery to cancel.")
-        state["active"] = False
-        set_lottery_state(state)
-        embed = discord.Embed(
-            title="🛑 Galaxy Lottery Cancelled",
-            description="The current lottery has been cancelled by an admin.",
-            color=galaxy_color()
-        )
-        return await ctx.send(embed=embed)
-
-    await ctx.send("❌ Unknown subcommand. Use `!lottery start`, `!lottery cancel`, or `!lottery` for info.")
 
 # --------------------------------------------------------------
 #                      HELP
@@ -1574,16 +1384,6 @@ async def help(ctx):
     )
 
     embed.add_field(
-        name="🎟 Lottery",
-        value=(
-            "`!lottery` — Info (if active)\n"
-            "`!lottery start price duration` (admin)\n"
-            "`!lottery cancel` (admin)\n"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
         name="📊 Info",
         value=(
             "`!history` — Last 10 games\n"
@@ -1598,12 +1398,13 @@ async def help(ctx):
         value=(
             "`!admin give/remove @user amount`\n"
             "`!dropbox @user amount`\n"
-            # bless/curse hidden from help 🙂
+            # bless/curse are hidden 🙂
         ),
         inline=False
     )
 
     embed.set_footer(text="Galaxy Casino • Good luck, gambler 😈💎")
     await ctx.send(embed=embed)
+
 
 bot.run(TOKEN)
