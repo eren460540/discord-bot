@@ -370,28 +370,36 @@ async def slots(ctx, bet: float):
     multiplier = 0.0
     result_text = "No match."
 
-    if s1 == s2 == s3:
-        # Different payouts per symbol
-        if s1 == "7️⃣":
-            multiplier = 15.0
-        elif s1 == "💎":
-            multiplier = 10.0
-        elif s1 == "💰":
-            multiplier = 8.0
-        elif s1 == "⭐":
-            multiplier = 6.0
-        elif s1 == "🔔":
-            multiplier = 4.0
-        elif s1 in ("🍇", "🍉"):
-            multiplier = 3.0
-        elif s1 == "🍒":
-            multiplier = 2.5
-        elif s1 in ("🥝", "🍊"):
-            multiplier = 2.0
-        else:
-            # 🍋, 🪙
-            multiplier = 1.5
-        result_text = f"3x {s1}! BIG WIN!"
+# Only 3-of-a-kind gives big wins
+multiplier = 0.0
+result_text = "No match."
+
+# 3-of-a-kind
+if s1 == s2 == s3:
+    if s1 == "7️⃣":
+        multiplier = 15.0
+    elif s1 == "💎":
+        multiplier = 10.0
+    elif s1 == "💰":
+        multiplier = 8.0
+    elif s1 == "⭐":
+        multiplier = 6.0
+    elif s1 == "🔔":
+        multiplier = 4.0
+    elif s1 in ("🍇", "🍉"):
+        multiplier = 3.0
+    elif s1 == "🍒":
+        multiplier = 2.5
+    elif s1 in ("🥝", "🍊"):
+        multiplier = 2.0
+    else:
+        multiplier = 1.5  # 🍋, 🪙
+    result_text = f"3x {s1}! BIG WIN!"
+
+# NEW: 2-of-a-kind (1.2x)
+elif s1 == s2 or s2 == s3 or s1 == s3:
+    multiplier = 1.2
+    result_text = "Two of a kind! Small win."
 
     reward = bet * multiplier
     profit = reward - bet  # will be negative if reward == 0
