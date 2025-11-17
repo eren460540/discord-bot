@@ -1451,6 +1451,78 @@ async def curse(ctx, member: discord.Member, amount: str = None):
     await ctx.send(embed=embed)
 
 
+
+
+
+# --------------------------------------------------------------
+#                      STATUS (admin-only)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def status(ctx):
+    """Shows which users are blessed or cursed."""
+    embed = discord.Embed(
+        title="🌌 Galaxy Rig Status",
+        description="Current bless/curse adjustments",
+        color=galaxy_color()
+    )
+
+    blessed = []
+    cursed = []
+
+    for user_id, u in data.items():
+        if not str(user_id).isdigit():
+            continue
+
+        # Blessed?
+        if u.get("bless_infinite") or u.get("bless_charges", 0) > 0:
+            info = []
+            if u.get("bless_infinite"):
+                info.append("♾️ infinite")
+            if u.get("bless_charges", 0) > 0:
+                info.append(f"{u.get('bless_charges')} charges")
+            blessed.append((user_id, ", ".join(info)))
+
+        # Cursed?
+        if u.get("curse_infinite") or u.get("curse_charges", 0) > 0:
+            info = []
+            if u.get("curse_infinite"):
+                info.append("♾️ infinite")
+            if u.get("curse_charges", 0) > 0:
+                info.append(f"{u.get('curse_charges')} charges")
+            cursed.append((user_id, ", ".join(info)))
+
+    if blessed:
+        text = ""
+        for uid, info in blessed:
+            try:
+                user = await bot.fetch_user(uid)
+                name = user.name
+            except:
+                name = f"User {uid}"
+            text += f"**{name}** — {info}\n"
+        embed.add_field(name="✨ Blessed Users", value=text, inline=False)
+    else:
+        embed.add_field(name="✨ Blessed Users", value="None", inline=False)
+
+    if cursed:
+        text = ""
+        for uid, info in cursed:
+            try:
+                user = await bot.fetch_user(uid)
+                name = user.name
+            except:
+                name = f"User {uid}"
+            text += f"**{name}** — {info}\n"
+        embed.add_field(name="💀 Cursed Users", value=text, inline=False)
+    else:
+        embed.add_field(name="💀 Cursed Users", value="None", inline=False)
+
+    embed.set_footer(text="Only visible to admins • Invisible rig remains secret 🔒")
+    await ctx.send(embed=embed)
+
+
+
 # --------------------------------------------------------------
 #                      BACKUP RESTORE COMMANDS
 # --------------------------------------------------------------
