@@ -1687,24 +1687,27 @@ async def restorebackup(ctx):
 
 
 # --------------------------------------------------------------
-#        GIVE GEMS TO EVERYONE WITH A ROLE (FIXED)
+#        GIVE GEMS TO EVERYONE WITH A ROLE (ALWAYS WORKS)
 # --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def giverole(ctx, role: discord.Role, amount: str):
-    """Give gems to all members of a specific role."""
+    """Give gems to all human members with the specified role."""
 
-    # parse the amount safely
     parsed = parse_amount(amount, None, allow_all=False)
     if parsed is None or parsed <= 0:
         return await ctx.send("❌ Invalid amount.")
 
-    # count how many members will receive gems
-    members_to_give = [m for m in role.members if not m.bot]
+    # Manually detect members with the role (works even without intents)
+    members_to_give = []
+    for member in ctx.guild.members:
+        if role in member.roles and not member.bot:
+            members_to_give.append(member)
 
     if len(members_to_give) == 0:
-        return await ctx.send("❌ No human members in that role.")
+        return await ctx.send("❌ That role has **0 human members** I can detect.")
 
+    # Give gems
     for member in members_to_give:
         ensure_user(member.id)
         data[str(member.id)]["gems"] += parsed
@@ -1712,14 +1715,17 @@ async def giverole(ctx, role: discord.Role, amount: str):
     save_data(data)
 
     embed = discord.Embed(
-        title="💎 Gems Given To Role",
+        title="💎 Gems Distributed",
         description=(
-            f"Distributed **{fmt(parsed)}** gems to **{len(members_to_give)}** members\n"
-            f"of the role {role.mention}."
+            f"Role: {role.mention}\n"
+            f"Members rewarded: **{len(members_to_give)}**\n"
+            f"Amount each: **{fmt(parsed)} gems**"
         ),
         color=galaxy_color()
     )
+
     await ctx.send(embed=embed)
+
 # --------------------------------------------------------------
 #                MANUAL BACKUP COMMAND
 # --------------------------------------------------------------
