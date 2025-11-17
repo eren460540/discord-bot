@@ -329,75 +329,58 @@ async def coinflip(ctx, bet: float, choice: str):
     await ctx.send(embed=embed)
 
 # --------------------------------------------------------------
-#                      SLOTS (3x3, STYLE A)
-# --------------------------------------------------------------
-# --------------------------------------------------------------
-#                   SLOTS (4 SYMBOL VERSION)
+#                   SLOTS (3 ROWS × 4 COLS — FIXED 2x)
 # --------------------------------------------------------------
 @bot.command()
 async def slots(ctx, bet: float):
     ensure_user(ctx.author.id)
     user = data[str(ctx.author.id)]
 
+    # Validate
     if bet <= 0 or bet > user["gems"]:
         return await ctx.send("❌ Invalid bet.")
 
-    # subtract bet upfront
+    # Subtract bet first (no duping)
     user["gems"] -= bet
     save_data(data)
 
-    # ONLY 4 symbols in rotation (clean version)
+    # Only 4 symbols total
     symbols = ["🍒", "🍋", "⭐", "💎"]
 
     def spin_row():
         return [random.choice(symbols) for _ in range(4)]
 
-    # 3 rows × 4 columns
+    # 3×4 grid
     row1 = spin_row()
     row2 = spin_row()   # pays
     row3 = spin_row()   # pays
 
-    # count matches in a row
-    def row_matches(row):
+    # Count matches in a row
+    def row_best_match(row):
         counts = {}
         for s in row:
             counts[s] = counts.get(s, 0) + 1
-        most = max(counts.values())
-        symbol = max(counts, key=counts.get)
-        return most, symbol
+        best_sym = max(counts, key=counts.get)
+        return counts[best_sym], best_sym
 
-    # check row2 & row3
-    r2_match, r2_sym = row_matches(row2)
-    r3_match, r3_sym = row_matches(row3)
+    r2_match, r2_sym = row_best_match(row2)
+    r3_match, r3_sym = row_best_match(row3)
 
     best_match = 0
     best_symbol = None
 
-    for m, s in [(r2_match, r2_sym), (r3_match, r3_sym)]:
-        if m > best_match:
-            best_match = m
-            best_symbol = s
+    for match, sym in [(r2_match, r2_sym), (r3_match, r3_sym)]:
+        if match > best_match:
+            best_match = match
+            best_symbol = sym
 
-    # multipliers for 3-match
-    three_match_values = {
-        "💎": 8.0,
-        "⭐": 5.0,
-        "🍒": 3.0,
-        "🍋": 2.0
-    }
-
-    multiplier = 0.0
-    result_text = "No match."
-
-    # BIG WIN
+    # PAYOUT — fixed 2x for any 3-match
     if best_match >= 3:
-        multiplier = three_match_values.get(best_symbol, 2.0)
-        result_text = f"3x {best_symbol}! BIG WIN!"
-
-    # SMALL WIN (double match)
-    elif best_match == 2:
-        multiplier = 1.2
-        result_text = "Two of a kind! Small win."
+        multiplier = 2.0
+        result_text = f"3x {best_symbol}! **WIN**"
+    else:
+        multiplier = 0.0
+        result_text = "No match."
 
     reward = bet * multiplier
     profit = reward - bet
@@ -406,7 +389,7 @@ async def slots(ctx, bet: float):
         user["gems"] += reward
         save_data(data)
 
-    # Display 3×4 grid
+    # Build slot grid
     grid = (
         f"{row1[0]} {row1[1]} {row1[2]} {row1[3]}\n"
         f"➡ {row2[0]} {row2[1]} {row2[2]} {row2[3]} ⬅\n"
@@ -414,7 +397,7 @@ async def slots(ctx, bet: float):
     )
 
     embed = discord.Embed(
-        title="🎰 Slots (3×4 • 4 Symbols)",
+        title="🎰 Slots (Simple 2× System)",
         description=(
             f"**Bet:** {bet}\n"
             f"**Multiplier:** {multiplier:.2f}x\n"
@@ -435,6 +418,7 @@ async def slots(ctx, bet: float):
     })
 
     await ctx.send(embed=embed)
+
 
 
 # --------------------------------------------------------------
