@@ -14,8 +14,8 @@ DATA_FILE = "casino_data.json"
 # Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
 
-intents = discord.Intents.default()
-intents.message_content = True
+# ---------------------- INTENTS ---------------------- #
+intents = discord.Intents.all()   # <--- this enables EVERYTHING
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ---------------------- CONSTANTS ---------------------- #
