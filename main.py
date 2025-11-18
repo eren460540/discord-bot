@@ -334,7 +334,6 @@ async def guessthecolor(ctx, prize: str):
         break
 
 
-
 # --------------------------------------------------------------
 #                      WORK (10m–15m)
 # --------------------------------------------------------------
@@ -1535,9 +1534,6 @@ async def curse(ctx, member: discord.Member, amount: str = None):
     await ctx.send(embed=embed)
 
 
-
-
-
 # --------------------------------------------------------------
 #                      STATUS (admin-only)
 # --------------------------------------------------------------
@@ -1604,7 +1600,6 @@ async def status(ctx):
 
     embed.set_footer(text="Only visible to admins • Invisible rig remains secret 🔒")
     await ctx.send(embed=embed)
-
 
 
 # --------------------------------------------------------------
@@ -1684,8 +1679,6 @@ async def restorebackup(ctx):
     await ctx.send(embed=embed)
 
 
-
-
 # --------------------------------------------------------------
 #        GIVE GEMS TO EVERYONE WITH A ROLE (ALWAYS WORKS)
 # --------------------------------------------------------------
@@ -1726,6 +1719,101 @@ async def giverole(ctx, role: discord.Role, amount: str):
 
     await ctx.send(embed=embed)
 
+
+# --------------------------------------------------------------
+#                GIVE GEMS TO EVERYONE IN SERVER
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def giveall(ctx, amount: str):
+    """
+    Give gems to every human (non-bot) member in the server.
+    Guaranteed working using fetch_members().
+    """
+
+    parsed = parse_amount(amount, None, allow_all=False)
+    if parsed is None or parsed <= 0:
+        return await ctx.send("❌ Invalid amount.")
+
+    guild = ctx.guild
+    count = 0
+
+    # Fetch ALL members (forces Discord to send full list)
+    members = [m async for m in guild.fetch_members(limit=None)]
+
+    for member in members:
+        if member.bot:
+            continue
+        ensure_user(member.id)
+        data[str(member.id)]["gems"] += parsed
+        count += 1
+
+    save_data(data)
+
+    embed = discord.Embed(
+        title="💎 Gems Given To EVERYONE",
+        description=(
+            f"Distributed **{fmt(parsed)}** gems to **{count}** human members "
+            f"in **{ctx.guild.name}**!\n"
+            f"(Forced full member fetch successful)"
+        ),
+        color=galaxy_color()
+    )
+
+    await ctx.send(embed=embed)
+
+
+# --------------------------------------------------------------
+#                TAX COMMAND (REMOVE % FROM EVERYONE)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def tax(ctx, percent: float = 5.0):
+    """
+    Remove a percentage of gems from every human in the server.
+    Usage: !tax           -> 5% tax
+           !tax 2.5       -> 2.5% tax
+    """
+
+    if percent <= 0 or percent >= 100:
+        return await ctx.send("❌ Percent must be between **0 and 100**.")
+
+    guild = ctx.guild
+    taxed_members = 0
+    total_taxed = 0
+
+    members = [m async for m in guild.fetch_members(limit=None)]
+
+    for member in members:
+        if member.bot:
+            continue
+        ensure_user(member.id)
+        u = data[str(member.id)]
+        g = u.get("gems", 0)
+        if g <= 0:
+            continue
+        tax_amount = int(g * (percent / 100.0))
+        if tax_amount <= 0:
+            continue
+        u["gems"] = max(0, g - tax_amount)
+        total_taxed += tax_amount
+        taxed_members += 1
+
+    save_data(data)
+
+    embed = discord.Embed(
+        title="💸 Global Tax Applied",
+        description=(
+            f"Percent: **{percent:.2f}%**\n"
+            f"Affected members: **{taxed_members}**\n"
+            f"Total gems removed: **{fmt(total_taxed)}**"
+        ),
+        color=galaxy_color()
+    )
+    embed.set_footer(text="The galaxy treasury grows darker...")
+    await ctx.send(embed=embed)
+
+
 # --------------------------------------------------------------
 #                MANUAL BACKUP COMMAND
 # --------------------------------------------------------------
@@ -1741,7 +1829,6 @@ async def savebackup(ctx):
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
-
 
 
 # --------------------------------------------------------------
@@ -1798,6 +1885,8 @@ async def help(ctx):
             "**!admin give @user amount** — Give gems\n"
             "**!admin remove @user amount** — Remove gems\n"
             "**!giverole @role amount** — Give gems to all humans with a role\n"
+            "**!giveall amount** — Give gems to everyone in the server\n"
+            "**!tax [percent]** — Remove % gems from everyone (default 5%)\n"
             "**!dropbox @user amount** — Drop a claim-only mystery box\n"
             "**!guessthecolor amount** — Start infinite guessing event\n"
             "**!status** — View current rig status (admin only)\n"
@@ -1810,49 +1899,6 @@ async def help(ctx):
 
     embed.set_footer(text="Galaxy Casino • May luck be with you 💎🌌")
     await ctx.send(embed=embed)
-
-
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def giveall(ctx, amount: str):
-    """
-    Give gems to every human (non-bot) member in the server.
-    Guaranteed working using fetch_members().
-    """
-
-    parsed = parse_amount(amount, None, allow_all=False)
-    if parsed is None or parsed <= 0:
-        return await ctx.send("❌ Invalid amount.")
-
-    guild = ctx.guild
-    count = 0
-
-    # Fetch ALL members (forces Discord to send full list)
-    members = [m async for m in guild.fetch_members(limit=None)]
-
-    for member in members:
-        if member.bot:
-            continue
-        ensure_user(member.id)
-        data[str(member.id)]["gems"] += parsed
-        count += 1
-
-    save_data(data)
-
-    embed = discord.Embed(
-        title="💎 Gems Given To EVERYONE",
-        description=(
-            f"Distributed **{fmt(parsed)}** gems to **{count}** human members "
-            f"in **{ctx.guild.name}**!\n"
-            f"(Forced full member fetch successful)"
-        ),
-        color=galaxy_color()
-    )
-
-    await ctx.send(embed=embed)
-
-
-
 
 
 bot.run(TOKEN)
