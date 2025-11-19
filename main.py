@@ -105,16 +105,14 @@ if not os.path.exists(DATA_FILE):
 
 
 def load_data():
-with open(DATA_FILE, "r") as f:
-return json.load(f)
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
 
 
 def save_data(d):
-with open(DATA_FILE, "w") as f:
-json.dump(d, f, indent=4)
+    with open(DATA_FILE, "w") as f:
+        json.dump(d, f, indent=4)
 
-
-data = load_data()
 
 # ---------------------- HELPERS ---------------------- #
 
