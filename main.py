@@ -6,6 +6,7 @@ import random
 from discord.ui import Button, View
 import time
 import io
+import asyncio
 from datetime import datetime
 
 TOKEN = os.getenv("TOKEN")
@@ -1764,86 +1765,6 @@ async def lottery(ctx, ticket_price: str, duration: str):
             add_history(winner_id, {
                 "game": "lottery",
                 "bet": 0,
-                "result": "win",
-                "earned": prize,
-                "timestamp": time.time()
-            })
-
-            embed = discord.Embed(
-                title="🎟 Lottery Ended",
-                description=(
-                    f"🎉 Winner: <@{winner_id}>\n"
-                    f"💰 Prize: **{fmt(prize)}** gems\n"
-                    f"🎫 Total tickets: **{total_tickets}**"
-                ),
-                color=discord.Color.green()
-            )
-            try:
-                await self.message.edit(embed=embed, view=self)
-            except Exception:
-                pass
-
-            await channel.send(
-                f"🎉 Congrats <@{winner_id}>! You won **{fmt(prize)}** gems in the lottery!"
-            )
-
-    view = LotteryView(price, end_ts, ctx, seconds)
-
-    class BuyTicket(Button):
-        def __init__(self):
-            super().__init__(label="Buy 🎟", style=discord.ButtonStyle.success)
-
-        async def callback(self, interaction: discord.Interaction):
-            user = interaction.user
-            ensure_user(user.id)
-            u = data[str(user.id)]
-
-            if u["gems"] < view.ticket_price:
-                return await interaction.response.send_message(
-                    "❌ You don't have enough gems for a ticket.",
-                    ephemeral=True
-                )
-
-            u["gems"] -= view.ticket_price
-            save_data(data)
-
-            view.tickets[user.id] = view.tickets.get(user.id, 0) + 1
-
-            embed = make_lottery_embed(view.ticket_price, view, view.end_ts)
-            try:
-                await interaction.response.edit_message(embed=embed, view=view)
-            except Exception:
-                await interaction.response.send_message("✅ Ticket bought!", ephemeral=True)
-
-    class ShowParticipants(Button):
-        def __init__(self):
-            super().__init__(label="Participants 📜", style=discord.ButtonStyle.secondary)
-
-        async def callback(self, interaction: discord.Interaction):
-            if not view.tickets:
-                return await interaction.response.send_message(
-                    "📜 No tickets bought yet.",
-                    ephemeral=True
-                )
-
-            total = sum(view.tickets.values())
-            lines = []
-            for uid, count in view.tickets.items():
-                chance = (count / total) * 100 if total > 0 else 0
-                lines.append(f"<@{uid}> — {count} tickets ({chance:.1f}%)")
-
-            text = "\n".join(lines)
-            await interaction.response.send_message(
-                f"🎟 **Lottery participants:**\n{text}",
-                ephemeral=True
-            )
-
-    view.add_item(BuyTicket())
-    view.add_item(ShowParticipants())
-
-    embed = make_lottery_embed(price, view, end_ts)
-    msg = await ctx.send(embed=embed, view=view)
-    view.message = msg
 
 
 # --------------------------------------------------------------
@@ -1878,7 +1799,200 @@ async def leaderboard(ctx):
     embed.set_footer(text="Top 10 richest players in the galaxy 💰")
     await ctx.send(embed=embed)
 
+# --------------------------------------------------------------
+#                      LOTTERY (ticket system)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def lottery(ctx, ticket_price: str, duration: str):
+    """
+    Start a lottery.
+    Usage: !lottery 50m 10m
+    - ticket_price: 50m, 10m, 1b, etc.
+    - duration: 30s, 10m, 2h, 1d
+    Users buy tickets via button, pot +10% goes to winner.
+    Ends exactly after the given duration (not on inactivity).
+    """
+    price = parse_amount(ticket_price, None, allow_all=False)
+    if price is None or price <= 0:
+        return await ctx.send("❌ Invalid ticket price.")
 
+    seconds = parse_duration(duration)
+    if seconds is None:
+        return await ctx.send("❌ Invalid duration. Use like `30s`, `10m`, `2h`, `1d`.")
+    if seconds > 7 * 24 * 3600:
+        return await ctx.send("❌ Maximum duration is 7 days.")
+
+    end_ts = int(time.time()) + seconds
+
+    # --- Embed creator ---
+    def make_lottery_embed(price_value, view_obj, end_timestamp):
+        total_tickets = sum(view_obj.tickets.values())
+        pot = int(price_value * total_tickets)
+        prize = int(pot * (1 + LOTTERY_BONUS)) if pot > 0 else 0
+        desc = (
+            f"🎟 Ticket price: **{fmt(price_value)}** gems\n"
+            f"💰 Current pot: **{fmt(pot)}** gems\n"
+            f"🏆 Winner prize (+10%): **{fmt(prize)}** gems\n"
+            f"🎫 Total tickets: **{total_tickets}**\n"
+            f"⏳ Ends: <t:{int(end_timestamp)}:R>\n\n"
+            "Press **Buy** to get a ticket.\n"
+            "More tickets = higher win chance!"
+        )
+        e = discord.Embed(
+            title="🎟 Galaxy Lottery",
+            description=desc,
+            color=galaxy_color()
+        )
+        return e
+
+    # --- Lottery View ---
+    class LotteryView(View):
+        def __init__(self, price_value, end_timestamp, ctx_obj):
+            super().__init__(timeout=None)  # IMPORTANT: no timeout
+            self.ticket_price = price_value
+            self.end_ts = end_timestamp
+            self.ctx = ctx_obj
+            self.tickets = {}  # user_id -> count
+            self.message = None
+            self.finished = False  # IMPORTANT: prevents double-finish
+
+        async def finish(self):
+            if self.finished:
+                return
+            self.finished = True
+
+            if self.message is None:
+                return
+
+            channel = self.ctx.channel
+            total_tickets = sum(self.tickets.values())
+
+            # Disable all buttons
+            for child in self.children:
+                child.disabled = True
+
+            # No tickets?
+            if total_tickets == 0:
+                embed = make_lottery_embed(self.ticket_price, self, self.end_ts)
+                embed.title = "🎟 Lottery Ended"
+                embed.description += "\n\n❌ No tickets were bought."
+                embed.color = discord.Color.red()
+                try:
+                    await self.message.edit(embed=embed, view=self)
+                except Exception:
+                    pass
+                return await channel.send("❌ Lottery ended — nobody bought a ticket.")
+
+            # Weighted draw
+            entries = []
+            for uid, count in self.tickets.items():
+                entries.extend([uid] * count)
+
+            winner_id = random.choice(entries)
+            prize = int(self.ticket_price * total_tickets * (1 + LOTTERY_BONUS))
+
+            ensure_user(winner_id)
+            data[str(winner_id)]["gems"] += prize
+            save_data(data)
+
+            add_history(winner_id, {
+                "game": "lottery",
+                "bet": 0,
+                "result": "win",
+                "earned": prize,
+                "timestamp": time.time()
+            })
+
+            # Winner embed
+            embed = discord.Embed(
+                title="🎟 Lottery Ended",
+                description=(
+                    f"🎉 Winner: <@{winner_id}>\n"
+                    f"💰 Prize: **{fmt(prize)}** gems\n"
+                    f"🎫 Total tickets: **{total_tickets}**"
+                ),
+                color=discord.Color.green()
+            )
+            try:
+                await self.message.edit(embed=embed, view=self)
+            except Exception:
+                pass
+
+            await channel.send(
+                f"🎉 Congrats <@{winner_id}>! You won **{fmt(prize)}** gems in the lottery!"
+            )
+
+    view = LotteryView(price, end_ts, ctx)
+
+    # --- Buy Ticket Button ---
+    class BuyTicket(Button):
+        def __init__(self):
+            super().__init__(label="Buy 🎟", style=discord.ButtonStyle.success)
+
+        async def callback(self, interaction: discord.Interaction):
+            user = interaction.user
+            ensure_user(user.id)
+            u = data[str(user.id)]
+
+            if u["gems"] < view.ticket_price:
+                return await interaction.response.send_message(
+                    "❌ You don't have enough gems for a ticket.",
+                    ephemeral=True
+                )
+
+            u["gems"] -= view.ticket_price
+            save_data(data)
+
+            view.tickets[user.id] = view.tickets.get(user.id, 0) + 1
+
+            embed = make_lottery_embed(view.ticket_price, view, view.end_ts)
+
+            try:
+                await interaction.response.edit_message(embed=embed, view=view)
+            except Exception:
+                await interaction.response.send_message("✅ Ticket bought!", ephemeral=True)
+
+    # --- Participants Button ---
+    class ShowParticipants(Button):
+        def __init__(self):
+            super().__init__(label="Participants 📜", style=discord.ButtonStyle.secondary)
+
+        async def callback(self, interaction: discord.Interaction):
+            if not view.tickets:
+                return await interaction.response.send_message(
+                    "📜 No tickets bought yet.",
+                    ephemeral=True
+                )
+
+            total = sum(view.tickets.values())
+            lines = []
+            for uid, count in view.tickets.items():
+                chance = (count / total) * 100 if total > 0 else 0
+                lines.append(f"<@{uid}> — {count} tickets ({chance:.1f}%)")
+
+            await interaction.response.send_message(
+                f"🎟 **Lottery participants:**\n" + "\n".join(lines),
+                ephemeral=True
+            )
+
+    # Add buttons to view
+    view.add_item(BuyTicket())
+    view.add_item(ShowParticipants())
+
+    # Send panel
+    embed = make_lottery_embed(price, view, end_ts)
+    msg = await ctx.send(embed=embed, view=view)
+    view.message = msg
+
+    # --- Exact timer ---
+    async def lottery_timer():
+        await asyncio.sleep(seconds)
+        if not view.finished:
+            await view.finish()
+
+    asyncio.create_task(lottery_timer())
+    
 # --------------------------------------------------------------
 #                      HISTORY
 # --------------------------------------------------------------
