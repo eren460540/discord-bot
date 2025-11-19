@@ -98,9 +98,10 @@ CHEST_CONFIG = {
 CHEST_ORDER = ["common", "rare", "epic", "legendary", "mythic", "galaxy"]
 
 # ---------------------- DATA MANAGEMENT ---------------------- #
+
 if not os.path.exists(DATA_FILE):
-with open(DATA_FILE, "w") as f:
-json.dump({}, f)
+    with open(DATA_FILE, "w") as f:
+        json.dump({}, f)
 
 
 def load_data():
