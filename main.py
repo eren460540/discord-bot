@@ -118,31 +118,36 @@ def save_data(d):
 
 
 def fmt(n):
-"""
-Format numbers like:
-1_234 -> "1.23k"
-1_000_000 -> "1m"
-1_250_000_000 -> "1.25b"
-50 -> "50"
-"""
-try:
-n = int(round(float(n)))
-except Exception:
-return str(n)
+    """
+    Format numbers like:
+    1_234 -> "1.23k"
+    1_000_000 -> "1m"
+    1_250_000_000 -> "1.25b"
+    50 -> "50"
+    """
+    try:
+        n = int(round(float(n)))
+    except Exception:
+        return str(n)
 
-if n >= 1_000_000_000:
-v = n / 1_000_000_000
-s = f"{v:.2f}".rstrip("0").rstrip(".")
-return f"{s}b"
-if n >= 1_000_000:
-v = n / 1_000_000
-s = f"{v:.2f}".rstrip("0").rstrip(".")
-return f"{s}m"
-if n >= 1_000:
-v = n / 1_000
-s = f"{v:.2f}".rstrip("0").rstrip(".")
-return f"{s}k"
-return str(n)
+    if n >= 1_000_000_000:
+        v = n / 1_000_000_000
+        s = f"{v:.2f}".rstrip("0").rstrip(".")
+        return f"{s}b"
+
+    if n >= 1_000_000:
+        v = n / 1_000_000
+        s = f"{v:.2f}".rstrip("0").rstrip(".")
+        return f"{s}m"
+
+    if n >= 1_000:
+        v = n / 1_000
+        s = f"{v:.2f}".rstrip("0").rstrip(".")
+        return f"{s}k"
+
+    return str(n)
+
+
 
 
 GALAXY_COLORS = [
