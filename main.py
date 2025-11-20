@@ -6,6 +6,7 @@ import random
 from discord.ui import Button, View
 import time
 import io
+import asyncio
 from datetime import datetime
 
 TOKEN = os.getenv("TOKEN")
@@ -1717,24 +1718,32 @@ async def lottery(ctx, ticket_price: str, duration: str):
 
     class LotteryView(View):
         def __init__(self, price_value, end_timestamp, ctx_obj, timeout_value):
-            super().__init__(timeout=timeout_value)
+            # Discord max timeout is 1 day (86400s), so clamp to that
+            super().__init__(timeout=min(timeout_value, 86400))
             self.ticket_price = price_value
             self.end_ts = end_timestamp
             self.ctx = ctx_obj
-            self.tickets = {}  # user_id -> count
-            self.message = None
+            self.tickets: dict[int, int] = {}  # user_id -> count
+            self.message: discord.Message | None = None
+            self.finished: bool = False       # prevent double-finish
 
         async def on_timeout(self):
+            # View timeout (max 1 day). We still call finish,
+            # but finish() checks self.finished to avoid double calls.
             await self.finish()
 
         async def finish(self):
+            if self.finished:
+                return
+            self.finished = True
+
             if self.message is None:
                 return
 
             channel = self.ctx.channel
             total_tickets = sum(self.tickets.values())
 
-            # disable all buttons
+            # Disable all buttons
             for child in self.children:
                 child.disabled = True
 
@@ -1751,7 +1760,7 @@ async def lottery(ctx, ticket_price: str, duration: str):
                 return
 
             # Build weighted list of entries
-            entries = []
+            entries: list[int] = []
             for uid, count in self.tickets.items():
                 entries.extend([uid] * count)
             winner_id = random.choice(entries)
@@ -1845,6 +1854,13 @@ async def lottery(ctx, ticket_price: str, duration: str):
     msg = await ctx.send(embed=embed, view=view)
     view.message = msg
 
+    # Manual timer to guarantee finish at the correct time,
+    # even if the View timeout is shorter.
+    async def lottery_timer():
+        await asyncio.sleep(seconds)
+        await view.finish()
+
+    bot.loop.create_task(lottery_timer())
 
 # --------------------------------------------------------------
 #                      LEADERBOARD
@@ -2028,20 +2044,27 @@ async def dropbox(ctx, member: discord.Member, amount: str):
     await ctx.send(embed=embed, view=view)
 
 
-# --------------------------------------------------------------
+ # --------------------------------------------------------------
 #                      BLESS / CURSE (invisible rig)
 # --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def bless(ctx, member: discord.Member, amount: str = None):
-    ensure_user(member.id)
-    u = data[str(member.id)]
+async def bless(ctx, user_id: int, amount: str = None):
+    """
+    Usage:
+      !bless 1234567890          -> infinite bless
+      !bless 1234567890 5        -> 5 blessed games
+      !bless 1234567890 off      -> turn off bless
+    """
+    ensure_user(user_id)
+    u = data[str(user_id)]
 
     if amount is None:
+        # infinite bless
         u["bless_infinite"] = True
     else:
         a = amount.lower()
-        if a == "off" or a == "0":
+        if a in ("off", "0"):
             u["bless_infinite"] = False
             u["bless_charges"] = 0
         else:
@@ -2057,23 +2080,29 @@ async def bless(ctx, member: discord.Member, amount: str = None):
     save_data(data)
     embed = discord.Embed(
         title="✨ Galaxy Bless",
-        description=f"{member.mention} has been adjusted for upcoming games.",
+        description=f"User ID `{user_id}` has been adjusted for upcoming games.",
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
 
-
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def curse(ctx, member: discord.Member, amount: str = None):
-    ensure_user(member.id)
-    u = data[str(member.id)]
+async def curse(ctx, user_id: int, amount: str = None):
+    """
+    Usage:
+      !curse 1234567890          -> infinite curse
+      !curse 1234567890 5        -> 5 cursed games
+      !curse 1234567890 off      -> turn off curse
+    """
+    ensure_user(user_id)
+    u = data[str(user_id)]
 
     if amount is None:
+        # infinite curse
         u["curse_infinite"] = True
     else:
         a = amount.lower()
-        if a == "off" or a == "0":
+        if a in ("off", "0"):
             u["curse_infinite"] = False
             u["curse_charges"] = 0
         else:
@@ -2089,11 +2118,10 @@ async def curse(ctx, member: discord.Member, amount: str = None):
     save_data(data)
     embed = discord.Embed(
         title="💀 Galaxy Adjustment",
-        description=f"{member.mention} has been adjusted for upcoming games.",
+        description=f"User ID `{user_id}` has been adjusted for upcoming games.",
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
-
 
 # --------------------------------------------------------------
 #                      STATUS (admin-only)
