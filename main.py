@@ -391,37 +391,63 @@ async def on_ready():
 
 
 # --------------------------------------------------------------
-#                      LISTING BUTTONS
+#                      SELL COMMAND
 # --------------------------------------------------------------
 
+LISTING_CHANNEL_ID = 1442936279644897381  # marketplace channel
+
+
+def short(n: int) -> str:
+    if n >= 1_000_000_000:
+        return f"{n/1_000_000_000:.2f}".rstrip("0").rstrip(".") + "b"
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.2f}".rstrip("0").rstrip(".") + "m"
+    if n >= 1_000:
+        return f"{n/1_000:.2f}".rstrip("0").rstrip(".") + "k"
+    return str(n)
+
+
+def parse_market_number(value: str) -> int:
+    value = value.strip().replace(",", "").lower()
+
+    multipliers = {
+        "k": 1_000,
+        "m": 1_000_000,
+        "b": 1_000_000_000,
+        "t": 1_000_000_000_000
+    }
+
+    if value[-1] in multipliers:
+        number_part = value[:-1]
+        return int(float(number_part) * multipliers[value[-1]])
+
+    return int(float(value))
+
+
 class ListingButtons(View):
-    def __init__(self, owner_id: int, price_raw: int, income_display: str, price_display: str, item_name: str):
+    def __init__(self, owner_id: int, price_raw: int, income_display: str, price_display: str, name: str):
         super().__init__(timeout=None)
         self.owner_id = owner_id
         self.price_raw = price_raw
         self.income_display = income_display
         self.price_display = price_display
-        self.item_name = item_name  # NEW
+        self.name = name
 
-    # BUY BUTTON
-    @discord.ui.button(label="Buy", emoji="🛒", style=discord.ButtonStyle.blurple)
+    @discord.ui.button(label="Buy", emoji="🛒", style=discord.ButtonStyle.green)
     async def buy(self, interaction: discord.Interaction, button: Button):
-
         buyer = interaction.user
         ensure_user(buyer.id)
         ensure_user(self.owner_id)
 
         u = data[str(buyer.id)]
 
-        required = self.price_raw * 50  # Price × 50
+        required = self.price_raw * 50
 
         if u["gems"] < required:
             return await interaction.response.send_message(
-                f"❌ You need **{fmt(required)}** gems to buy this.",
-                ephemeral=True
+                f"❌ You need **{fmt(required)}** gems to buy this.", ephemeral=True
             )
 
-        # Deduct gems
         u["gems"] -= required
         save_data(data)
 
@@ -430,132 +456,88 @@ class ListingButtons(View):
 
         if seller is None:
             return await interaction.response.send_message(
-                "❌ Seller not found.",
-                ephemeral=True
+                "❌ Seller not found.", ephemeral=True
             )
 
-        # Create ticket
-        channel_name = f"ticket-{self.price_display}-{self.income_display}".replace("/", "")
+        channel_name = f"ticket-{self.name}-{self.price_display}-{self.income_display}"
+        channel_name = channel_name.lower().replace("/", "").replace(" ", "-")
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            buyer: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            seller: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            buyer: discord.PermissionOverwrite(view_channel=True),
+            seller: discord.PermissionOverwrite(view_channel=True),
         }
 
-        # Add staff with Manage Server
         for member in guild.members:
             if member.guild_permissions.manage_guild:
-                overwrites[member] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True
-                )
+                overwrites[member] = discord.PermissionOverwrite(view_channel=True)
 
-        ticket = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+        ticket = await guild.create_text_channel(
+            name=channel_name,
+            overwrites=overwrites
+        )
 
         await interaction.response.send_message(
-            f"✅ Purchase successful! Ticket created: {ticket.mention}",
+            f"✅ Ticket created: {ticket.mention}",
             ephemeral=True
         )
 
         await ticket.send(
-            f"📨 **New Ticket Created**\n"
-            f"Buyer: {buyer.mention}\n"
-            f"Seller: {seller.mention}\n"
-            f"Item: **{self.item_name}**\n"
-            f"Buyer Paid: **{fmt(required)}** gems\n"
+            f"📨 **New Marketplace Ticket**\n"
+            f"**Buyer:** {buyer.mention}\n"
+            f"**Seller:** {seller.mention}\n"
+            f"**Item:** `{self.name}`\n"
+            f"**Price Paid:** **{fmt(required)}** gems\n"
         )
 
-    # STAFF TOOLS BUTTON
-    @discord.ui.button(label="Staff Tools", style=discord.ButtonStyle.grey)
-    async def staff(self, interaction: discord.Interaction, button: Button):
-
-        if not interaction.user.guild_permissions.manage_guild:
-            return await interaction.response.send_message(
-                "❌ You do not have permission to use Staff Tools.",
-                ephemeral=True
-            )
-
-        required_cost = self.price_raw * 50
-
-        embed = discord.Embed(title="🛠️ Staff Panel", color=discord.Color.dark_grey())
-        embed.add_field(name="Item Name", value=self.item_name, inline=False)
-        embed.add_field(name="Seller ID", value=str(self.owner_id), inline=False)
-        embed.add_field(name="Price", value=self.price_display, inline=True)
-        embed.add_field(name="Income", value=self.income_display + "/s", inline=True)
-        embed.add_field(name="Buyer Cost", value=f"{fmt(required_cost)} gems", inline=False)
-        embed.add_field(name="Listing Message ID", value=str(interaction.message.id), inline=False)
-        embed.set_footer(text="Only visible to staff.")
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # CANCEL BUTTON
-    @discord.ui.button(label="Cancel (Listing Owner Only)", emoji="❌", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="Cancel", emoji="❌", style=discord.ButtonStyle.red)
     async def cancel(self, interaction: discord.Interaction, button: Button):
-
         if interaction.user.id != self.owner_id:
             return await interaction.response.send_message(
-                "❌ Only the listing owner can cancel this.",
-                ephemeral=True
+                "❌ Only the owner can cancel.", ephemeral=True
             )
 
         await interaction.message.delete()
-        await interaction.response.send_message("Listing cancelled.", ephemeral=True)
+        await interaction.response.send_message("Listing removed.", ephemeral=True)
 
-
-# --------------------------------------------------------------
-#                      SELL COMMAND
-# --------------------------------------------------------------
 
 @bot.command()
-async def sell(ctx, *args):
+async def sell(ctx, name: str, income: str, price: str):
     """
-    FINAL SELL FORMAT:
-    !sell <item name...> <income> <price>
     Example:
-    !sell Los Mobilis 66m 70m
+    !sell LosMobis 5m 10m
     """
 
-    if len(args) < 3:
-        return await ctx.send("❌ Usage: `!sell <name...> <income> <price>`")
-
-    # Last two args are ALWAYS income & price
-    income_raw = args[-2]
-    price_raw = args[-1]
-
-    # Everything before that is the name
-    item_name = " ".join(args[:-2])
-
-    # Convert numbers
     try:
-        income_val = parse_market_number(income_raw)
-        price_val = parse_market_number(price_raw)
+        income_val = parse_market_number(income)
+        price_val = parse_market_number(price)
     except:
         return await ctx.send("❌ Invalid number. Use formats like: 5m, 10m, 250k, 1b")
 
-    # Formatting
     income_disp = short(income_val) + "/s"
     price_disp = short(price_val)
 
-    # Embed
-    embed = discord.Embed(title="New anonymous listing!", color=discord.Color.blue())
-    embed.add_field(name="Brainrot Name:", value=item_name, inline=False)
-    embed.add_field(name="Income:", value=income_disp, inline=False)
-    embed.add_field(name="💵", value=f"{price_disp}", inline=False)
+    embed = discord.Embed(
+        title="New Listing!",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Name", value=name, inline=False)
+    embed.add_field(name="Income", value=income_disp, inline=False)
+    embed.add_field(name="Price", value=price_disp, inline=False)
     embed.set_footer(text="Use !sell to create a listing.")
 
-    channel = bot.get_channel(LISTING_CHANNEL_ID)
-
-    # Buttons with STAFF PANEL + name included
     view = ListingButtons(
         owner_id=ctx.author.id,
         price_raw=price_val,
-        income_display=income_disp.replace("/", ""),
+        income_display=short(income_val),
         price_display=price_disp,
-        item_name=item_name
+        name=name
     )
 
+    channel = bot.get_channel(LISTING_CHANNEL_ID)
     await channel.send(embed=embed, view=view)
-    await ctx.send("✅ Listing successfully created!")
+    await ctx.send("✅ Listing created!")
+
 
 
 
