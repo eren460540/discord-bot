@@ -391,10 +391,25 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
+def short(n: int) -> str:
+    """Converts long numbers into short ones like 15000000 -> 15m"""
+    try:
+        n = int(n)
+    except:
+        return str(n)
+
+    if n >= 1_000_000_000:
+        return f"{n/1_000_000_000:.2f}".rstrip("0").rstrip(".") + "b"
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.2f}".rstrip("0").rstrip(".") + "m"
+    if n >= 1_000:
+        return f"{n/1000:.2f}".rstrip("0").rstrip(".") + "k"
+    return str(n)
 
 
 
-    # --------------------------------------------------------------
+
+# --------------------------------------------------------------
 #                      SELL COMMAND (Final)
 # --------------------------------------------------------------
 
