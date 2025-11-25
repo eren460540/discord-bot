@@ -15,6 +15,22 @@ DATA_FILE = "casino_data.json"
 # Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
 
+
+
+@bot.command()
+async def testmarket(ctx):
+    ch = bot.get_channel(1442936279644897381)
+    if ch is None:
+        return await ctx.send("❌ Channel NOT found in guild.\nReason: Wrong ID or bot can't see it.")
+
+    try:
+        await ch.send("✅ Test message sent to market channel!")
+        await ctx.send("👍 It worked. Bot CAN access the channel.")
+    except Exception as e:
+        await ctx.send(f"❌ Bot CANNOT send messages.\nError: `{e}`")
+
+
+
 # ---------------------- INTENTS ---------------------- #
 intents = discord.Intents.all()   # <--- this enables EVERYTHING
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
