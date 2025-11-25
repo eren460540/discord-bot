@@ -390,8 +390,9 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
+
 # --------------------------------------------------------------
-#                      SELL COMMAND
+#                      SELL COMMAND  (MULTI-WORD NAME)
 # --------------------------------------------------------------
 
 def parse_market_number(value: str) -> int:
@@ -426,12 +427,11 @@ class ListingButtons(View):
         ensure_user(self.owner_id)
 
         u = data[str(buyer.id)]
-        required = self.price_raw * 50  
+        required = self.price_raw * 50
 
         if u["gems"] < required:
             return await interaction.response.send_message(
-                f"❌ You need **{fmt(required)}** gems to buy this.",
-                ephemeral=True
+                f"❌ You need **{fmt(required)}** gems to buy this.", ephemeral=True
             )
 
         u["gems"] -= required
@@ -443,7 +443,7 @@ class ListingButtons(View):
         if seller is None:
             return await interaction.response.send_message("❌ Seller not found.", ephemeral=True)
 
-        channel_name = f"ticket-{self.price_display}-{self.income_display}".replace("/", "")
+        channel_name = f"ticket-{self.price_display}-{self.income_display}".replace("/", "").replace(" ", "-")
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -453,14 +453,9 @@ class ListingButtons(View):
 
         for member in guild.members:
             if member.guild_permissions.manage_guild:
-                overwrites[member] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True
-                )
+                overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-        ticket = await guild.create_text_channel(
-            name=channel_name,
-            overwrites=overwrites
-        )
+        ticket = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
 
         await interaction.response.send_message(
             f"✅ Ticket created: {ticket.mention}",
@@ -471,8 +466,8 @@ class ListingButtons(View):
             f"📨 **Marketplace Ticket Created**\n"
             f"**Buyer:** {buyer.mention}\n"
             f"**Seller:** {seller.mention}\n"
-            f"**Item:** {self.name}\n"
-            f"**Price Paid:** {fmt(required)} gems"
+            f"**Item:** `{self.name}`\n"
+            f"**Paid:** **{fmt(required)}** gems\n"
         )
 
     @discord.ui.button(label="Staff Tools", style=discord.ButtonStyle.grey)
@@ -481,26 +476,41 @@ class ListingButtons(View):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
 
         await interaction.response.send_message(
-            f"🔧 Staff tools for **{self.name}** are not implemented yet.",
+            f"🔧 Staff tools for **{self.name}** coming soon.",
             ephemeral=True
         )
 
     @discord.ui.button(label="❌ Cancel (Listing Owner Only)", style=discord.ButtonStyle.red)
     async def cancel(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("❌ Only the listing owner can cancel.", ephemeral=True)
+            return await interaction.response.send_message("❌ Only the owner can cancel.", ephemeral=True)
 
         await interaction.message.delete()
         await interaction.response.send_message("🗑 Listing removed.", ephemeral=True)
 
 
 @bot.command()
-async def sell(ctx, name: str, income: str, price: str):
+async def sell(ctx, *, args):
+    """
+    Multi-word name support
+    !sell Los Comb 15m 15m
+    !sell Ultra Mega Brainrot 50m 100m
+    """
+
+    parts = args.split()
+
+    if len(parts) < 3:
+        return await ctx.send("❌ Usage: `!sell <name...> <income> <price>`")
+
+    price_raw = parts[-1]
+    income_raw = parts[-2]
+    name = " ".join(parts[:-2])
+
     try:
-        income_val = parse_market_number(income)
-        price_val = parse_market_number(price)
+        price_val = parse_market_number(price_raw)
+        income_val = parse_market_number(income_raw)
     except:
-        return await ctx.send("❌ Invalid number. Use formats like: 5m, 10m, 250k, 1b")
+        return await ctx.send("❌ Invalid number. Use: 5m, 10m, 250k, 1b, etc.")
 
     income_disp = short(income_val) + "/s"
     price_disp = short(price_val)
@@ -515,10 +525,11 @@ async def sell(ctx, name: str, income: str, price: str):
     embed.set_footer(text="Use !sell to create a listing.")
 
     channel = bot.get_channel(1442936279644897381)
+
     view = ListingButtons(
         owner_id=ctx.author.id,
         price_raw=price_val,
-        income_display=income_disp.replace("/s", ""),
+        income_display=short(income_val),
         price_display=price_disp,
         name=name
     )
