@@ -408,6 +408,29 @@ def short(n: int) -> str:
 
 
 
+def parse_market_number(value: str) -> int:
+    """
+    Parse marketplace numbers: 5m, 10m, 250k, 1b, 66m, 2.5m, 10000000
+    """
+    value = value.strip().replace(",", "").lower()
+
+    multipliers = {
+        "k": 1_000,
+        "m": 1_000_000,
+        "b": 1_000_000_000,
+        "t": 1_000_000_000_000
+    }
+
+    # Ends with letter (5m, 250k…)
+    if value[-1] in multipliers:
+        return int(float(value[:-1]) * multipliers[value[-1]])
+
+    # Pure number (10000000)
+    return int(float(value))
+
+
+
+
 
 # --------------------------------------------------------------
 #                      SELL COMMAND (UPDATED)
