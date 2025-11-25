@@ -391,76 +391,169 @@ async def on_ready():
 
 
 # --------------------------------------------------------------
-#                      SELL SYSTEM (FINAL)
+#                      LISTING BUTTONS
+# --------------------------------------------------------------
+
+class ListingButtons(View):
+    def __init__(self, owner_id: int, price_raw: int, income_display: str, price_display: str, item_name: str):
+        super().__init__(timeout=None)
+        self.owner_id = owner_id
+        self.price_raw = price_raw
+        self.income_display = income_display
+        self.price_display = price_display
+        self.item_name = item_name  # NEW
+
+    # BUY BUTTON
+    @discord.ui.button(label="Buy", emoji="🛒", style=discord.ButtonStyle.blurple)
+    async def buy(self, interaction: discord.Interaction, button: Button):
+
+        buyer = interaction.user
+        ensure_user(buyer.id)
+        ensure_user(self.owner_id)
+
+        u = data[str(buyer.id)]
+
+        required = self.price_raw * 50  # Price × 50
+
+        if u["gems"] < required:
+            return await interaction.response.send_message(
+                f"❌ You need **{fmt(required)}** gems to buy this.",
+                ephemeral=True
+            )
+
+        # Deduct gems
+        u["gems"] -= required
+        save_data(data)
+
+        guild = interaction.guild
+        seller = guild.get_member(self.owner_id)
+
+        if seller is None:
+            return await interaction.response.send_message(
+                "❌ Seller not found.",
+                ephemeral=True
+            )
+
+        # Create ticket
+        channel_name = f"ticket-{self.price_display}-{self.income_display}".replace("/", "")
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            buyer: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            seller: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        }
+
+        # Add staff with Manage Server
+        for member in guild.members:
+            if member.guild_permissions.manage_guild:
+                overwrites[member] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
+        ticket = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+
+        await interaction.response.send_message(
+            f"✅ Purchase successful! Ticket created: {ticket.mention}",
+            ephemeral=True
+        )
+
+        await ticket.send(
+            f"📨 **New Ticket Created**\n"
+            f"Buyer: {buyer.mention}\n"
+            f"Seller: {seller.mention}\n"
+            f"Item: **{self.item_name}**\n"
+            f"Buyer Paid: **{fmt(required)}** gems\n"
+        )
+
+    # STAFF TOOLS BUTTON
+    @discord.ui.button(label="Staff Tools", style=discord.ButtonStyle.grey)
+    async def staff(self, interaction: discord.Interaction, button: Button):
+
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message(
+                "❌ You do not have permission to use Staff Tools.",
+                ephemeral=True
+            )
+
+        required_cost = self.price_raw * 50
+
+        embed = discord.Embed(title="🛠️ Staff Panel", color=discord.Color.dark_grey())
+        embed.add_field(name="Item Name", value=self.item_name, inline=False)
+        embed.add_field(name="Seller ID", value=str(self.owner_id), inline=False)
+        embed.add_field(name="Price", value=self.price_display, inline=True)
+        embed.add_field(name="Income", value=self.income_display + "/s", inline=True)
+        embed.add_field(name="Buyer Cost", value=f"{fmt(required_cost)} gems", inline=False)
+        embed.add_field(name="Listing Message ID", value=str(interaction.message.id), inline=False)
+        embed.set_footer(text="Only visible to staff.")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # CANCEL BUTTON
+    @discord.ui.button(label="Cancel (Listing Owner Only)", emoji="❌", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: Button):
+
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message(
+                "❌ Only the listing owner can cancel this.",
+                ephemeral=True
+            )
+
+        await interaction.message.delete()
+        await interaction.response.send_message("Listing cancelled.", ephemeral=True)
+
+
+# --------------------------------------------------------------
+#                      SELL COMMAND
 # --------------------------------------------------------------
 
 @bot.command()
-async def sell(ctx, *, args=None):
+async def sell(ctx, *args):
     """
-    New SELL command (no colons):
+    FINAL SELL FORMAT:
+    !sell <item name...> <income> <price>
     Example:
-    !sell name LosMobilis income 66m price 70m traits Taco mutation Omega
+    !sell Los Mobilis 66m 70m
     """
 
-    if args is None:
-        return await ctx.send(
-            "❌ Usage:\n"
-            "`!sell name <name> income <income> price <price> [traits <t>] [mutation <m>]`"
-        )
+    if len(args) < 3:
+        return await ctx.send("❌ Usage: `!sell <name...> <income> <price>`")
 
-    import re
+    # Last two args are ALWAYS income & price
+    income_raw = args[-2]
+    price_raw = args[-1]
 
-    # REGEX WITHOUT COLONS
-    name = re.search(r"name\s+([^\s]+)", args, re.I)
-    income = re.search(r"income\s+([0-9a-zA-Z,.]+)", args, re.I)
-    price = re.search(r"price\s+([0-9a-zA-Z,.]+)", args, re.I)
-    traits = re.search(r"traits\s+([^\s]+)", args, re.I)
-    mutation = re.search(r"mutation\s+([^\s]+)", args, re.I)
-
-    if not name or not income or not price:
-        return await ctx.send(
-            "❌ Missing required fields.\n"
-            "Usage: `!sell name X income Y price Z`"
-        )
-
-    # Extract values
-    name = name.group(1)
-    income_raw = income.group(1)
-    price_raw = price.group(1)
-    traits = traits.group(1) if traits else "None"
-    mutation = mutation.group(1) if mutation else "None"
+    # Everything before that is the name
+    item_name = " ".join(args[:-2])
 
     # Convert numbers
-    income_val = parse_market_number(income_raw)
-    price_val = parse_market_number(price_raw)
+    try:
+        income_val = parse_market_number(income_raw)
+        price_val = parse_market_number(price_raw)
+    except:
+        return await ctx.send("❌ Invalid number. Use formats like: 5m, 10m, 250k, 1b")
 
     # Formatting
     income_disp = short(income_val) + "/s"
     price_disp = short(price_val)
 
     # Embed
-    embed = discord.Embed(
-        title="New anonymous listing!",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Brainrot Name:", value=name, inline=False)
+    embed = discord.Embed(title="New anonymous listing!", color=discord.Color.blue())
+    embed.add_field(name="Brainrot Name:", value=item_name, inline=False)
     embed.add_field(name="Income:", value=income_disp, inline=False)
-    embed.add_field(name="Traits:", value=traits, inline=False)
-    embed.add_field(name="Mutation:", value=mutation, inline=False)
     embed.add_field(name="💵", value=f"{price_disp}", inline=False)
     embed.set_footer(text="Use !sell to create a listing.")
 
     channel = bot.get_channel(LISTING_CHANNEL_ID)
 
-    # Use your existing ListingButtons for BUY + CANCEL
+    # Buttons with STAFF PANEL + name included
     view = ListingButtons(
         owner_id=ctx.author.id,
         price_raw=price_val,
         income_display=income_disp.replace("/", ""),
-        price_display=price_disp
+        price_display=price_disp,
+        item_name=item_name
     )
 
-    # Send listing to marketplace
     await channel.send(embed=embed, view=view)
     await ctx.send("✅ Listing successfully created!")
 
