@@ -393,24 +393,8 @@ async def on_ready():
 
 
 
-
-@bot.command()
-async def testmarket(ctx):
-    ch = bot.get_channel(1442936279644897381)
-    if ch is None:
-        return await ctx.send("❌ Channel NOT found in guild.\nReason: Wrong ID or bot can't see it.")
-
-    try:
-        await ch.send("✅ Test message sent to market channel!")
-        await ctx.send("👍 It worked. Bot CAN access the channel.")
-    except Exception as e:
-        await ctx.send(f"❌ Bot CANNOT send messages.\nError: `{e}`")
-
-
-
-
 # --------------------------------------------------------------
-#                      SELL COMMAND  (MULTI-WORD NAME)
+#                      SELL COMMAND
 # --------------------------------------------------------------
 
 def parse_market_number(value: str) -> int:
@@ -425,8 +409,23 @@ def parse_market_number(value: str) -> int:
 
     if value[-1] in multipliers:
         return int(float(value[:-1]) * multipliers[value[-1]])
-
     return int(float(value))
+
+
+def short(n: int) -> str:
+    """Converts numbers like 15000000 -> 15m"""
+    try:
+        n = int(n)
+    except:
+        return str(n)
+
+    if n >= 1_000_000_000:
+        return f"{n/1_000_000_000:.2f}".rstrip("0").rstrip(".") + "b"
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.2f}".rstrip("0").rstrip(".") + "m"
+    if n >= 1_000:
+        return f"{n/1000:.2f}".rstrip("0").rstrip(".") + "k"
+    return str(n)
 
 
 class ListingButtons(View):
@@ -445,11 +444,12 @@ class ListingButtons(View):
         ensure_user(self.owner_id)
 
         u = data[str(buyer.id)]
-        required = self.price_raw * 50
+        required = self.price_raw * 50  # Marketplace x50 tax
 
         if u["gems"] < required:
             return await interaction.response.send_message(
-                f"❌ You need **{fmt(required)}** gems to buy this.", ephemeral=True
+                f"❌ You need **{fmt(required)}** gems to buy this.",
+                ephemeral=True
             )
 
         u["gems"] -= required
@@ -461,7 +461,7 @@ class ListingButtons(View):
         if seller is None:
             return await interaction.response.send_message("❌ Seller not found.", ephemeral=True)
 
-        channel_name = f"ticket-{self.price_display}-{self.income_display}".replace("/", "").replace(" ", "-")
+        channel_name = f"ticket-{self.price_display}-{self.income_display}".replace("/", "")
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -471,9 +471,14 @@ class ListingButtons(View):
 
         for member in guild.members:
             if member.guild_permissions.manage_guild:
-                overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                overwrites[member] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True
+                )
 
-        ticket = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+        ticket = await guild.create_text_channel(
+            name=channel_name,
+            overwrites=overwrites
+        )
 
         await interaction.response.send_message(
             f"✅ Ticket created: {ticket.mention}",
@@ -484,8 +489,8 @@ class ListingButtons(View):
             f"📨 **Marketplace Ticket Created**\n"
             f"**Buyer:** {buyer.mention}\n"
             f"**Seller:** {seller.mention}\n"
-            f"**Item:** `{self.name}`\n"
-            f"**Paid:** **{fmt(required)}** gems\n"
+            f"**Item:** {self.name}\n"
+            f"**Price Paid:** {fmt(required)} gems"
         )
 
     @discord.ui.button(label="Staff Tools", style=discord.ButtonStyle.grey)
@@ -494,41 +499,26 @@ class ListingButtons(View):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
 
         await interaction.response.send_message(
-            f"🔧 Staff tools for **{self.name}** coming soon.",
+            f"🔧 Staff tools for **{self.name}** are not implemented yet.",
             ephemeral=True
         )
 
-    @discord.ui.button(label="❌ Cancel (Listing Owner Only)", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="❌ Cancel (Owner Only)", style=discord.ButtonStyle.red)
     async def cancel(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("❌ Only the owner can cancel.", ephemeral=True)
+            return await interaction.response.send_message("❌ Only the owner can cancel this listing.", ephemeral=True)
 
         await interaction.message.delete()
         await interaction.response.send_message("🗑 Listing removed.", ephemeral=True)
 
 
 @bot.command()
-async def sell(ctx, *, args):
-    """
-    Multi-word name support
-    !sell Los Comb 15m 15m
-    !sell Ultra Mega Brainrot 50m 100m
-    """
-
-    parts = args.split()
-
-    if len(parts) < 3:
-        return await ctx.send("❌ Usage: `!sell <name...> <income> <price>`")
-
-    price_raw = parts[-1]
-    income_raw = parts[-2]
-    name = " ".join(parts[:-2])
-
+async def sell(ctx, name: str, income: str, price: str):
     try:
-        price_val = parse_market_number(price_raw)
-        income_val = parse_market_number(income_raw)
+        income_val = parse_market_number(income)
+        price_val = parse_market_number(price)
     except:
-        return await ctx.send("❌ Invalid number. Use: 5m, 10m, 250k, 1b, etc.")
+        return await ctx.send("❌ Invalid number. Use formats like: 5m, 10m, 250k, 1b")
 
     income_disp = short(income_val) + "/s"
     price_disp = short(price_val)
@@ -543,18 +533,19 @@ async def sell(ctx, *, args):
     embed.set_footer(text="Use !sell to create a listing.")
 
     channel = bot.get_channel(1442936279644897381)
+    if not channel:
+        return await ctx.send("❌ Listing channel not found or bot has no access.")
 
     view = ListingButtons(
         owner_id=ctx.author.id,
         price_raw=price_val,
-        income_display=short(income_val),
+        income_display=income_disp.replace("/s", ""),
         price_display=price_disp,
         name=name
     )
 
     await channel.send(embed=embed, view=view)
     await ctx.send("✅ Listing created!")
-
 
 
 
