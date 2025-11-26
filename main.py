@@ -468,16 +468,16 @@ async def unlockcat(ctx, category_id: int):
 
 
 # --------------------------------------------------------------
-#                      GLOBAL COMMAND BLOCKER (FIXED)
+#              GLOBAL COMMAND BLOCKER (AUTO DELETE)
 # --------------------------------------------------------------
 @bot.check
 async def block_commands_in_locked_category(ctx):
 
-    # Always allow admins (Manage Server)
+    # Admins can always use commands
     if ctx.author.guild_permissions.manage_guild:
         return True
 
-    # If category is locked → block the command
+    # Category locked?
     if ctx.channel.category_id in DISABLED_CATEGORIES:
 
         embed = discord.Embed(
@@ -493,10 +493,26 @@ async def block_commands_in_locked_category(ctx):
             color=discord.Color.red()
         )
 
-        await ctx.send(embed=embed)
-        return False  # 🔥 IMPORTANT — stops command execution
+        # Send block message
+        block_msg = await ctx.send(embed=embed)
+
+        # DELETE user's command message
+        try:
+            await ctx.message.delete()
+        except:
+            pass  # In case bot doesn't have permission
+
+        # DELETE block embed after 10 seconds
+        await asyncio.sleep(10)
+        try:
+            await block_msg.delete()
+        except:
+            pass
+
+        return False  # STOP the command from executing
 
     return True
+
 
 
 
