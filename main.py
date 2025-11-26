@@ -430,78 +430,74 @@ def parse_market_number(value: str) -> int:
 
     # Pure number (10000000)
     return int(float(value))
-# --------------------------------------------------------------
-#                      Lock
-# --------------------------------------------------------------
 
 
+
+# --------------------------------------------------------------
+#                      Lock Category (Admin)
+# --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def lockcat(ctx, category_id: int):
     DISABLED_CATEGORIES.add(category_id)
-    await ctx.send(
-        embed=discord.Embed(
-            title="🔒 Category Locked",
-            description=f"Commands are now **disabled** in category `{category_id}`.",
-            color=discord.Color.red()
-        )
-    )
-# --------------------------------------------------------------
-#                      Unlock
-# --------------------------------------------------------------
 
+    embed = discord.Embed(
+        title="🔒 Category Locked",
+        description=f"Commands are now **disabled** in category `{category_id}`.",
+        color=discord.Color.red()
+    )
+
+    await ctx.send(embed=embed)
+
+
+# --------------------------------------------------------------
+#                      Unlock Category (Admin)
+# --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def unlockcat(ctx, category_id: int):
     DISABLED_CATEGORIES.discard(category_id)
-    await ctx.send(
-        embed=discord.Embed(
-            title="🔓 Category Unlocked",
-            description=f"Commands are now **enabled** in category `{category_id}`.",
-            color=discord.Color.green()
-        )
+
+    embed = discord.Embed(
+        title="🔓 Category Unlocked",
+        description=f"Commands are now **enabled** in category `{category_id}`.",
+        color=discord.Color.green()
     )
 
+    await ctx.send(embed=embed)
+
 
 # --------------------------------------------------------------
-#                      Auto Lock
+#                      GLOBAL COMMAND BLOCKER (FIXED)
 # --------------------------------------------------------------
+@bot.check
+async def block_commands_in_locked_category(ctx):
 
-@bot.listen("on_message")
-async def block_commands_in_category(message):
-    if message.author.bot:
-        return
+    # Always allow admins (Manage Server)
+    if ctx.author.guild_permissions.manage_guild:
+        return True
 
-    # Not a command? ignore
-    if not message.content.startswith("!"):
-        return
-
-    # No guild? ignore
-    if not message.guild:
-        return
-
-    # Category disabled?
-    if message.channel.category_id in DISABLED_CATEGORIES:
-
-        # Allow admins (Manage Server)
-        if message.author.guild_permissions.manage_guild:
-            return
+    # If category is locked → block the command
+    if ctx.channel.category_id in DISABLED_CATEGORIES:
 
         embed = discord.Embed(
             title="🚫 Commands Disabled Here",
             description=(
                 "You cannot use bot commands in **this category**.\n\n"
-                "✨ **Admins** (Manage Server) can still use commands anywhere.\n\n"
-                "🛠 If needed, an admin can enable commands here using:\n"
+                "✨ **Admins** (Manage Server) can still use commands anywhere.\n"
+                "🛠 To re-enable commands here, an admin can use:\n"
                 "``!unlockcat <category_id>``\n\n"
-                "📁 Category ID: **1431610646654488661**"
+                f"📁 Category ID: `{ctx.channel.category_id}`\n\n"
+                "Commands remain enabled in all other categories."
             ),
             color=discord.Color.red()
         )
-        embed.set_footer(text="Commands are still usable in all other categories.")
 
-        await message.reply(embed=embed)
-        return
+        await ctx.send(embed=embed)
+        return False  # 🔥 IMPORTANT — stops command execution
+
+    return True
+
 
 
 
