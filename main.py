@@ -12,6 +12,9 @@ from datetime import datetime
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "casino_data.json"
 
+# Categories where commands are disabled
+DISABLED_CATEGORIES = set([1431610646654488661])
+
 # Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
 
@@ -427,6 +430,79 @@ def parse_market_number(value: str) -> int:
 
     # Pure number (10000000)
     return int(float(value))
+# --------------------------------------------------------------
+#                      Lock
+# --------------------------------------------------------------
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def lockcat(ctx, category_id: int):
+    DISABLED_CATEGORIES.add(category_id)
+    await ctx.send(
+        embed=discord.Embed(
+            title="🔒 Category Locked",
+            description=f"Commands are now **disabled** in category `{category_id}`.",
+            color=discord.Color.red()
+        )
+    )
+# --------------------------------------------------------------
+#                      Unlock
+# --------------------------------------------------------------
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def unlockcat(ctx, category_id: int):
+    DISABLED_CATEGORIES.discard(category_id)
+    await ctx.send(
+        embed=discord.Embed(
+            title="🔓 Category Unlocked",
+            description=f"Commands are now **enabled** in category `{category_id}`.",
+            color=discord.Color.green()
+        )
+    )
+
+
+# --------------------------------------------------------------
+#                      Auto Lock
+# --------------------------------------------------------------
+
+@bot.listen("on_message")
+async def block_commands_in_category(message):
+    if message.author.bot:
+        return
+
+    # Not a command? ignore
+    if not message.content.startswith("!"):
+        return
+
+    # No guild? ignore
+    if not message.guild:
+        return
+
+    # Category disabled?
+    if message.channel.category_id in DISABLED_CATEGORIES:
+
+        # Allow admins (Manage Server)
+        if message.author.guild_permissions.manage_guild:
+            return
+
+        embed = discord.Embed(
+            title="🚫 Commands Disabled Here",
+            description=(
+                "You cannot use bot commands in **this category**.\n\n"
+                "✨ **Admins** (Manage Server) can still use commands anywhere.\n\n"
+                "🛠 If needed, an admin can enable commands here using:\n"
+                "``!unlockcat <category_id>``\n\n"
+                "📁 Category ID: **1431610646654488661**"
+            ),
+            color=discord.Color.red()
+        )
+        embed.set_footer(text="Commands are still usable in all other categories.")
+
+        await message.reply(embed=embed)
+        return
+
 
 
 
@@ -2613,9 +2689,9 @@ async def tax(ctx, percent: float):
     await ctx.send(embed=embed)
 
 
-# --------------------------------------------------------------
-#                      HELP (USER)
-# --------------------------------------------------------------
+# ==============================================================
+#                       HELP (USER)
+# ==============================================================
 @bot.command()
 async def help(ctx):
     embed = discord.Embed(
@@ -2631,7 +2707,10 @@ async def help(ctx):
             "**!balance / !bal [@user]** — Check your or someone else's gems\n"
             "**!daily** — Claim your daily 25m reward\n"
             "**!work** — Earn 10–15m gems\n"
-            "**!gift @user amount** — Gift gems"
+            "**!gift @user amount** — Gift gems\n"
+            "**!sell <name> <income> <price>** — Create a marketplace listing\n"
+            " Example: `!sell Los_Mobilis 66m 70m`\n"
+            " 💵 Shows Price + (Price × 50 bot balance)"
         ),
         inline=False
     )
@@ -2677,9 +2756,9 @@ async def help(ctx):
     await ctx.send(embed=embed)
 
 
-# --------------------------------------------------------------
-#                      HELP (ADMIN)
-# --------------------------------------------------------------
+# ==============================================================
+#                       HELP (ADMIN)
+# ==============================================================
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def helpadmin(ctx):
@@ -2708,10 +2787,20 @@ async def helpadmin(ctx):
             "**!dropbox @user amount** — Drop a claim-only mystery box\n"
             "**!guessthecolor amount** — Infinite guess-the-color event\n"
             "**!lottery ticket_price duration** — Ticket lottery (+10% bonus)\n"
-            "**!chests** — Chest panel (players use it, but you can advertise it)\n"
-            "**!bless @user [games/off]** — Make user auto-win for some games\n"
-            "**!curse @user [games/off]** — Make user auto-lose for some games\n"
+            "**!chests** — Chest panel\n"
+            "**!bless @user [games/off]** — Make user auto-win games\n"
+            "**!curse @user [games/off]** — Make user auto-lose games\n"
             "**!status** — View current bless/curse status"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📁 Category Command Control",
+        value=(
+            "**!lockcat <category_id>** — Disable ALL commands in that category\n"
+            "**!unlockcat <category_id>** — Re-enable commands in that category\n"
+            "Admins (Manage Server) can *always* use commands everywhere"
         ),
         inline=False
     )
