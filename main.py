@@ -433,6 +433,112 @@ def parse_market_number(value: str) -> int:
 
 
 
+
+
+
+# --------------------------------------------------------------
+#                      MEMBERS (server stats)
+# --------------------------------------------------------------
+@bot.command(aliases=["member", "members"])
+async def membercount(ctx):
+    guild = ctx.guild
+
+    total = guild.member_count
+    humans = len([m for m in guild.members if not m.bot])
+    bots = len([m for m in guild.members if m.bot])
+
+    online = len([m for m in guild.members if m.status == discord.Status.online])
+    idle = len([m for m in guild.members if m.status == discord.Status.idle])
+    dnd = len([m for m in guild.members if m.status == discord.Status.dnd])
+    offline = len([m for m in guild.members if m.status == discord.Status.offline])
+
+    embed = discord.Embed(
+        title="👥 Server Member Stats",
+        description=f"Statistics for **{guild.name}**",
+        color=galaxy_color()
+    )
+
+    embed.add_field(name="🌍 Total Members", value=f"**{total}**", inline=True)
+    embed.add_field(name="🧑 Humans", value=f"**{humans}**", inline=True)
+    embed.add_field(name="🤖 Bots", value=f"**{bots}**", inline=True)
+
+    embed.add_field(
+        name="📡 Status",
+        value=(
+            f"🟢 Online: **{online}**\n"
+            f"🟡 Idle: **{idle}**\n"
+            f"🔴 DND: **{dnd}**\n"
+            f"⚪ Offline: **{offline}**"
+        ),
+        inline=False
+    )
+
+    embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+    embed.set_footer(text="Galaxy Casino • Server Stats 🌌")
+
+    await ctx.send(embed=embed)
+
+
+# --------------------------------------------------------------
+#   CLEAN BALANCE OF USERS WITH NO HISTORY (ADMIN ONLY)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def cleanhistory(ctx):
+    guild = ctx.guild
+    cleaned = []
+
+    # Check every human member on the server
+    for member in guild.members:
+        if member.bot:
+            continue
+
+        uid = str(member.id)
+
+        # If the user does not exist in data, skip
+        if uid not in data:
+            continue
+
+        user_data = data[uid]
+        history_list = user_data.get("history", [])
+
+        # No history = never played a game or used commands
+        if not history_list:
+            user_data["gems"] = 0
+            cleaned.append(member)
+
+    save_data(data)
+
+    # No one cleaned
+    if not cleaned:
+        embed = discord.Embed(
+            title="✨ No Accounts Cleaned",
+            description="All users have at least one history record.",
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="Galaxy Casino • System Cleaner")
+        return await ctx.send(embed=embed)
+
+    # Build cleaned list text
+    names = "\n".join([f"• {m.mention}" for m in cleaned])
+
+    embed = discord.Embed(
+        title="🧹 Inactive Accounts Cleaned",
+        description=(
+            f"Users who **never played** any game have been cleaned.\n"
+            f"Their gem balance was set to **0**.\n\n"
+            f"**Total cleaned:** {len(cleaned)}\n\n"
+            f"{names}"
+        ),
+        color=discord.Color.red()
+    )
+    embed.set_footer(text="Galaxy Casino • Inactive Purge System")
+
+    await ctx.send(embed=embed)
+
+
+
+
 # --------------------------------------------------------------
 #                      Lock Category (Admin)
 # --------------------------------------------------------------
