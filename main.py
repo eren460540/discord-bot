@@ -2406,7 +2406,7 @@ async def dropbox(ctx, member: discord.Member, amount: str):
     await ctx.send(embed=embed, view=view)
 
 
- # --------------------------------------------------------------
+# --------------------------------------------------------------
 #                      BLESS / CURSE (invisible rig)
 # --------------------------------------------------------------
 @bot.command()
@@ -2805,6 +2805,79 @@ async def tax(ctx, percent: float):
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
+
+
+
+
+# ==============================================================
+#                       HELP (USER)
+# ==============================================================
+@bot.command()
+async def help(ctx):
+    embed = discord.Embed(
+        title="🌌 Galaxy Casino — Player Commands",
+        description="Use `!command` to play.\nHere are your main commands:",
+        color=galaxy_color()
+    )
+
+    # ---------------- Economy ----------------
+    embed.add_field(
+        name="💰 Economy",
+        value=(
+            "**!balance / !bal [@user]** — Check your or someone else's gems\n"
+            "**!daily** — Claim your daily 25m reward\n"
+            "**!work** — Earn 10–15m gems\n"
+            "**!gift @user amount** — Gift gems\n"
+            "**!sell <name> <income> <price>** — Create a marketplace listing\n"
+            " Example: `!sell Los_Mobilis 66m 70m`\n"
+            " 💵 Price × 50 also required in bot balance"
+        ),
+        inline=False
+    )
+
+    # ---------------- Games ----------------
+    embed.add_field(
+        name="🎮 Games",
+        value=(
+            "**!coinflip amount heads/tails** — 50/50 gamble\n"
+            "**!slots amount** — 3×4 slot machine\n"
+            "**!mines amount [mines]** — Pick safe tiles\n"
+            "**!tower amount** — Clear the 10-row tower\n"
+            "**!blackjack amount** — Interactive blackjack\n"
+            "**!chests** — Open Galaxy Chests for random gem rewards"
+        ),
+        inline=False
+    )
+
+    # ---------------- Player Info ----------------
+    embed.add_field(
+        name="📊 Player Information",
+        value=(
+            "**!history** — View your last 10 games\n"
+            "**!stats** — Full win/loss stats\n"
+            "**!leaderboard** — Top 10 richest players\n"
+            "**!membercount** — Shows server member statistics"
+        ),
+        inline=False
+    )
+
+    # ---------------- Events ----------------
+    embed.add_field(
+        name="🎟 Events",
+        value="Occasionally admins run **!lottery**, **!guessthecolor**, or drop special boxes.",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🛠 Admin?",
+        value="If you're an admin, use **!helpadmin** to see staff-only commands.",
+        inline=False
+    )
+
+    embed.set_footer(text="Galaxy Casino • May luck be with you 💎🌌")
+    await ctx.send(embed=embed)
+
+
 
 
 # ==============================================================
