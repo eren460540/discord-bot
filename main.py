@@ -11,6 +11,10 @@ from datetime import datetime
 
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "casino_data.json"
+JOINS_CHANNEL = 1443625716859273406
+LEAVES_CHANNEL = 1443625744793342132
+SUSPICIOUS_SERVER = 1140681007197073468
+
 
 # Categories where commands are disabled
 DISABLED_CATEGORIES = set([1431610646654488661])
@@ -116,6 +120,9 @@ def save_data(d):
 
 
 data = load_data()
+data.setdefault("_device_fingerprints", {})
+device_fp = data["_device_fingerprints"]
+
 
 # ---------------------- HELPERS ---------------------- #
 
@@ -2423,105 +2430,137 @@ def find_inviter(before, after):
 @bot.event
 async def on_member_join(member):
     guild = member.guild
-
     ensure_user(member.id)
 
-    # Load invites
+    # Refresh invite cache
     new_invites = await guild.invites()
     old_invites = invite_cache.get(guild.id, [])
     inviter = find_inviter(old_invites, new_invites)
     invite_cache[guild.id] = new_invites
 
     log_channel = bot.get_channel(JOINS_CHANNEL)
-    if log_channel is None:
-        log_channel = await bot.fetch_channel(JOINS_CHANNEL)
 
-    # Prepare reasons
-    reasons = []
+    # ---- FLAGS ----
+    age_days = (discord.utils.utcnow() - member.created_at).days
+    flag_age = age_days >= 30
+    flag_avatar = member.avatar is not None
 
-    # ---------------------------
-    # Anti-alt: ACCOUNT AGE
-    # ---------------------------
-    if (discord.utils.utcnow() - member.created_at).days < 30:
-        reasons.append("• Account younger than 30 days")
+    # ---- REJOIN ----
+    rejoined = str(member.id) in device_fp
 
-    # ---------------------------
-    # Anti-alt: NO AVATAR
-    # ---------------------------
-    if member.avatar is None:
-        reasons.append("• No avatar")
-
-    # ---------------------------
-    # Anti-alt: RESTRICTED SERVER
-    # ---------------------------
-    try:
-        other_server = bot.get_guild(SUSPICIOUS_SERVER)
-        if other_server and other_server.get_member(member.id):
-            reasons.append("• Member is in restricted server")
-    except:
-        pass
-
-    # ---------------------------
-    # Anti-alt: REJOIN (NO REWARD)
-    # ---------------------------
-    if str(member.id) in device_fp:
-        reasons.append("• Rejoin detected (same user/device before)")
-
-    # ---------------------------
-    # Anti-alt: SAME DEVICE / SAME IP-LIKE FOOTPRINT
-    # ---------------------------
+    # ---- ALT (same fingerprint) ----
     new_fp = get_device_fingerprint(member)
+    alt_detect = False
     if new_fp:
         for uid, fp in device_fp.items():
             if fp == new_fp and str(member.id) != uid:
-                reasons.append("• Same device detected (duplicate account)")
+                alt_detect = True
                 break
 
-    # Save fingerprint for future rejoin detection
     if new_fp:
         device_fp[str(member.id)] = new_fp
         save_data(data)
 
-    # If inviter unknown
-    if inviter is None:
-        embed = discord.Embed(
-            title="🟢 Member Joined",
-            description=f"{member.mention} joined.\nInviter unknown.",
-            color=discord.Color.green()
-        )
-        return await log_channel.send(embed=embed)
+    # ---- Restricted server check ----
+    restricted = False
+    try:
+        other = bot.get_guild(SUSPICIOUS_SERVER)
+        if other and other.get_member(member.id):
+            restricted = True
+    except:
+        pass
 
-    # ---------------------------
-    # If any suspicious → NO REWARD
-    # ---------------------------
-    if reasons:
-        embed = discord.Embed(
-            title="🟡 Suspicious Join — NO REWARD",
-            description=(
-                f"Joined: {member.mention}\n"
-                f"Invited by: {inviter.mention}\n\n"
-                "**Reason(s):**\n" + "\n".join(reasons)
-            ),
-            color=discord.Color.gold()
-        )
-        return await log_channel.send(embed=embed)
+    # ---- How many red flags? ----
+    bad = []
+    if not flag_age: bad.append("age")
+    if not flag_avatar: bad.append("avatar")
+    if alt_detect: bad.append("alt")
+    if rejoined: bad.append("rejoin")
+    if restricted: bad.append("restricted")
 
-    # ---------------------------
-    # ELSE: GIVE REWARD +50m
-    # ---------------------------
-    add_gems(str(inviter.id), 50_000_000)
-    save_data(data)
+    color = discord.Color.red() if bad else discord.Color.green()
 
     embed = discord.Embed(
-        title="🟢 Valid Invite",
-        description=(
-            f"{member.mention} joined.\n"
-            f"Invited by: {inviter.mention}\n"
-            f"Reward → **+50m** gems"
-        ),
-        color=discord.Color.green()
+        title="🌌 Join Review",
+        color=color
     )
-    await log_channel.send(embed=embed)
+
+    embed.add_field(name="👤 New Member", value=member.mention, inline=False)
+    embed.add_field(
+        name="Account Age",
+        value="🟢 OK" if flag_age else f"🔴 {age_days} days",
+        inline=True
+    )
+    embed.add_field(
+        name="Avatar",
+        value="🟢 Yes" if flag_avatar else "🔴 No",
+        inline=True
+    )
+    embed.add_field(
+        name="ALT Detected",
+        value="🔴 Yes" if alt_detect else "🟢 No",
+        inline=True
+    )
+    embed.add_field(
+        name="Rejoined",
+        value="🔴 Yes" if rejoined else "🟢 No",
+        inline=True
+    )
+    embed.add_field(
+        name="Restricted Server",
+        value="🔴 Yes" if restricted else "🟢 No",
+        inline=True
+    )
+
+    if inviter:
+        embed.add_field(name="Invited By", value=inviter.mention, inline=False)
+    else:
+        embed.add_field(name="Invited By", value="Unknown", inline=False)
+
+    embed.set_footer(text="Admins must approve to give reward.")
+
+    # ---- BUTTONS ----
+    class VerifyButtons(View):
+        def __init__(self, inviter):
+            super().__init__(timeout=3600)
+            self.inviter = inviter
+
+        @discord.ui.button(label="✔️ Accept", style=discord.ButtonStyle.green)
+        async def accept(self, interaction: discord.Interaction, button):
+            if not interaction.user.guild_permissions.manage_guild:
+                return await interaction.response.send_message("❌ You cannot approve.", ephemeral=True)
+
+            if self.inviter:
+                add_gems(str(self.inviter.id), 50_000_000)
+                save_data(data)
+
+            for b in self.children: b.disabled = True
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="✅ Invite Approved",
+                    description=f"{member.mention} approved.\nReward sent to {self.inviter.mention}",
+                    color=discord.Color.green()
+                ),
+                view=self
+            )
+
+        @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.red)
+        async def deny(self, interaction: discord.Interaction, button):
+            if not interaction.user.guild_permissions.manage_guild:
+                return await interaction.response.send_message("❌ You cannot deny.", ephemeral=True)
+
+            for b in self.children: b.disabled = True
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="❌ Invite Denied",
+                    description=f"{member.mention} denied.\nNo reward issued.",
+                    color=discord.Color.red()
+                ),
+                view=self
+            )
+
+    await log_channel.send(embed=embed, view=VerifyButtons(inviter))
+
 
 
 # --------------------------------------------------------------
@@ -3085,13 +3124,13 @@ async def tax(ctx, percent: float):
 
 
 # ==============================================================
-#                       HELP (USER)
+#                          HELP (USER)
 # ==============================================================
 @bot.command()
 async def help(ctx):
     embed = discord.Embed(
-        title="🌌 Galaxy Casino — Player Commands",
-        description="Use `!command` to play.\nHere are your main commands:",
+        title="🌌 Galaxy Casino — Commands Menu",
+        description="Use commands with `!` prefix.\nHere is your full player command list:",
         color=galaxy_color()
     )
 
@@ -3099,13 +3138,13 @@ async def help(ctx):
     embed.add_field(
         name="💰 Economy",
         value=(
-            "**!balance / !bal [@user]** — Check your or someone else's gems\n"
-            "**!daily** — Claim your daily 25m reward\n"
-            "**!work** — Earn 10–15m gems\n"
-            "**!gift @user amount** — Gift gems\n"
-            "**!sell <name> <income> <price>** — Create a marketplace listing\n"
+            "**!balance / !bal [@user]** — Check gem balance\n"
+            "**!daily** — Get your daily 25m\n"
+            "**!work** — Earn 10–15m every hour\n"
+            "**!gift @user amount** — Send gems to users\n"
+            "**!sell <name> <income> <price>** — Create marketplace listings\n"
             " Example: `!sell Los_Mobilis 66m 70m`\n"
-            " 💵 Price × 50 also required in bot balance"
+            " 💵 Buyer must also have **price × 50** in bot balance"
         ),
         inline=False
     )
@@ -3115,42 +3154,75 @@ async def help(ctx):
         name="🎮 Games",
         value=(
             "**!coinflip amount heads/tails** — 50/50 gamble\n"
-            "**!slots amount** — 3×4 slot machine\n"
-            "**!mines amount [mines]** — Pick safe tiles\n"
-            "**!tower amount** — Clear the 10-row tower\n"
+            "**!slots amount** — Slots machine (3×4)\n"
+            "**!mines amount [1–15]** — Avoid the mines\n"
+            "**!tower amount** — Climb 10-row tower\n"
             "**!blackjack amount** — Interactive blackjack\n"
-            "**!chests** — Open Galaxy Chests for random gem rewards"
+            "**!chests** — Open Galaxy Chests"
+        ),
+        inline=False
+    )
+
+    # ---------------- Invite System ----------------
+    embed.add_field(
+        name="🎉 Invite Rewards",
+        value=(
+            "**Invite friends to earn gems!**\n"
+            "Rewards & penalties:\n"
+            "• Valid invite: **+50m** to inviter\n"
+            "• Member leaves: **-50m** from inviter\n"
+            "• Suspicious / alt joins → **NO REWARD**\n"
+            "• Anti-alt checks:\n"
+            "  – account age\n"
+            "  – avatar\n"
+            "  – rejoin detection\n"
+            "  – ALT (same device) detection\n"
+            "  – restricted server detection"
         ),
         inline=False
     )
 
     # ---------------- Player Info ----------------
     embed.add_field(
-        name="📊 Player Information",
+        name="📊 Player Info",
         value=(
-            "**!history** — View your last 10 games\n"
-            "**!stats** — Full win/loss stats\n"
-            "**!leaderboard** — Top 10 richest players\n"
-            "**!membercount** — Shows server member statistics"
+            "**!history** — Your last 10 games\n"
+            "**!stats** — Full statistics\n"
+            "**!leaderboard** — Top 10 richest\n"
+            "**!membercount** — Server member stats"
         ),
         inline=False
     )
 
     # ---------------- Events ----------------
     embed.add_field(
-        name="🎟 Events",
-        value="Occasionally admins run **!lottery**, **!guessthecolor**, or drop special boxes.",
+        name="🎟 Events & Specials",
+        value=(
+            "**!lottery <ticket_price> <duration>** — Admin-run lottery event\n"
+            "**!guessthecolor <prize>** — Guess the color event\n"
+            "**Mystery Boxes** — Admin-only claim boxes"
+        ),
         inline=False
     )
 
+    # ---------------- Admin Section ----------------
     embed.add_field(
         name="🛠 Admin?",
-        value="If you're an admin, use **!helpadmin** to see staff-only commands.",
+        value=(
+            "If you are an admin, use **!helpadmin** for:\n"
+            "• Currency control\n"
+            "• Chest & events controls\n"
+            "• Bless / curse system\n"
+            "• Suspicious join reviewing\n"
+            "• Backups & restores\n"
+            "• Category locking system"
+        ),
         inline=False
     )
 
-    embed.set_footer(text="Galaxy Casino • May luck be with you 💎🌌")
+    embed.set_footer(text="Galaxy Casino • Enjoy your stay 💎🌌")
     await ctx.send(embed=embed)
+
 
 
 
@@ -3163,47 +3235,71 @@ async def help(ctx):
 async def helpadmin(ctx):
     embed = discord.Embed(
         title="🛠 Galaxy Casino — Admin Commands",
-        description="Admin-only control panel for the casino:",
+        description="Full administrative control panel:",
         color=galaxy_color()
     )
 
-    # ---------------- Direct Currency Control ----------------
+    # ---------------- Currency Control ----------------
     embed.add_field(
         name="💰 Gem Management",
         value=(
-            "**!admin give @user amount** — Give gems\n"
-            "**!admin remove @user amount** — Remove gems\n"
-            "**!giverole <role> amount** — Give gems to all humans with a role\n"
-            "**!removerole <role> amount** — Remove gems from all humans with a role\n"
-            "**!giveall amount** — Give gems to all members\n"
-            "**!tax percent** — Remove a percentage from all balances"
+            "**!admin give @user amount** — Add gems\n"
+            "**!admin remove @user amount** — Remove gems (can go negative)\n"
+            "**!giverole <role> amount** — Give gems to all humans in a role\n"
+            "**!removerole <role> amount** — Remove gems from all humans in a role\n"
+            "**!giveall amount** — Give gems to the entire server\n"
+            "**!tax percent** — Remove % of every user's balance"
+        ),
+        inline=False
+    )
+
+    # ---------------- Invite Review System ----------------
+    embed.add_field(
+        name="🧩 Invite Review System",
+        value=(
+            "**Auto Checks (no commands needed):**\n"
+            "• Account age check\n"
+            "• Avatar check\n"
+            "• Rejoin detection\n"
+            "• ALT detection (same device)\n"
+            "• Restricted server detection\n\n"
+            "**Manual Review:**\n"
+            "When a new member joins, the bot sends a **review panel** to the join logs:\n"
+            "• Shows ALL red flags\n"
+            "• Shows inviter + invite code\n"
+            "• Shows account age, avatar, ALT status, fingerprint, rejoin, etc.\n\n"
+            "**Buttons (only admins can click):**\n"
+            "🟢 **Accept** — Give invite reward (+50m)\n"
+            "🔴 **Deny** — Reject reward (no penalty)\n\n"
+            "**Leave system (automatic):**\n"
+            "• Invited member leaves → inviter gets **-50m**"
         ),
         inline=False
     )
 
     # ---------------- Rig System & Events ----------------
     embed.add_field(
-        name="🎁 Events & Rig System",
+        name="🎁 Events & Rig Control",
         value=(
             "**!dropbox @user amount** — Drop a claim-only mystery box\n"
-            "**!guessthecolor amount** — Infinite color guessing event\n"
-            "**!lottery ticket_price duration** — Ticket-based lottery (+10% bonus)\n"
-            "**!chests** — Open chest panel\n"
-            "**!bless user_id [games/off]** — Force wins for a user\n"
-            "**!curse user_id [games/off]** — Force losses for a user\n"
-            "**!status** — View current bless/curse status"
+            "**!guessthecolor amount** — Infinite guess-the-color event\n"
+            "**!lottery <ticket_price> <duration>** — Lottery event (+10% bonus)\n"
+            "**!chests** — Access chest panel\n"
+            "**!bless user_id [games/off]** — Force wins (rig)\n"
+            "**!curse user_id [games/off]** — Force losses (rig)\n"
+            "**!status** — View active bless/curse rigs"
         ),
         inline=False
     )
 
     # ---------------- Server Control ----------------
     embed.add_field(
-        name="📁 Server Command Control",
+        name="📁 Server Management",
         value=(
-            "**!lockcat <category_id>** — Disable commands in a category\n"
-            "**!unlockcat <category_id>** — Re-enable commands in a category\n"
-            "**!cleanhistory** — Reset gems of users who have **never** used a command\n"
-            "**!membercount** — Display server member stats"
+            "**!lockcat <category_id>** — Disable all commands in a category\n"
+            "**!unlockcat <category_id>** — Re-enable commands\n"
+            "**!cleanhistory <duration>** — Reset gems from inactive users\n"
+            "**!membercount** — Show server member statistics"
         ),
         inline=False
     )
@@ -3212,15 +3308,16 @@ async def helpadmin(ctx):
     embed.add_field(
         name="💾 Backups",
         value=(
-            "**!savebackup** — Create and upload an instant backup\n"
-            "**!restorelatest** — Restore the newest backup\n"
-            "**!restorebackup** — Restore from attached backup JSON"
+            "**!savebackup** — Create an instant backup\n"
+            "**!restorelatest** — Restore the latest backup\n"
+            "**!restorebackup** — Restore from uploaded JSON"
         ),
         inline=False
     )
 
-    embed.set_footer(text="Only admins with 'Manage Server' permission can use these commands.")
+    embed.set_footer(text="Admins need 'Manage Server' permission to use these commands.")
     await ctx.send(embed=embed)
+
 
 
 
