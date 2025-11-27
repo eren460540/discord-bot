@@ -2375,34 +2375,253 @@ async def stats(ctx):
     await ctx.send(embed=embed)
 
 
+
+# --------------------------------------------------------------
+#                   INVITE REWARD SYSTEM (ADVANCED)
+# --------------------------------------------------------------
+
+JOINS_CHANNEL = 1443625716859273406
+LEAVES_CHANNEL = 1443625744793342132
+SUSPICIOUS_SERVER = 1140681007197073468
+
+invite_cache = {}
+
+# Store rejoin + device fingerprints in JSON
+data.setdefault("_device_fingerprints", {})
+device_fp = data["_device_fingerprints"]
+
+
+@bot.event
+async def on_ready():
+    global invite_cache
+    for guild in bot.guilds:
+        invite_cache[guild.id] = await guild.invites()
+    save_data(data)
+    print("Invite cache + fingerprints loaded.")
+
+
+def get_device_fingerprint(member):
+    """Generate a stable pseudo-fingerprint (privacy safe)."""
+    try:
+        jar = member._state.http._session.cookie_jar
+        values = [cookie.key + ":" + cookie.value for cookie in jar]
+        combined = "|".join(values)
+        return str(hash(combined))  # hashed, safe to store
+    except:
+        return None
+
+
+def find_inviter(before, after):
+    """Return inviter from invite difference."""
+    before_uses = {inv.code: inv.uses for inv in before}
+    for inv in after:
+        if inv.code in before_uses and inv.uses > before_uses[inv.code]:
+            return inv.inviter
+    return None
+
+
+@bot.event
+async def on_member_join(member):
+    guild = member.guild
+
+    ensure_user(member.id)
+
+    # Load invites
+    new_invites = await guild.invites()
+    old_invites = invite_cache.get(guild.id, [])
+    inviter = find_inviter(old_invites, new_invites)
+    invite_cache[guild.id] = new_invites
+
+    log_channel = bot.get_channel(JOINS_CHANNEL)
+    if log_channel is None:
+        log_channel = await bot.fetch_channel(JOINS_CHANNEL)
+
+    # Prepare reasons
+    reasons = []
+
+    # ---------------------------
+    # Anti-alt: ACCOUNT AGE
+    # ---------------------------
+    if (discord.utils.utcnow() - member.created_at).days < 30:
+        reasons.append("• Account younger than 30 days")
+
+    # ---------------------------
+    # Anti-alt: NO AVATAR
+    # ---------------------------
+    if member.avatar is None:
+        reasons.append("• No avatar")
+
+    # ---------------------------
+    # Anti-alt: RESTRICTED SERVER
+    # ---------------------------
+    try:
+        other_server = bot.get_guild(SUSPICIOUS_SERVER)
+        if other_server and other_server.get_member(member.id):
+            reasons.append("• Member is in restricted server")
+    except:
+        pass
+
+    # ---------------------------
+    # Anti-alt: REJOIN (NO REWARD)
+    # ---------------------------
+    if str(member.id) in device_fp:
+        reasons.append("• Rejoin detected (same user/device before)")
+
+    # ---------------------------
+    # Anti-alt: SAME DEVICE / SAME IP-LIKE FOOTPRINT
+    # ---------------------------
+    new_fp = get_device_fingerprint(member)
+    if new_fp:
+        for uid, fp in device_fp.items():
+            if fp == new_fp and str(member.id) != uid:
+                reasons.append("• Same device detected (duplicate account)")
+                break
+
+    # Save fingerprint for future rejoin detection
+    if new_fp:
+        device_fp[str(member.id)] = new_fp
+        save_data(data)
+
+    # If inviter unknown
+    if inviter is None:
+        embed = discord.Embed(
+            title="🟢 Member Joined",
+            description=f"{member.mention} joined.\nInviter unknown.",
+            color=discord.Color.green()
+        )
+        return await log_channel.send(embed=embed)
+
+    # ---------------------------
+    # If any suspicious → NO REWARD
+    # ---------------------------
+    if reasons:
+        embed = discord.Embed(
+            title="🟡 Suspicious Join — NO REWARD",
+            description=(
+                f"Joined: {member.mention}\n"
+                f"Invited by: {inviter.mention}\n\n"
+                "**Reason(s):**\n" + "\n".join(reasons)
+            ),
+            color=discord.Color.gold()
+        )
+        return await log_channel.send(embed=embed)
+
+    # ---------------------------
+    # ELSE: GIVE REWARD +50m
+    # ---------------------------
+    add_gems(str(inviter.id), 50_000_000)
+    save_data(data)
+
+    embed = discord.Embed(
+        title="🟢 Valid Invite",
+        description=(
+            f"{member.mention} joined.\n"
+            f"Invited by: {inviter.mention}\n"
+            f"Reward → **+50m** gems"
+        ),
+        color=discord.Color.green()
+    )
+    await log_channel.send(embed=embed)
+
+
+# --------------------------------------------------------------
+#                MEMBER LEAVE → -50m TO INVITER
+# --------------------------------------------------------------
+
+@bot.event
+async def on_member_remove(member):
+    guild = member.guild
+
+    log_channel = bot.get_channel(LEAVES_CHANNEL)
+    if log_channel is None:
+        log_channel = await bot.fetch_channel(LEAVES_CHANNEL)
+
+    # Detect inviter from invites
+    new_invites = await guild.invites()
+    old_invites = invite_cache.get(guild.id, [])
+    inviter = find_inviter(old_invites, new_invites)
+    invite_cache[guild.id] = new_invites
+
+    # If no inviter info
+    if inviter is None:
+        embed = discord.Embed(
+            title="🔴 Member Left",
+            description=f"{member.mention} left.\nInviter unknown.",
+            color=discord.Color.red()
+        )
+        return await log_channel.send(embed=embed)
+
+    # APPLY -50m penalty (negatives allowed)
+    add_gems(str(inviter.id), -50_000_000)
+    save_data(data)
+
+    embed = discord.Embed(
+        title="🔴 Invite Left",
+        description=(
+            f"{member.mention} left.\n"
+            f"Invited by: {inviter.mention}\n"
+            f"Penalty → **-50m** gems"
+        ),
+        color=discord.Color.red()
+    )
+    await log_channel.send(embed=embed)
+
+
+
+
+
 # --------------------------------------------------------------
 #                      ADMIN (give/remove)
 # --------------------------------------------------------------
+
+def add_gems(uid, amount):
+    if uid not in data:
+        data[uid] = {"gems": 0, "history": []}
+
+    data[uid]["gems"] += amount
+    return data[uid]["gems"]
+
+
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def admin(ctx, action: str, member: discord.Member, amount: str):
     ensure_user(member.id)
-    u = data[str(member.id)]
+    uid = str(member.id)
+    u = data[uid]
+
     val = parse_amount(amount, u["gems"], allow_all=False)
     if val is None or val <= 0:
         return await ctx.send("❌ Invalid amount.")
 
+    # ---- GIVE ----
     if action.lower() == "give":
-        u["gems"] += val
-        msg = f"Gave **{fmt(val)} gems** to {member.mention}"
+        new_balance = add_gems(uid, +val)
+        msg = (
+            f"Added **{fmt(val)} gems** to {member.mention}\n"
+            f"New balance: **{fmt(new_balance)}**"
+        )
+
+    # ---- REMOVE (negative allowed!) ----
     elif action.lower() == "remove":
-        u["gems"] = max(0, u["gems"] - val)
-        msg = f"Removed **{fmt(val)} gems** from {member.mention}"
+        new_balance = add_gems(uid, -val)   # IMPORTANT FIX
+        msg = (
+            f"Removed **{fmt(val)} gems** from {member.mention}\n"
+            f"New balance: **{fmt(new_balance)}**"
+        )
+
     else:
         return await ctx.send("❌ Use: `!admin give/remove @user amount`")
 
     save_data(data)
+
     embed = discord.Embed(
         title="🛠 Admin Action",
         description=msg,
         color=galaxy_color()
     )
     await ctx.send(embed=embed)
+
+
 
 
 # --------------------------------------------------------------
