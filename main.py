@@ -127,6 +127,45 @@ device_fp = data["_device_fingerprints"]
 # ---------------------- HELPERS ---------------------- #
 
 
+
+# ---------------------- FREE vs GAMBLE TRACKING (35% IDEA) ---------------------- #
+
+FREE_SOURCES = {"daily", "work", "invite_reward", "admin_give", "dropbox"}
+GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack"}
+
+
+def compute_gamble_ratio(user_id):
+    """
+    Free kaynaklardan (daily, work, admin_give, invite, dropbox) gelen toplam kazanç
+    ve gambling oyunlarında (coinflip, slots, mines, tower, blackjack) harcanan toplam bahsi hesaplar.
+
+    Dönüş:
+      free_total, gambled_total, ratio (0–1 arası)
+    """
+    ensure_user(user_id)
+    hist = data[str(user_id)].get("history", [])
+
+    free_total = 0
+    gambled_total = 0
+
+    for e in hist:
+        game = e.get("game", "")
+        bet = e.get("bet", 0) or 0
+        earned = e.get("earned", 0) or 0
+
+        # FREE GELİR
+        if game in FREE_SOURCES and earned > 0:
+            free_total += earned
+
+        # GAMBLE BAHİS
+        if game in GAMBLE_GAMES and bet > 0:
+            gambled_total += bet
+
+    ratio = (gambled_total / free_total) if free_total > 0 else 0
+    return free_total, gambled_total, ratio
+
+
+
 def fmt(n):
     """
     Format numbers like:
@@ -2348,6 +2387,70 @@ async def history(ctx):
 
 
 # --------------------------------------------------------------
+#                      CHECK
+# --------------------------------------------------------------
+
+
+
+@bot.command()
+async def check(ctx, member: discord.Member = None):
+    """
+    !check           -> kendi durumunu gösterir
+    !check @user     -> başka birini gösterir
+    35% kuralı SADECE bilgi içindir, otomatık block yok.
+    """
+    user = member or ctx.author
+    ensure_user(user.id)
+
+    free_total, gambled_total, ratio = compute_gamble_ratio(user.id)
+    percent = ratio * 100 if free_total > 0 else 0
+    required = free_total * 0.35
+    missing = max(0, required - gambled_total)
+
+    embed = discord.Embed(
+        title=f"🔍 Free vs Gamble — {user.name}",
+        color=galaxy_color()
+    )
+
+    embed.add_field(
+        name="💎 Free Income (tracked)",
+        value=f"**{fmt(int(free_total))}** gems\n"
+              f"Sources: daily, work, invite rewards, admin give, dropbox",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🎲 Total Gambled",
+        value=f"**{fmt(int(gambled_total))}** gems\n"
+              f"Games: coinflip, slots, mines, tower, blackjack",
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 Gamble Ratio",
+        value=f"**{percent:.2f}%** of free income used for gambling.",
+        inline=False
+    )
+
+    # 35% hedefini göster
+    if free_total == 0:
+        status = "No free income tracked yet."
+    elif percent >= 35:
+        status = "🟢 Above recommended 35% usage."
+    else:
+        status = (
+            "🔴 Below recommended 35%.\n"
+            f"You would need to gamble ~**{fmt(int(missing))}** more gems "
+            f"to reach **35%** of your free income."
+        )
+
+    embed.add_field(name="✅ Status", value=status, inline=False)
+    embed.set_footer(text="This is only for tracking. Bot does NOT block anything automatically.")
+    await ctx.send(embed=embed)
+
+
+
+# --------------------------------------------------------------
 #                      STATS
 # --------------------------------------------------------------
 @bot.command()
@@ -2525,16 +2628,29 @@ async def on_member_join(member):
             super().__init__(timeout=3600)
             self.inviter = inviter
 
+
         @discord.ui.button(label="✔️ Accept", style=discord.ButtonStyle.green)
         async def accept(self, interaction: discord.Interaction, button):
             if not interaction.user.guild_permissions.manage_guild:
                 return await interaction.response.send_message("❌ You cannot approve.", ephemeral=True)
 
             if self.inviter:
-                add_gems(str(self.inviter.id), 50_000_000)
+                amount = 50_000_000
+                add_gems(str(self.inviter.id), amount)
                 save_data(data)
 
-            for b in self.children: b.disabled = True
+                # FREE SOURCE: invite_reward
+                add_history(self.inviter.id, {
+                    "game": "invite_reward",
+                    "bet": 0,
+                    "result": f"invite_{member.id}",
+                    "earned": amount,
+                    "timestamp": time.time()
+                })
+
+            for b in self.children:
+                b.disabled = True
+
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="✅ Invite Approved",
@@ -2543,6 +2659,7 @@ async def on_member_join(member):
                 ),
                 view=self
             )
+
 
         @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.red)
         async def deny(self, interaction: discord.Interaction, button):
@@ -2635,10 +2752,21 @@ async def admin(ctx, action: str, member: discord.Member, amount: str):
     # ---- GIVE ----
     if action.lower() == "give":
         new_balance = add_gems(uid, +val)
+
+        # FREE SOURCE: admin_give
+        add_history(member.id, {
+            "game": "admin_give",
+            "bet": 0,
+            "result": f"admin_give_{ctx.author.id}",
+            "earned": val,
+            "timestamp": time.time()
+        })
+
         msg = (
             f"Added **{fmt(val)} gems** to {member.mention}\n"
             f"New balance: **{fmt(new_balance)}**"
         )
+
 
     # ---- REMOVE (negative allowed!) ----
     elif action.lower() == "remove":
