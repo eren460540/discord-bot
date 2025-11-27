@@ -482,59 +482,115 @@ async def membercount(ctx):
 # --------------------------------------------------------------
 #   CLEAN BALANCE OF USERS WITH NO HISTORY (ADMIN ONLY)
 # --------------------------------------------------------------
+def parse_clean_duration(text: str):
+    text = text.strip().lower()
+    if len(text) < 2:
+        return None
+
+    num = text[:-1]
+    unit = text[-1]
+
+    try:
+        value = float(num)
+    except:
+        return None
+
+    if value <= 0:
+        return None
+
+    if unit == "s":
+        return int(value)
+    if unit == "m":
+        return int(value * 60)
+    if unit == "h":
+        return int(value * 3600)
+    if unit == "d":
+        return int(value * 86400)
+
+    return None
+
+
+
+
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def cleanhistory(ctx):
-    guild = ctx.guild
-    cleaned = []
+async def cleanhistory(ctx, time_str: str):
+    """Usage: !cleanhistory <time>   Example: 30d, 12h, 10m"""
 
-    # Check every human member on the server
-    for member in guild.members:
+    seconds = parse_clean_duration(time_str)
+    if seconds is None:
+        return await ctx.send("❌ Invalid time format! Use: `30s`, `10m`, `4h`, `7d`, `30d`.")
+
+    now = time.time()
+    limit = now - seconds
+
+    cleaned = []
+    total_gems_removed = 0
+
+    for member in ctx.guild.members:
         if member.bot:
             continue
 
         uid = str(member.id)
-
-        # If the user does not exist in data, skip
         if uid not in data:
             continue
 
         user_data = data[uid]
         history_list = user_data.get("history", [])
 
-        # No history = never played a game or used commands
+        # No history → inactive entire time
         if not history_list:
+            removed = user_data.get("gems", 0)
+            total_gems_removed += removed
             user_data["gems"] = 0
-            cleaned.append(member)
+            cleaned.append((member, removed))
+            continue
+
+        # Determine last command timestamp
+        last_time = max(e.get("timestamp", 0) for e in history_list)
+
+        # Too old → inactive
+        if last_time < limit:
+            removed = user_data.get("gems", 0)
+            total_gems_removed += removed
+            user_data["gems"] = 0
+            cleaned.append((member, removed))
 
     save_data(data)
 
-    # No one cleaned
     if not cleaned:
         embed = discord.Embed(
-            title="✨ No Accounts Cleaned",
-            description="All users have at least one history record.",
+            title="✨ No Inactive Users Found",
+            description=f"No users inactive for **{time_str}**.",
             color=discord.Color.orange()
         )
-        embed.set_footer(text="Galaxy Casino • System Cleaner")
         return await ctx.send(embed=embed)
 
-    # Build cleaned list text
-    names = "\n".join([f"• {m.mention}" for m in cleaned])
+    # Create detailed list file
+    output = f"Inactive users cleaned (inactive for {time_str}):\n\n"
+    for m, removed in cleaned:
+        output += f"{m.name}#{m.discriminator} (ID: {m.id}) - Removed: {removed} gems\n"
 
+    file = discord.File(
+        fp=io.BytesIO(output.encode()),
+        filename=f"cleanhistory_{time_str}.txt"
+    )
+
+    # Final embed
     embed = discord.Embed(
-        title="🧹 Inactive Accounts Cleaned",
+        title="🧹 Inactive Users Cleaned",
         description=(
-            f"Users who **never played** any game have been cleaned.\n"
-            f"Their gem balance was set to **0**.\n\n"
-            f"**Total cleaned:** {len(cleaned)}\n\n"
-            f"{names}"
+            f"Users inactive for **{time_str}** had their gems reset.\n\n"
+            f"👥 **Total cleaned:** `{len(cleaned)}`\n"
+            f"💎 **Total gems removed:** `{fmt(total_gems_removed)}`\n\n"
+            f"📄 Full detailed list is attached."
         ),
         color=discord.Color.red()
     )
-    embed.set_footer(text="Galaxy Casino • Inactive Purge System")
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, file=file)
+
+
 
 
 
