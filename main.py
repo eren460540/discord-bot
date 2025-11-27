@@ -2808,73 +2808,6 @@ async def tax(ctx, percent: float):
 
 
 # ==============================================================
-#                       HELP (USER)
-# ==============================================================
-@bot.command()
-async def help(ctx):
-    embed = discord.Embed(
-        title="🌌 Galaxy Casino — Commands",
-        description="Use `!command` to play.\nThese are your main player commands:",
-        color=galaxy_color()
-    )
-
-    # ---------------- Economy ----------------
-    embed.add_field(
-        name="💰 Economy",
-        value=(
-            "**!balance / !bal [@user]** — Check your or someone else's gems\n"
-            "**!daily** — Claim your daily 25m reward\n"
-            "**!work** — Earn 10–15m gems\n"
-            "**!gift @user amount** — Gift gems\n"
-            "**!sell <name> <income> <price>** — Create a marketplace listing\n"
-            " Example: `!sell Los_Mobilis 66m 70m`\n"
-            " 💵 Shows Price + (Price × 50 bot balance)"
-        ),
-        inline=False
-    )
-
-    # ---------------- Games ----------------
-    embed.add_field(
-        name="🎮 Games",
-        value=(
-            "**!coinflip amount heads/tails** — 50/50 gamble\n"
-            "**!slots amount** — 3×4 slot machine\n"
-            "**!mines amount [mines]** — Pick safe tiles\n"
-            "**!tower amount** — Climb the 10-row tower\n"
-            "**!blackjack amount** — Interactive blackjack\n"
-            "**!chests** — Open loot chests for random gem rewards"
-        ),
-        inline=False
-    )
-
-    # ---------------- Player Info ----------------
-    embed.add_field(
-        name="📊 Player Info",
-        value=(
-            "**!history** — Last 10 games\n"
-            "**!stats** — Full win/loss statistics\n"
-            "**!leaderboard** — Top 10 richest players"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🎟 Events",
-        value="Sometimes admins run **!lottery** or **!guessthecolor** — watch for special messages.",
-        inline=False
-    )
-
-    embed.add_field(
-        name="🛠 Admin?",
-        value="If you're an admin, use **!helpadmin** to see staff commands.",
-        inline=False
-    )
-
-    embed.set_footer(text="Galaxy Casino • May luck be with you 💎🌌")
-    await ctx.send(embed=embed)
-
-
-# ==============================================================
 #                       HELP (ADMIN)
 # ==============================================================
 @bot.command()
@@ -2882,59 +2815,65 @@ async def help(ctx):
 async def helpadmin(ctx):
     embed = discord.Embed(
         title="🛠 Galaxy Casino — Admin Commands",
-        description="Admin-only controls for the casino:",
+        description="Admin-only control panel for the casino:",
         color=galaxy_color()
     )
 
+    # ---------------- Direct Currency Control ----------------
     embed.add_field(
-        name="💰 Direct Gem Control",
+        name="💰 Gem Management",
         value=(
             "**!admin give @user amount** — Give gems\n"
             "**!admin remove @user amount** — Remove gems\n"
             "**!giverole <role> amount** — Give gems to all humans with a role\n"
             "**!removerole <role> amount** — Remove gems from all humans with a role\n"
-            "**!giveall amount** — Give gems to every human member\n"
-            "**!tax percent** — Remove a % from all balances in this server"
+            "**!giveall amount** — Give gems to all members\n"
+            "**!tax percent** — Remove a percentage from all balances"
         ),
         inline=False
     )
 
+    # ---------------- Rig System & Events ----------------
     embed.add_field(
-        name="🎁 Events & Rig",
+        name="🎁 Events & Rig System",
         value=(
             "**!dropbox @user amount** — Drop a claim-only mystery box\n"
-            "**!guessthecolor amount** — Infinite guess-the-color event\n"
-            "**!lottery ticket_price duration** — Ticket lottery (+10% bonus)\n"
-            "**!chests** — Chest panel\n"
-            "**!bless @user [games/off]** — Make user auto-win games\n"
-            "**!curse @user [games/off]** — Make user auto-lose games\n"
+            "**!guessthecolor amount** — Infinite color guessing event\n"
+            "**!lottery ticket_price duration** — Ticket-based lottery (+10% bonus)\n"
+            "**!chests** — Open chest panel\n"
+            "**!bless user_id [games/off]** — Force wins for a user\n"
+            "**!curse user_id [games/off]** — Force losses for a user\n"
             "**!status** — View current bless/curse status"
         ),
         inline=False
     )
 
+    # ---------------- Server Control ----------------
     embed.add_field(
-        name="📁 Category Command Control",
+        name="📁 Server Command Control",
         value=(
-            "**!lockcat <category_id>** — Disable ALL commands in that category\n"
-            "**!unlockcat <category_id>** — Re-enable commands in that category\n"
-            "Admins (Manage Server) can *always* use commands everywhere"
+            "**!lockcat <category_id>** — Disable commands in a category\n"
+            "**!unlockcat <category_id>** — Re-enable commands in a category\n"
+            "**!cleanhistory** — Reset gems of users who have **never** used a command\n"
+            "**!membercount** — Display server member stats"
         ),
         inline=False
     )
 
+    # ---------------- Backups ----------------
     embed.add_field(
         name="💾 Backups",
         value=(
-            "**!savebackup** — Upload instant backup\n"
-            "**!restorelatest** — Restore newest backup\n"
+            "**!savebackup** — Create and upload an instant backup\n"
+            "**!restorelatest** — Restore the newest backup\n"
             "**!restorebackup** — Restore from attached backup JSON"
         ),
         inline=False
     )
 
-    embed.set_footer(text="Only admins with Manage Server can use these commands.")
+    embed.set_footer(text="Only admins with 'Manage Server' permission can use these commands.")
     await ctx.send(embed=embed)
+
 
 
 # --------------------------------------------------------------
