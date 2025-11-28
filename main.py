@@ -480,6 +480,88 @@ def parse_market_number(value: str) -> int:
 
 
 
+# --------------------------------------------------------------
+#     GUESS THE NUMBER (1–10) — ADMIN EVENT
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def guessthenumber(ctx, prize: str):
+    """
+    Admin-only infinite guess-the-number event.
+    Usage: !guessthenumber 100m
+    Runs until someone guesses the correct number (1–10).
+    """
+
+    # Parse prize
+    parsed_prize = parse_amount(prize, None, allow_all=False)
+    if parsed_prize is None or parsed_prize <= 0:
+        return await ctx.send("❌ Invalid prize amount!")
+
+    # Pick secret number
+    secret = random.randint(1, 10)
+
+    embed = discord.Embed(
+        title="🔢 Guess The Number!",
+        description=(
+            f"**Prize:** 💎 **{fmt(parsed_prize)}** gems\n\n"
+            "I picked a secret number between **1–10**.\n"
+            "**First person to guess wins!**\n"
+            "This event will NOT stop until someone gets it right."
+        ),
+        color=galaxy_color()
+    )
+
+    await ctx.send(embed=embed)
+
+    # Loop until winner
+    while True:
+        try:
+            msg = await bot.wait_for("message", timeout=None)
+        except Exception:
+            continue
+
+        guess_raw = msg.content.strip()
+
+        # Only accept numbers 1–10
+        if not guess_raw.isdigit():
+            continue
+
+        guess = int(guess_raw)
+        if not 1 <= guess <= 10:
+            continue
+
+        # WRONG GUESS
+        if guess != secret:
+            await ctx.send(f"❌ {msg.author.mention} wrong guess!")
+            continue
+
+        # CORRECT GUESS
+        winner = msg.author
+        ensure_user(winner.id)
+        data[str(winner.id)]["gems"] += parsed_prize
+        save_data(data)
+
+        add_history(winner.id, {
+            "game": "guess_number",
+            "bet": 0,
+            "result": f"win_{secret}",
+            "earned": parsed_prize,
+            "timestamp": time.time()
+        })
+
+        win_embed = discord.Embed(
+            title="🎉 WE HAVE A WINNER!",
+            description=(
+                f"{winner.mention} guessed **{secret}** correctly!\n"
+                f"💎 Prize awarded: **{fmt(parsed_prize)}** gems"
+            ),
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=win_embed)
+        break
+
+
+
 
 
 # --------------------------------------------------------------
@@ -3385,22 +3467,21 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🧩 Invite Review System",
         value=(
-            "**Auto Checks (no commands needed):**\n"
-            "• Account age check\n"
-            "• Avatar check\n"
+            "**Automatic Checks:**\n"
+            "• Account age\n"
+            "• Avatar\n"
             "• Rejoin detection\n"
             "• ALT detection (same device)\n"
             "• Restricted server detection\n\n"
-            "**Manual Review:**\n"
-            "When a new member joins, the bot sends a **review panel** to the join logs:\n"
-            "• Shows ALL red flags\n"
+            "**Manual Review Panel:**\n"
+            "• Shows all red/green flags\n"
             "• Shows inviter + invite code\n"
-            "• Shows account age, avatar, ALT status, fingerprint, rejoin, etc.\n\n"
-            "**Buttons (only admins can click):**\n"
-            "🟢 **Accept** — Give invite reward (+50m)\n"
-            "🔴 **Deny** — Reject reward (no penalty)\n\n"
-            "**Leave system (automatic):**\n"
-            "• Invited member leaves → inviter gets **-50m**"
+            "• Shows fingerprint, rejoin, avatar, age\n\n"
+            "**Buttons:**\n"
+            "🟢 Accept — Give +50m reward\n"
+            "🔴 Deny — Reject reward\n\n"
+            "**Leave Penalty:**\n"
+            "• If an invited user leaves → inviter gets **-50m**"
         ),
         inline=False
     )
@@ -3410,12 +3491,13 @@ async def helpadmin(ctx):
         name="🎁 Events & Rig Control",
         value=(
             "**!dropbox @user amount** — Drop a claim-only mystery box\n"
-            "**!guessthecolor amount** — Infinite guess-the-color event\n"
-            "**!lottery <ticket_price> <duration>** — Lottery event (+10% bonus)\n"
-            "**!chests** — Access chest panel\n"
+            "**!guessthecolor amount** — Infinite color guessing event\n"
+            "**!guessthenumber amount** — Infinite 1–10 number guessing event\n"
+            "**!lottery <ticket_price> <duration>** — Lottery system (+10% bonus)\n"
+            "**!chests** — Open chest panel\n"
             "**!bless user_id [games/off]** — Force wins (rig)\n"
             "**!curse user_id [games/off]** — Force losses (rig)\n"
-            "**!status** — View active bless/curse rigs"
+            "**!status** — Show current bless/curse status"
         ),
         inline=False
     )
@@ -3424,10 +3506,11 @@ async def helpadmin(ctx):
     embed.add_field(
         name="📁 Server Management",
         value=(
-            "**!lockcat <category_id>** — Disable all commands in a category\n"
+            "**!lockcat <category_id>** — Disable commands in a category\n"
             "**!unlockcat <category_id>** — Re-enable commands\n"
             "**!cleanhistory <duration>** — Reset gems from inactive users\n"
-            "**!membercount** — Show server member statistics"
+            "**!membercount** — Show server member stats\n"
+            "**!dm \"message\" \"role ID\"** — DM all humans with that role"
         ),
         inline=False
     )
@@ -3436,15 +3519,77 @@ async def helpadmin(ctx):
     embed.add_field(
         name="💾 Backups",
         value=(
-            "**!savebackup** — Create an instant backup\n"
-            "**!restorelatest** — Restore the latest backup\n"
-            "**!restorebackup** — Restore from uploaded JSON"
+            "**!savebackup** — Create an instant JSON backup\n"
+            "**!restorelatest** — Restore the newest backup\n"
+            "**!restorebackup** — Restore from uploaded backup JSON"
         ),
         inline=False
     )
 
     embed.set_footer(text="Admins need 'Manage Server' permission to use these commands.")
     await ctx.send(embed=embed)
+
+
+
+
+# --------------------------------------------------------------
+#                      DM ROLE MEMBERS (STRICT)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def dm(ctx, message: str, role_id: str):
+    """
+    Only users with MANAGE SERVER can use this command.
+    Usage:
+    !dm "message here" "roleID"
+    """
+
+    # Final hard-check (no bypass)
+    if not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send("❌ You must have **Manage Server** permission to use this command.")
+
+    # Clean the role ID from input
+    digits = "".join(ch for ch in role_id if ch.isdigit())
+    if not digits:
+        return await ctx.send("❌ Invalid role ID.")
+
+    role = ctx.guild.get_role(int(digits))
+    if role is None:
+        return await ctx.send("❌ That role does not exist.")
+
+    # Only humans
+    members = [m for m in role.members if not m.bot]
+    if not members:
+        return await ctx.send("❌ No human members found with that role.")
+
+    sent = 0
+    failed = 0
+
+    status_msg = await ctx.send(f"📨 Sending DMs to **{len(members)}** members…")
+
+    for member in members:
+        try:
+            await member.send(message)  # sends exact formatting
+            sent += 1
+        except:
+            failed += 1
+
+        await asyncio.sleep(0.25)  # rate-limit safe
+
+    embed = discord.Embed(
+        title="📬 DM Broadcast Finished",
+        description=(
+            f"**Role:** {role.mention}\n"
+            f"👤 Members targeted: `{len(members)}`\n"
+            f"✅ Sent: `{sent}`\n"
+            f"❌ Failed: `{failed}`"
+        ),
+        color=galaxy_color()
+    )
+
+    await status_msg.edit(content=None, embed=embed)
+
+
 
 
 
