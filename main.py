@@ -1114,7 +1114,7 @@ async def work(ctx):
         await ctx.send(embed=embed)
         return
 
-    reward = random.randint(10_000_000, 15_000_000)
+    reward = random.randint(7_500_000, 15_000_000)
     u["gems"] += reward
     u["last_work"] = now
     save_data(data)
@@ -2587,24 +2587,27 @@ device_fp = data["_device_fingerprints"]
 async def on_ready():
     global invite_cache
     for guild in bot.guilds:
-        invite_cache[guild.id] = await guild.invites()
+        try:
+            invite_cache[guild.id] = await guild.invites()
+        except:
+            invite_cache[guild.id] = []
     save_data(data)
     print("Invite cache + fingerprints loaded.")
 
 
 def get_device_fingerprint(member):
-    """Generate a stable pseudo-fingerprint (privacy safe)."""
+    """Generate a pseudo device fingerprint."""
     try:
         jar = member._state.http._session.cookie_jar
         values = [cookie.key + ":" + cookie.value for cookie in jar]
         combined = "|".join(values)
-        return str(hash(combined))  # hashed, safe to store
+        return str(hash(combined))
     except:
         return None
 
 
 def find_inviter(before, after):
-    """Return inviter from invite difference."""
+    """Return inviter based on changed invite uses."""
     before_uses = {inv.code: inv.uses for inv in before}
     for inv in after:
         if inv.code in before_uses and inv.uses > before_uses[inv.code]:
@@ -2618,7 +2621,11 @@ async def on_member_join(member):
     ensure_user(member.id)
 
     # Refresh invite cache
-    new_invites = await guild.invites()
+    try:
+        new_invites = await guild.invites()
+    except:
+        new_invites = []
+
     old_invites = invite_cache.get(guild.id, [])
     inviter = find_inviter(old_invites, new_invites)
     invite_cache[guild.id] = new_invites
@@ -2653,9 +2660,9 @@ async def on_member_join(member):
         if other and other.get_member(member.id):
             restricted = True
     except:
-        pass
+        restricted = False
 
-    # ---- How many red flags? ----
+    # ---- Red flags ----
     bad = []
     if not flag_age: bad.append("age")
     if not flag_avatar: bad.append("avatar")
@@ -2704,29 +2711,35 @@ async def on_member_join(member):
 
     embed.set_footer(text="Admins must approve to give reward.")
 
-    # ---- BUTTONS ----
+    # ----------------------------------------------------------
+    #                 FIXED WORKING VIEW CLASS
+    # ----------------------------------------------------------
     class VerifyButtons(View):
-        def __init__(self, inviter):
-            super().__init__(timeout=3600)
+        def __init__(self, member, inviter):
+            super().__init__(timeout=None)  # NEVER TIME OUT
+            self.member = member
             self.inviter = inviter
+            self.reward_amount = 50_000_000
 
-
+        # ACCEPT BUTTON
         @discord.ui.button(label="✔️ Accept", style=discord.ButtonStyle.green)
         async def accept(self, interaction: discord.Interaction, button):
             if not interaction.user.guild_permissions.manage_guild:
-                return await interaction.response.send_message("❌ You cannot approve.", ephemeral=True)
+                return await interaction.response.send_message(
+                    "❌ Only admins can approve rewards.",
+                    ephemeral=True
+                )
 
             if self.inviter:
-                amount = 50_000_000
-                add_gems(str(self.inviter.id), amount)
+                ensure_user(self.inviter.id)
+                data[str(self.inviter.id)]["gems"] += self.reward_amount
                 save_data(data)
 
-                # FREE SOURCE: invite_reward
                 add_history(self.inviter.id, {
                     "game": "invite_reward",
                     "bet": 0,
-                    "result": f"invite_{member.id}",
-                    "earned": amount,
+                    "result": f"invite_{self.member.id}",
+                    "earned": self.reward_amount,
                     "timestamp": time.time()
                 })
 
@@ -2735,30 +2748,44 @@ async def on_member_join(member):
 
             await interaction.response.edit_message(
                 embed=discord.Embed(
-                    title="✅ Invite Approved",
-                    description=f"{member.mention} approved.\nReward sent to {self.inviter.mention}",
+                    title="🟢 Invite Approved",
+                    description=(
+                        f"{self.member.mention} approved.\n"
+                        f"Reward sent: **+{fmt(self.reward_amount)}** to {self.inviter.mention}"
+                    ),
                     color=discord.Color.green()
                 ),
                 view=self
             )
 
-
+        # DENY BUTTON
         @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.red)
         async def deny(self, interaction: discord.Interaction, button):
             if not interaction.user.guild_permissions.manage_guild:
-                return await interaction.response.send_message("❌ You cannot deny.", ephemeral=True)
+                return await interaction.response.send_message(
+                    "❌ Only admins can deny rewards.",
+                    ephemeral=True
+                )
 
-            for b in self.children: b.disabled = True
+            for b in self.children:
+                b.disabled = True
+
             await interaction.response.edit_message(
                 embed=discord.Embed(
-                    title="❌ Invite Denied",
-                    description=f"{member.mention} denied.\nNo reward issued.",
+                    title="🔴 Invite Denied",
+                    description=f"{self.member.mention} denied.\nNo reward issued.",
                     color=discord.Color.red()
                 ),
                 view=self
             )
 
-    await log_channel.send(embed=embed, view=VerifyButtons(inviter))
+    # SEND REVIEW MESSAGE
+    await log_channel.send(
+        embed=embed,
+        view=VerifyButtons(member, inviter)
+    )
+
+
 
 
 
@@ -2873,61 +2900,6 @@ async def admin(ctx, action: str, member: discord.Member, amount: str):
 
 
 
-# --------------------------------------------------------------
-#                      MYSTERY BOX (!dropbox @user amount)
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def dropbox(ctx, member: discord.Member, amount: str):
-    ensure_user(member.id)
-    val = parse_amount(amount, None, allow_all=False)
-    if val is None or val <= 0:
-        return await ctx.send("❌ Invalid amount.")
-
-    class ClaimButton(Button):
-        def __init__(self):
-            super().__init__(label="CLAIM 🎁", style=discord.ButtonStyle.success)
-
-        async def callback(self, interaction: discord.Interaction):
-            if interaction.user.id != member.id:
-                return await interaction.response.send_message("❌ This box is not for you.", ephemeral=True)
-
-            for b in view.children:
-                b.disabled = True
-
-            ensure_user(member.id)
-            data[str(member.id)]["gems"] += val
-            save_data(data)
-
-            add_history(member.id, {
-                "game": "dropbox",
-                "bet": 0,
-                "result": "admin_drop",
-                "earned": val,
-                "timestamp": time.time()
-            })
-
-            embed_claimed = discord.Embed(
-                title="🎁 Mystery Box Claimed!",
-                description=f"{member.mention} received **{fmt(val)}** gems! 🌌",
-                color=galaxy_color()
-            )
-            await interaction.response.edit_message(embed=embed_claimed, view=view)
-
-    view = View(timeout=None)
-    view.add_item(ClaimButton())
-
-    embed = discord.Embed(
-        title="🌌 Mystery Box Dropped!",
-        description=(
-            f"{ctx.author.mention} dropped a **mystery box** for {member.mention}.\n"
-            f"Click **CLAIM** to receive **{fmt(val)}** gems!"
-        ),
-        color=galaxy_color()
-    )
-    embed.set_footer(text="Only the chosen one can claim this gift ✨")
-
-    await ctx.send(embed=embed, view=view)
 
 
 # --------------------------------------------------------------
@@ -3476,7 +3448,7 @@ async def helpadmin(ctx):
             "**Manual Review Panel:**\n"
             "• Shows all red/green flags\n"
             "• Shows inviter + invite code\n"
-            "• Shows fingerprint, rejoin, avatar, age\n\n"
+            "• Shows fingerprint, avatar, rejoin & age\n\n"
             "**Buttons:**\n"
             "🟢 Accept — Give +50m reward\n"
             "🔴 Deny — Reject reward\n\n"
@@ -3486,18 +3458,20 @@ async def helpadmin(ctx):
         inline=False
     )
 
-    # ---------------- Rig System & Events ----------------
+    # ---------------- Events, Rig & Specials ----------------
     embed.add_field(
-        name="🎁 Events & Rig Control",
+        name="🎁 Events • Rig • Specials",
         value=(
-            "**!dropbox @user amount** — Drop a claim-only mystery box\n"
             "**!guessthecolor amount** — Infinite color guessing event\n"
-            "**!guessthenumber amount** — Infinite 1–10 number guessing event\n"
+            "**!guessthenumber amount** — Infinite number event (1–10)\n"
+            "**!splitorsteal prize** — 2-player Split or Steal game\n"
             "**!lottery <ticket_price> <duration>** — Lottery system (+10% bonus)\n"
             "**!chests** — Open chest panel\n"
-            "**!bless user_id [games/off]** — Force wins (rig)\n"
-            "**!curse user_id [games/off]** — Force losses (rig)\n"
-            "**!status** — Show current bless/curse status"
+            "**!bless user [games/off]** — Force wins (rig)\n"
+            "**!curse user [games/off]** — Force losses (rig)\n"
+            "**!status** — Show current bless/curse status\n"
+            "**!rainbow** — Drops a rainbow color sequence\n"
+            "**!taco** — Makes it rain TACOS 🌮"
         ),
         inline=False
     )
@@ -3506,7 +3480,7 @@ async def helpadmin(ctx):
     embed.add_field(
         name="📁 Server Management",
         value=(
-            "**!lockcat <category_id>** — Disable commands in a category\n"
+            "**!lockcat <category_id>** — Disable all commands in a category\n"
             "**!unlockcat <category_id>** — Re-enable commands\n"
             "**!cleanhistory <duration>** — Reset gems from inactive users\n"
             "**!membercount** — Show server member stats\n"
@@ -3528,6 +3502,10 @@ async def helpadmin(ctx):
 
     embed.set_footer(text="Admins need 'Manage Server' permission to use these commands.")
     await ctx.send(embed=embed)
+
+
+
+
 
 
 
@@ -3588,6 +3566,254 @@ async def dm(ctx, message: str, role_id: str):
     )
 
     await status_msg.edit(content=None, embed=embed)
+
+
+
+# --------------------------------------------------------------
+#                      !taco (Admin Fun)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def taco(ctx):
+
+    # Strict permission check
+    if not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send("❌ You must have **Manage Server** permission to use this command.")
+
+    lines = [
+        "**🌮 HELLOOOO! 🌮**",
+        "",
+        "**🌧️ It's raining tacos**",
+        "**From out of the sky 🌌**",
+        "**🌮 Tacos 🌮**",
+        "**No need to ask why 🤷‍♂️**",
+        "**Just open your mouth 👄 and close your eyes 👁️**",
+        "",
+        "**🌧️ It's raining tacos**",
+        "**It's raining tacos 🌮🌧️**",
+        "**Out in the street 🏙️**",
+        "**🌮 Tacos 🌮**",
+        "**All you can eat 😋**",
+        "**Lettuce 🥬 and shell 🥙**",
+        "**Cheese 🧀 and meat 🥩**",
+        "**🌧️ It's raining tacos 🌮**",
+        "",
+        "**😋 Yum Yum, Yum Yum Yumity Yum 😋**",
+        "**It's like a dream!!!! 🌈**",
+        "**😋 Yum Yum, Yum Yum Yumity Yum 😋**",
+        "**Bring your sour cream 🥛**",
+        "",
+        "**🥙 Shell**",
+        "**🥩 Meat**",
+        "**🥬 Lettuce**",
+        "**🧀 Cheese**",
+        "",
+        "**🥙 Shell**",
+        "**🥩 Meat**",
+        "**🧀 Cheese Cheese Cheese Cheese Cheese 🧀**",
+        "",
+        "**🕊️ R.I.P Old Roblox 💔**"
+    ]
+
+    # Send line by line with 1 second delay
+    for line in lines:
+        await ctx.send(line)
+        await asyncio.sleep(1)
+
+
+# --------------------------------------------------------------
+#                      !rainbow (Admin Fun)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def rainbow(ctx):
+
+    # Strict permission check
+    if not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send("❌ You must have **Manage Server** permission to use this command.")
+
+    lines = [
+        "**❤️ RED ❤️**",
+        "**🧡 ORANGE 🧡**",
+        "**💛 YELLOW 💛**",
+        "**💚 GREEN 💚**",
+        "**💙 BLUE 💙**",
+        "**💜 PURPLE 💜**",
+        "",
+        "**🌈 FULL RAINBOW MODE ACTIVATED 🌈**",
+        "",
+        "**❤️🧡💛💚💙💜 R A I N B O W 💜💙💚💛🧡❤️**",
+        "",
+        "**✨ Taste the colors ✨**"
+    ]
+
+    # Send with delay
+    for line in lines:
+        await ctx.send(line)
+        await asyncio.sleep(1)
+
+
+# --------------------------------------------------------------
+#                   SPLIT OR STEAL EVENT (ADMIN)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def splitorsteal(ctx, prize: str):
+    parsed = parse_amount(prize)
+    if parsed is None or parsed <= 0:
+        return await ctx.send("❌ Invalid prize amount.")
+
+    participants = []
+    choices = {}
+    event_message = None
+    event_active = True  # prevents double-ending
+
+    # ----------------------------------------------------------
+    # JOIN BUTTON
+    # ----------------------------------------------------------
+    class JoinButton(View):
+        def __init__(self):
+            super().__init__(timeout=30)   # 30 seconds until auto-timeout
+
+        async def on_timeout(self):
+            nonlocal event_active
+            if not event_active:
+                return
+
+            if len(participants) < 2:
+                event_active = False
+                try:
+                    for b in self.children:
+                        b.disabled = True
+                    await event_message.edit(
+                        embed=discord.Embed(
+                            title="❌ Event Cancelled",
+                            description="Not enough participants joined in **30 seconds**.",
+                            color=discord.Color.red()
+                        ),
+                        view=self
+                    )
+                except:
+                    pass
+
+        @discord.ui.button(label="🎟 Join Event", style=discord.ButtonStyle.blurple)
+        async def join(self, interaction: discord.Interaction, button):
+            nonlocal event_active
+            user = interaction.user
+
+            if not event_active:
+                return await interaction.response.send_message("❌ Event already ended.", ephemeral=True)
+
+            if user in participants:
+                return await interaction.response.send_message("❌ You already joined!", ephemeral=True)
+
+            participants.append(user)
+            await interaction.response.send_message(f"✅ {user.mention} joined! ({len(participants)}/2)", ephemeral=False)
+
+            # If 2 joined → start immediately
+            if len(participants) == 2:
+                event_active = False
+                for b in self.children:
+                    b.disabled = True
+                await interaction.message.edit(view=self)
+                await start_round()
+
+    # ----------------------------------------------------------
+    # START ROUND
+    # ----------------------------------------------------------
+    async def start_round():
+        class ChoiceView(View):
+            def __init__(self, player):
+                super().__init__(timeout=None)
+                self.player = player
+
+            @discord.ui.button(label="🟩 SPLIT", style=discord.ButtonStyle.green)
+            async def choose_split(self, interaction: discord.Interaction, button):
+                if interaction.user != self.player:
+                    return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+                choices[self.player.id] = "split"
+                for b in self.children:
+                    b.disabled = True
+                await interaction.response.edit_message(content="🟩 You chose **SPLIT**", view=self)
+                await check_result()
+
+            @discord.ui.button(label="🟥 STEAL", style=discord.ButtonStyle.red)
+            async def choose_steal(self, interaction: discord.Interaction, button):
+                if interaction.user != self.player:
+                    return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+                choices[self.player.id] = "steal"
+                for b in self.children:
+                    b.disabled = True
+                await interaction.response.edit_message(content="🟥 You chose **STEAL**", view=self)
+                await check_result()
+
+        # private "DM-like" messages in channel
+        for p in participants:
+            await ctx.send(
+                f"||{p.mention}|| **Make your choice:**\n"
+                "🟩 **Split** (safe)\n"
+                "🟥 **Steal** (risky)",
+                view=ChoiceView(p)
+            )
+
+    # ----------------------------------------------------------
+    # RESULT CALCULATION
+    # ----------------------------------------------------------
+    async def check_result():
+        if len(choices) < 2:
+            return
+
+        p1, p2 = participants
+        c1 = choices[p1.id]
+        c2 = choices[p2.id]
+
+        # both split
+        if c1 == "split" and c2 == "split":
+            half = parsed / 2
+            ensure_user(p1.id)
+            ensure_user(p2.id)
+            data[str(p1.id)]["gems"] += half
+            data[str(p2.id)]["gems"] += half
+            save_data(data)
+            return await ctx.send(f"🤝 Both chose **SPLIT!**\nEach receives **{fmt(half)}** gems!")
+
+        # p1 steals
+        if c1 == "steal" and c2 == "split":
+            ensure_user(p1.id)
+            data[str(p1.id)]["gems"] += parsed
+            save_data(data)
+            return await ctx.send(f"🟥 {p1.mention} **STOLE EVERYTHING!**\nThey receive **{fmt(parsed)}** gems.")
+
+        # p2 steals
+        if c2 == "steal" and c1 == "split":
+            ensure_user(p2.id)
+            data[str(p2.id)]["gems"] += parsed
+            save_data(data)
+            return await ctx.send(f"🟥 {p2.mention} **STOLE EVERYTHING!**\nThey receive **{fmt(parsed)}** gems.")
+
+        # both steal
+        if c1 == "steal" and c2 == "steal":
+            return await ctx.send("💥 Both chose **STEAL** → Nobody gets anything 😭")
+
+    # ----------------------------------------------------------
+    # SEND EVENT MESSAGE
+    # ----------------------------------------------------------
+    embed = discord.Embed(
+        title="⚖️ Split or Steal Event",
+        description=(
+            f"💎 **Prize:** {fmt(parsed)} gems\n\n"
+            "**Click to join!**\n"
+            "First **2 participants** will play.\n"
+            "⏳ Auto-cancels in **30 seconds** if fewer than 2 join."
+        ),
+        color=galaxy_color()
+    )
+
+    view = JoinButton()
+    event_msg = await ctx.send(embed=embed, view=view)
+    event_message = event_msg
 
 
 
