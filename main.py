@@ -3577,49 +3577,49 @@ async def dm(ctx, message: str, role_id: str):
 @commands.has_guild_permissions(manage_guild=True)
 async def taco(ctx):
 
-    lyrics = """
-**🌮 HELLOOOO! 🌮**
+    blank = "‎ "  # ← invisible safe character (NOT empty)
 
-**🌧️ It's raining tacos**  
-**From out of the sky 🌌**  
-**🌮 Tacos 🌮**  
-**No need to ask why 🤷‍♂️**  
-**Just open your mouth 👄 and close your eyes 👁️**
+    taco_lines = [
+        "**🌮 HELLOOOO! 🌮**",
+        blank,
+        "**🌧️ It's raining tacos**",
+        "**From out of the sky 🌌**",
+        "**🌮 Tacos 🌮**",
+        "**No need to ask why 🤷‍♂️**",
+        "**Just open your mouth 👄 and close your eyes 👁️**",
+        blank,
+        "**🌧️ It's raining tacos**",
+        "**It's raining tacos 🌮🌧️**",
+        "**Out in the street 🏙️**",
+        "**🌮 Tacos 🌮**",
+        "**All you can eat 😋**",
+        "**Lettuce 🥬 and shell 🥙**",
+        "**Cheese 🧀 and meat 🥩**",
+        "**🌧️ It's raining tacos 🌮**",
+        blank,
+        "**😋 Yum Yum, Yum Yum Yumity Yum 😋**",
+        "**It's like a dream!!!! 🌈**",
+        "**😋 Yum Yum, Yum Yum Yumity Yum 😋**",
+        "**Bring your sour cream 🥛**",
+        blank,
+        "**🥙 Shell**",
+        "**🥩 Meat**",
+        "**🥬 Lettuce**",
+        "**🧀 Cheese**",
+        blank,
+        "**🥙 Shell**",
+        "**🥩 Meat**",
+        "**🧀 Cheese Cheese Cheese Cheese Cheese 🧀**",
+        blank,
+        "**🕊️ R.I.P Old Roblox 💔**"
+    ]
 
-**🌧️ It's raining tacos**  
-**It's raining tacos 🌮🌧️**  
-**Out in the street 🏙️**  
-**🌮 Tacos 🌮**  
-**All you can eat 😋**  
-**Lettuce 🥬 and shell 🥙**  
-**Cheese 🧀 and meat 🥩**  
-**🌧️ It's raining tacos 🌮**
+    for line in taco_lines:
+        # Discord rejects empty messages → this fixes everything
+        safe_line = line if line.strip() != "" else blank
+        await ctx.send(safe_line)
+        await asyncio.sleep(1)
 
-**😋 Yum Yum, Yum Yum Yumity Yum 😋**  
-**It's like a dream!!!! 🌈**  
-**😋 Yum Yum, Yum Yum Yumity Yum 😋**  
-**Bring your sour cream 🥛**
-
-**🥙 Shell**  
-**🥩 Meat**  
-**🥬 Lettuce**  
-**🧀 Cheese**
-
-**🥙 Shell**  
-**🥩 Meat**  
-**🧀 Cheese Cheese Cheese Cheese Cheese 🧀**
-
-**🕊️ R.I.P Old Roblox 💔**
-"""
-
-    embed = discord.Embed(
-        title="🌮 It's Raining Tacos!",
-        description=lyrics,
-        color=discord.Color.gold()
-    )
-
-    await ctx.send(embed=embed)
-    return
 
 
 
