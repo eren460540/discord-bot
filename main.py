@@ -3575,11 +3575,6 @@ async def dm(ctx, message: str, role_id: str):
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def taco(ctx):
-
-    # Strict permission check
-    if not ctx.author.guild_permissions.manage_guild:
-        return await ctx.send("❌ You must have **Manage Server** permission to use this command.")
-
     lines = [
         "**🌮 HELLOOOO! 🌮**",
         "",
@@ -3615,205 +3610,192 @@ async def taco(ctx):
         "**🕊️ R.I.P Old Roblox 💔**"
     ]
 
-    # Send line by line with 1 second delay
     for line in lines:
         await ctx.send(line)
         await asyncio.sleep(1)
+
+    return
+
 
 
 # --------------------------------------------------------------
 #                      !rainbow (Admin Fun)
 # --------------------------------------------------------------
 @bot.command()
-@commands.has_guild_permissions(manage_guild=True)
 async def rainbow(ctx):
-
-    # Strict permission check
-    if not ctx.author.guild_permissions.manage_guild:
-        return await ctx.send("❌ You must have **Manage Server** permission to use this command.")
-
-    lines = [
-        "**❤️ RED ❤️**",
-        "**🧡 ORANGE 🧡**",
-        "**💛 YELLOW 💛**",
-        "**💚 GREEN 💚**",
-        "**💙 BLUE 💙**",
-        "**💜 PURPLE 💜**",
-        "",
-        "**🌈 FULL RAINBOW MODE ACTIVATED 🌈**",
-        "",
-        "**❤️🧡💛💚💙💜 R A I N B O W 💜💙💚💛🧡❤️**",
-        "",
-        "**✨ Taste the colors ✨**"
+    colors = [
+        ("❤️", "RED"),
+        ("🧡", "ORANGE"),
+        ("💛", "YELLOW"),
+        ("💚", "GREEN"),
+        ("💙", "BLUE"),
+        ("💜", "PURPLE"),
     ]
 
-    # Send with delay
-    for line in lines:
-        await ctx.send(line)
-        await asyncio.sleep(1)
+    msg = ""
+    for emoji, name in colors:
+        msg += f"{emoji} **{name}** {emoji}\n"
+        await ctx.send(msg)
+        await asyncio.sleep(0.8)
+        msg = ""  # reset so it doesn't spam multiple lines
+
+    return  # <-- VERY IMPORTANT
+
 
 
 # --------------------------------------------------------------
-#                   SPLIT OR STEAL EVENT (ADMIN)
+#                   SPLIT OR STEAL (ADMIN)
 # --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def splitorsteal(ctx, prize: str):
-    parsed = parse_amount(prize)
-    if parsed is None or parsed <= 0:
+    parsed_prize = parse_amount(prize, None, allow_all=False)
+    if parsed_prize is None or parsed_prize <= 0:
         return await ctx.send("❌ Invalid prize amount.")
 
-    participants = []
-    choices = {}
-    event_message = None
-    event_active = True  # prevents double-ending
+    join_list = []  # store all participants
 
-    # ----------------------------------------------------------
-    # JOIN BUTTON
-    # ----------------------------------------------------------
     class JoinButton(View):
         def __init__(self):
-            super().__init__(timeout=30)   # 30 seconds until auto-timeout
+            super().__init__(timeout=30)
+
+        @discord.ui.button(label="✨ JOIN GAME ✨", style=discord.ButtonStyle.blurple)
+        async def join(self, interaction: discord.Interaction, button):
+            if interaction.user.id not in join_list:
+                join_list.append(interaction.user.id)
+                await interaction.response.send_message(
+                    f"🟢 {interaction.user.mention} joined!", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ You already joined.", ephemeral=True
+                )
 
         async def on_timeout(self):
-            nonlocal event_active
-            if not event_active:
-                return
+            for b in self.children:
+                b.disabled = True
+            try:
+                await message.edit(view=self)
+            except:
+                pass
 
-            if len(participants) < 2:
-                event_active = False
-                try:
-                    for b in self.children:
-                        b.disabled = True
-                    await event_message.edit(
-                        embed=discord.Embed(
-                            title="❌ Event Cancelled",
-                            description="Not enough participants joined in **30 seconds**.",
-                            color=discord.Color.red()
-                        ),
-                        view=self
-                    )
-                except:
-                    pass
-
-        @discord.ui.button(label="🎟 Join Event", style=discord.ButtonStyle.blurple)
-        async def join(self, interaction: discord.Interaction, button):
-            nonlocal event_active
-            user = interaction.user
-
-            if not event_active:
-                return await interaction.response.send_message("❌ Event already ended.", ephemeral=True)
-
-            if user in participants:
-                return await interaction.response.send_message("❌ You already joined!", ephemeral=True)
-
-            participants.append(user)
-            await interaction.response.send_message(f"✅ {user.mention} joined! ({len(participants)}/2)", ephemeral=False)
-
-            # If 2 joined → start immediately
-            if len(participants) == 2:
-                event_active = False
-                for b in self.children:
-                    b.disabled = True
-                await interaction.message.edit(view=self)
-                await start_round()
-
-    # ----------------------------------------------------------
-    # START ROUND
-    # ----------------------------------------------------------
-    async def start_round():
-        class ChoiceView(View):
-            def __init__(self, player):
-                super().__init__(timeout=None)
-                self.player = player
-
-            @discord.ui.button(label="🟩 SPLIT", style=discord.ButtonStyle.green)
-            async def choose_split(self, interaction: discord.Interaction, button):
-                if interaction.user != self.player:
-                    return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-
-                choices[self.player.id] = "split"
-                for b in self.children:
-                    b.disabled = True
-                await interaction.response.edit_message(content="🟩 You chose **SPLIT**", view=self)
-                await check_result()
-
-            @discord.ui.button(label="🟥 STEAL", style=discord.ButtonStyle.red)
-            async def choose_steal(self, interaction: discord.Interaction, button):
-                if interaction.user != self.player:
-                    return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
-
-                choices[self.player.id] = "steal"
-                for b in self.children:
-                    b.disabled = True
-                await interaction.response.edit_message(content="🟥 You chose **STEAL**", view=self)
-                await check_result()
-
-        # private "DM-like" messages in channel
-        for p in participants:
-            await ctx.send(
-                f"||{p.mention}|| **Make your choice:**\n"
-                "🟩 **Split** (safe)\n"
-                "🟥 **Steal** (risky)",
-                view=ChoiceView(p)
-            )
-
-    # ----------------------------------------------------------
-    # RESULT CALCULATION
-    # ----------------------------------------------------------
-    async def check_result():
-        if len(choices) < 2:
-            return
-
-        p1, p2 = participants
-        c1 = choices[p1.id]
-        c2 = choices[p2.id]
-
-        # both split
-        if c1 == "split" and c2 == "split":
-            half = parsed / 2
-            ensure_user(p1.id)
-            ensure_user(p2.id)
-            data[str(p1.id)]["gems"] += half
-            data[str(p2.id)]["gems"] += half
-            save_data(data)
-            return await ctx.send(f"🤝 Both chose **SPLIT!**\nEach receives **{fmt(half)}** gems!")
-
-        # p1 steals
-        if c1 == "steal" and c2 == "split":
-            ensure_user(p1.id)
-            data[str(p1.id)]["gems"] += parsed
-            save_data(data)
-            return await ctx.send(f"🟥 {p1.mention} **STOLE EVERYTHING!**\nThey receive **{fmt(parsed)}** gems.")
-
-        # p2 steals
-        if c2 == "steal" and c1 == "split":
-            ensure_user(p2.id)
-            data[str(p2.id)]["gems"] += parsed
-            save_data(data)
-            return await ctx.send(f"🟥 {p2.mention} **STOLE EVERYTHING!**\nThey receive **{fmt(parsed)}** gems.")
-
-        # both steal
-        if c1 == "steal" and c2 == "steal":
-            return await ctx.send("💥 Both chose **STEAL** → Nobody gets anything 😭")
-
-    # ----------------------------------------------------------
-    # SEND EVENT MESSAGE
-    # ----------------------------------------------------------
     embed = discord.Embed(
-        title="⚖️ Split or Steal Event",
+        title="🟦 SPLIT OR STEAL — Join Now!",
         description=(
-            f"💎 **Prize:** {fmt(parsed)} gems\n\n"
-            "**Click to join!**\n"
-            "First **2 participants** will play.\n"
-            "⏳ Auto-cancels in **30 seconds** if fewer than 2 join."
+            f"💎 **Prize:** {fmt(parsed_prize)}\n"
+            "**Click the button below to join!**\n"
+            "⏳ You have **30 seconds**."
         ),
         color=galaxy_color()
     )
 
     view = JoinButton()
-    event_msg = await ctx.send(embed=embed, view=view)
-    event_message = event_msg
+    message = await ctx.send(embed=embed, view=view)
+
+    # Wait 30 seconds for join phase to end
+    await asyncio.sleep(30)
+
+    # ----------------------------
+    # PICK RANDOM 2 PARTICIPANTS
+    # ----------------------------
+    if len(join_list) < 2:
+        return await ctx.send("❌ **Event cancelled — not enough participants.**")
+
+    p1_id, p2_id = random.sample(join_list, 2)
+    p1 = ctx.guild.get_member(p1_id)
+    p2 = ctx.guild.get_member(p2_id)
+
+    await ctx.send(
+        f"🎉 **Participants Selected:**\n"
+        f"1️⃣ {p1.mention}\n"
+        f"2️⃣ {p2.mention}\n"
+        f"Both players have received their **secret choices**…"
+    )
+
+    # Store choices
+    choices = {p1_id: None, p2_id: None}
+
+    # ------------------------------------------------
+    # SECRET BUTTON VIEW FOR EACH PLAYER
+    # ------------------------------------------------
+    class ChoiceView(View):
+        def __init__(self, player):
+            super().__init__(timeout=30)
+            self.player = player
+
+        @discord.ui.button(label="🤝 SPLIT", style=discord.ButtonStyle.green)
+        async def split(self, interaction: discord.Interaction, button):
+            if interaction.user.id != self.player.id:
+                return await interaction.response.send_message("❌ Not your buttons.", ephemeral=True)
+
+            choices[self.player.id] = "split"
+            await interaction.response.send_message("🟢 You chose **SPLIT**.", ephemeral=True)
+            self._disable_all()
+
+        @discord.ui.button(label="💰 STEAL", style=discord.ButtonStyle.red)
+        async def steal(self, interaction: discord.Interaction, button):
+            if interaction.user.id != self.player.id:
+                return await interaction.response.send_message("❌ Not your buttons.", ephemeral=True)
+
+            choices[self.player.id] = "steal"
+            await interaction.response.send_message("🔴 You chose **STEAL**.", ephemeral=True)
+            self._disable_all()
+
+        def _disable_all(self):
+            for b in self.children:
+                b.disabled = True
+
+        async def on_timeout(self):
+            self._disable_all()
+
+    # Send secret choices
+    await ctx.send(f"🔐 Sending secret choices to {p1.mention}…")
+    await ctx.send(f"🔐 Sending secret choices to {p2.mention}…")
+
+    await ctx.send(f"{p1.mention}", view=ChoiceView(p1))
+    await ctx.send(f"{p2.mention}", view=ChoiceView(p2))
+
+    # ---------------- WAIT FOR BOTH CHOICES ----------------
+    while choices[p1_id] is None or choices[p2_id] is None:
+        await asyncio.sleep(1)
+
+    c1 = choices[p1_id]
+    c2 = choices[p2_id]
+
+    # ---------------- EVALUATE OUTCOME ----------------
+    if c1 == "steal" and c2 == "steal":
+        result = "💀 **Both players stole — nobody gets anything!**"
+    elif c1 == "steal" and c2 == "split":
+        ensure_user(p1_id)
+        data[str(p1_id)]["gems"] += parsed_prize
+        save_data(data)
+        result = f"🔴 {p1.mention} **stole everything** and gets **{fmt(parsed_prize)}**!"
+    elif c1 == "split" and c2 == "steal":
+        ensure_user(p2_id)
+        data[str(p2_id)]["gems"] += parsed_prize
+        save_data(data)
+        result = f"🔴 {p2.mention} **stole everything** and gets **{fmt(parsed_prize)}**!"
+    else:  # both split
+        half = parsed_prize / 2
+        ensure_user(p1_id)
+        ensure_user(p2_id)
+        data[str(p1_id)]["gems"] += half
+        data[str(p2_id)]["gems"] += half
+        save_data(data)
+        result = (
+            f"🟢 Both players split!\n"
+            f"{p1.mention} gets **{fmt(half)}**\n"
+            f"{p2.mention} gets **{fmt(half)}**"
+        )
+
+    # ---------------- SEND RESULT ----------------
+    await ctx.send(
+        embed=discord.Embed(
+            title="🎭 Split or Steal — Results",
+            description=result,
+            color=galaxy_color()
+        )
+    )
 
 
 
