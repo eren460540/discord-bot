@@ -3579,13 +3579,13 @@ async def taco(ctx):
 
     taco_lines = [
         "**🌮 HELLOOOO! 🌮**",
-        "",
+        " ",   # <-- EMPTY FIXED
         "**🌧️ It's raining tacos**",
         "**From out of the sky 🌌**",
         "**🌮 Tacos 🌮**",
         "**No need to ask why 🤷‍♂️**",
         "**Just open your mouth 👄 and close your eyes 👁️**",
-        "",
+        " ",
         "**🌧️ It's raining tacos**",
         "**It's raining tacos 🌮🌧️**",
         "**Out in the street 🏙️**",
@@ -3594,21 +3594,21 @@ async def taco(ctx):
         "**Lettuce 🥬 and shell 🥙**",
         "**Cheese 🧀 and meat 🥩**",
         "**🌧️ It's raining tacos 🌮**",
-        "",
+        " ",
         "**😋 Yum Yum, Yum Yum Yumity Yum 😋**",
         "**It's like a dream!!!! 🌈**",
         "**😋 Yum Yum, Yum Yum Yumity Yum 😋**",
         "**Bring your sour cream 🥛**",
-        "",
+        " ",
         "**🥙 Shell**",
         "**🥩 Meat**",
         "**🥬 Lettuce**",
         "**🧀 Cheese**",
-        "",
+        " ",
         "**🥙 Shell**",
         "**🥩 Meat**",
         "**🧀 Cheese Cheese Cheese Cheese Cheese 🧀**",
-        "",
+        " ",
         "**🕊️ R.I.P Old Roblox 💔**"
     ]
 
@@ -3617,6 +3617,7 @@ async def taco(ctx):
         await asyncio.sleep(0.8)
 
     return
+
 
 
 
