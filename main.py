@@ -3572,10 +3572,12 @@ async def dm(ctx, message: str, role_id: str):
 # --------------------------------------------------------------
 #                      !taco (Admin Fun)
 # --------------------------------------------------------------
+
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def taco(ctx):
-    lines = [
+
+    taco_lines = [
         "**🌮 HELLOOOO! 🌮**",
         "",
         "**🌧️ It's raining tacos**",
@@ -3610,11 +3612,12 @@ async def taco(ctx):
         "**🕊️ R.I.P Old Roblox 💔**"
     ]
 
-    for line in lines:
+    for line in taco_lines:
         await ctx.send(line)
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.8)
 
     return
+
 
 
 
