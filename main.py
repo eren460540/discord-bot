@@ -811,88 +811,8 @@ async def block_commands_in_locked_category(ctx):
 
 
 # --------------------------------------------------------------
-#                      SELL COMMAND (UPDATED)
+#                      SELL COMMAND (NO x50 RULE)
 # --------------------------------------------------------------
-
-def short(n: int):
-    try:
-        n = int(n)
-    except:
-        return str(n)
-
-    if n >= 1_000_000_000:
-        return f"{n/1_000_000_000:.2f}".rstrip("0").rstrip(".") + "b"
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.2f}".rstrip("0").rstrip(".") + "m"
-    if n >= 1_000:
-        return f"{n/1000:.2f}".rstrip("0").rstrip(".") + "k"
-    return str(n)
-
-
-class ListingButtons(View):
-    def __init__(self, owner_id: int, price_raw: int, income_display: str, price_display: str, name: str):
-        super().__init__(timeout=None)
-        self.owner_id = owner_id
-        self.price_raw = price_raw
-        self.income_display = income_display
-        self.price_display = price_display
-        self.name = name
-
-    @discord.ui.button(label="🛒 Buy", style=discord.ButtonStyle.blurple)
-    async def buy(self, interaction: discord.Interaction, button: Button):
-        buyer = interaction.user
-        ensure_user(buyer.id)
-        ensure_user(self.owner_id)
-
-        buyer_data = data[str(buyer.id)]
-        required = self.price_raw * 50  # x50 RULE
-
-        if buyer_data["gems"] < required:
-            return await interaction.response.send_message(
-                f"❌ You need **{fmt(required)}** gems to buy this.",
-                ephemeral=True
-            )
-
-        buyer_data["gems"] -= required
-        save_data(data)
-
-        guild = interaction.guild
-        seller = guild.get_member(self.owner_id)
-
-        channel_name = f"ticket-{self.price_display}-{self.income_display}".replace("/", "")
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            buyer: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            seller: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        }
-
-        for m in guild.members:
-            if m.guild_permissions.manage_guild:
-                overwrites[m] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-
-        ticket = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
-
-        await interaction.response.send_message(f"✅ Ticket created: {ticket.mention}", ephemeral=True)
-
-        await ticket.send(
-            f"📨 **Marketplace Ticket Created**\n"
-            f"👤 **Buyer:** {buyer.mention}\n"
-            f"👑 **Owner:** {seller.mention}\n"
-            f"🛡 **Middleman:** Any staff with `Manage Server`\n"
-            f"📦 **Item:** {self.name}\n"
-            f"💵 **Paid:** {fmt(required)} gems\n"
-            f"⚠ Complete the trade inside this ticket."
-        )
-
-    @discord.ui.button(label="❌ Cancel Listing", style=discord.ButtonStyle.red)
-    async def cancel(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("❌ Only the listing owner can cancel.", ephemeral=True)
-
-        await interaction.message.delete()
-        await interaction.response.send_message("🗑 Listing removed.", ephemeral=True)
-
 
 @bot.command()
 async def sell(ctx, name: str, income: str, price: str):
@@ -902,9 +822,10 @@ async def sell(ctx, name: str, income: str, price: str):
     except:
         return await ctx.send("❌ Invalid number. Use: 5m, 10m, 250k, 1b, etc.")
 
+    ensure_user(ctx.author.id)
+
     income_disp = short(income_val) + "/s"
     price_disp = short(price_val)
-    price_x50 = short(price_val * 50)
 
     embed = discord.Embed(
         title=f"Listing from {ctx.author.display_name}",
@@ -914,12 +835,82 @@ async def sell(ctx, name: str, income: str, price: str):
     embed.add_field(name="📈 Income", value=income_disp, inline=False)
     embed.add_field(
         name="💵 Price",
-        value=f"{price_disp} (**{price_x50} bot balance**)",
+        value=f"{price_disp} gems",
         inline=False
     )
     embed.set_footer(text="Use !sell to create your own listing.")
 
     market_channel = bot.get_channel(1442936279644897381)
+
+    class ListingButtons(View):
+        def __init__(self, owner_id, price_raw, income_display, price_display, name):
+            super().__init__(timeout=None)
+            self.owner_id = owner_id
+            self.price_raw = price_raw
+            self.income_display = income_display
+            self.price_display = price_display
+            self.name = name
+
+        @discord.ui.button(label="🛒 Buy", style=discord.ButtonStyle.blurple)
+        async def buy(self, interaction: discord.Interaction, button):
+            buyer = interaction.user
+            ensure_user(buyer.id)
+            ensure_user(self.owner_id)
+
+            buyer_data = data[str(buyer.id)]
+
+            # --- NO X50 RULE ---
+            required = self.price_raw
+
+            if buyer_data["gems"] < required:
+                return await interaction.response.send_message(
+                    f"❌ You need **{fmt(required)}** gems to buy this.",
+                    ephemeral=True
+                )
+
+            # Remove gems from buyer
+            buyer_data["gems"] -= required
+            save_data(data)
+
+            guild = interaction.guild
+            seller = guild.get_member(self.owner_id)
+
+            channel_name = f"ticket-{self.price_display}-{self.income_display}".replace("/", "")
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                buyer: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                seller: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            }
+
+            # Add admins
+            for m in guild.members:
+                if m.guild_permissions.manage_guild:
+                    overwrites[m] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+            ticket = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+
+            await interaction.response.send_message(f"✅ Ticket created: {ticket.mention}", ephemeral=True)
+
+            await ticket.send(
+                f"📨 **Marketplace Ticket Created**\n"
+                f"👤 **Buyer:** {buyer.mention}\n"
+                f"👑 **Owner:** {seller.mention}\n"
+                f"🛡 **Middleman:** Any staff with `Manage Server`\n"
+                f"📦 **Item:** {self.name}\n"
+                f"💵 **Paid:** {fmt(required)} gems\n"
+                f"⚠ Complete the trade inside this ticket."
+            )
+
+        @discord.ui.button(label="❌ Cancel Listing", style=discord.ButtonStyle.red)
+        async def cancel(self, interaction: discord.Interaction, button):
+            if interaction.user.id != self.owner_id:
+                return await interaction.response.send_message(
+                    "❌ Only the listing owner can cancel.", ephemeral=True
+                )
+
+            await interaction.message.delete()
+            await interaction.response.send_message("🗑 Listing removed.", ephemeral=True)
 
     view = ListingButtons(
         owner_id=ctx.author.id,
