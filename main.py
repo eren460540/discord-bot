@@ -480,218 +480,428 @@ def parse_market_number(value: str) -> int:
 
 
 
+# ==============================================================
+#                    GROW A GARDEN – FULL SYSTEM
+# ==============================================================
 
-class SeedBuyButton(discord.ui.Button):
-    def __init__(self, seed_id: str, label: str):
-        super().__init__(label=label, style=discord.ButtonStyle.green, row=0)
-        self.seed_id = seed_id
-
-    async def callback(self, interaction: discord.Interaction):
-        ok, msg = buy_seed_from_shop(interaction.user.id, self.seed_id)
-        # Embed'i güncelle (shop paneli yeniden render)
-        embed = build_shop_embed(interaction.user)
-        view = ShopView(interaction.user.id)
-        await interaction.response.edit_message(embed=embed, view=view)
-        await interaction.followup.send(msg, ephemeral=True)
-
-
-
-
-
-import discord
-from discord.ext import commands
 import time
 import random
+import json
+import io
+import discord
+from discord.ext import commands
 
-
-# ==============================================================
-#                    GROW A GARDEN – CORE
-# ==============================================================
-#
-# GEREKEN GLOBALLER (ZATEN BOTUNDA VAR OLMALI):
-# - data: dict         → Tüm kullanıcı verileri
-# - ensure_user(id)    → Kullanıcı kaydı yoksa açar
-# - save_data(data)    → JSON kaydet
-# - galaxy_color()     → Embed rengi döndürür
-#
-# ==============================================================
-
-# ---------------------- GARDEN PROFILE -------------------------
+# --------------------------------------------------------------
+#                  GARDEN PROFILE / ECONOMY
+# --------------------------------------------------------------
 
 def ensure_garden_profile(user_id: int):
-    """Kullanıcıya ait garden profili yoksa oluşturur, varsa döner."""
+    """
+    Kullanıcı için garden profili yoksa oluşturur.
+    Para birimi: SHECKLES
+    Başlangıç: 10 sheckles
+    """
     ensure_user(user_id)
     u = data.setdefault(str(user_id), {})
     g = u.setdefault("garden", {})
 
-    # BAŞLANGIÇ BAKİYESİ: 2.500.000 g-coins
-    g.setdefault("coins", 2_500_000)
-
-    g.setdefault("seeds", {})       # {"carrot": 5, "apple_tree": 2, ...}
-    g.setdefault("plots", {})       # {"1": plant, "2": plant, ...}
-    g.setdefault("max_plots", 9)    # başlangıç 3x3
+    g.setdefault("sheckles", 10)       # herkes 10 sheckles ile başlar
+    g.setdefault("seeds", {})          # {"carrot": 3, ...}
+    g.setdefault("plots", {})          # {"1": plant_dict, ...}
+    g.setdefault("max_plots", 9)       # 3x3 başlangıç
     g.setdefault("ascension_level", 0)
     g.setdefault("ascension_points", 0)
     g.setdefault("stats", {
         "total_harvests": 0,
-        "total_gcoins_earned": 0,
-        "total_mutations": 0,
-        "giants_harvested": 0
+        "total_sheckles_earned": 0,
+        "huge_harvests": 0,
     })
 
     save_data(data)
     return g
 
+# Plant objesi:
+# {
+#   "seed_id": str,
+#   "planted_at": float,
+#   "ready_at": float,
+#   "harvests_done": int,
+#   "max_harvests": int
+# }
+
 
 # --------------------------------------------------------------
-#                   SEED DEFINITIONS
+#                   SEED DEFINITIONS (FROM TABLE)
 # --------------------------------------------------------------
 
-# rarity: Common / Uncommon / Rare / Legendary / Mythical / Ancient / Transcendent
+# harvest_type: "Single" or "Multi"
+# rarity: Common / Uncommon / Rare / Legendary / Mythical / Divine / Prismatic / Transcendent
+# restock_1_in: fotoğraftaki "1 in X" değeri (1 => her rotasyonda her zaman)
+# base_time: büyüme süresi (saniye) – oyuna göre yaklaşık ayarlanmış
+# Kazanç: sheckle_cost etrafında rastgele (0.8x – 1.2x)
 
 GROW_SEEDS = {
     "carrot": {
         "id": "carrot",
         "name": "Carrot",
+        "sheckle_cost": 10,
+        "harvest_type": "Single",
         "rarity": "Common",
-        "base_time": 5 * 60,        # 5 dakika
-        "base_value": 50,           # coin
-        "max_harvests": 1,          # tek hasat
-        "multi_harvest": False,
+        "restock_1_in": 1,
+        "base_time": 5 * 60,
+    },
+    "strawberry": {
+        "id": "strawberry",
+        "name": "Strawberry",
+        "sheckle_cost": 50,
+        "harvest_type": "Multi",
+        "rarity": "Common",
+        "restock_1_in": 1,
+        "base_time": 6 * 60,
+    },
+    "blueberry": {
+        "id": "blueberry",
+        "name": "Blueberry",
+        "sheckle_cost": 400,
+        "harvest_type": "Multi",
+        "rarity": "Uncommon",
+        "restock_1_in": 1,
+        "base_time": 8 * 60,
+    },
+    "buttercup": {  # Orange Tulip satırı
+        "id": "buttercup",
+        "name": "Buttercup",
+        "sheckle_cost": 600,
+        "harvest_type": "Single",
+        "rarity": "Uncommon",
+        "restock_1_in": 3,  # 1 in 3
+        "base_time": 10 * 60,
     },
     "tomato": {
         "id": "tomato",
         "name": "Tomato",
-        "rarity": "Common",
-        "base_time": 7 * 60,
-        "base_value": 70,
-        "max_harvests": 2,
-        "multi_harvest": True,
+        "sheckle_cost": 800,
+        "harvest_type": "Multi",
+        "rarity": "Rare",
+        "restock_1_in": 1,
+        "base_time": 10 * 60,
     },
-    "berry_bush": {
-        "id": "berry_bush",
-        "name": "Berry Bush",
-        "rarity": "Uncommon",
-        "base_time": 15 * 60,
-        "base_value": 150,
-        "max_harvests": 3,
-        "multi_harvest": True,
+    "corn": {
+        "id": "corn",
+        "name": "Corn",
+        "sheckle_cost": 1300,
+        "harvest_type": "Multi",
+        "rarity": "Rare",
+        "restock_1_in": 6,  # 16%
+        "base_time": 12 * 60,
     },
-    "apple_tree": {
-        "id": "apple_tree",
-        "name": "Apple Tree",
-        "rarity": "Uncommon",
+    "daffodil": {
+        "id": "daffodil",
+        "name": "Daffodil",
+        "sheckle_cost": 1000,
+        "harvest_type": "Single",
+        "rarity": "Rare",
+        "restock_1_in": 7,
+        "base_time": 12 * 60,
+    },
+    "watermelon": {
+        "id": "watermelon",
+        "name": "Watermelon",
+        "sheckle_cost": 2500,
+        "harvest_type": "Single",
+        "rarity": "Legendary",
+        "restock_1_in": 8,
         "base_time": 20 * 60,
-        "base_value": 220,
-        "max_harvests": 4,
-        "multi_harvest": True,
+    },
+    "pumpkin": {
+        "id": "pumpkin",
+        "name": "Pumpkin",
+        "sheckle_cost": 3000,
+        "harvest_type": "Single",
+        "rarity": "Legendary",
+        "restock_1_in": 10,
+        "base_time": 20 * 60,
+    },
+    "apple": {
+        "id": "apple",
+        "name": "Apple",
+        "sheckle_cost": 3250,
+        "harvest_type": "Multi",
+        "rarity": "Legendary",
+        "restock_1_in": 14,
+        "base_time": 22 * 60,
+    },
+    "bamboo": {
+        "id": "bamboo",
+        "name": "Bamboo",
+        "sheckle_cost": 4000,
+        "harvest_type": "Single",
+        "rarity": "Legendary",
+        "restock_1_in": 5,
+        "base_time": 22 * 60,
+    },
+    "coconut": {
+        "id": "coconut",
+        "name": "Coconut",
+        "sheckle_cost": 6000,
+        "harvest_type": "Multi",
+        "rarity": "Mythical",
+        "restock_1_in": 20,
+        "base_time": 30 * 60,
+    },
+    "cactus": {
+        "id": "cactus",
+        "name": "Cactus",
+        "sheckle_cost": 15000,
+        "harvest_type": "Multi",
+        "rarity": "Mythical",
+        "restock_1_in": 30,
+        "base_time": 35 * 60,
+    },
+    "dragon_fruit": {
+        "id": "dragon_fruit",
+        "name": "Dragon Fruit",
+        "sheckle_cost": 50000,
+        "harvest_type": "Multi",
+        "rarity": "Mythical",
+        "restock_1_in": 50,
+        "base_time": 45 * 60,
+    },
+    "mango": {
+        "id": "mango",
+        "name": "Mango",
+        "sheckle_cost": 100000,
+        "harvest_type": "Multi",
+        "rarity": "Mythical",
+        "restock_1_in": 80,
+        "base_time": 60 * 60,
+    },
+    "grape": {
+        "id": "grape",
+        "name": "Grape",
+        "sheckle_cost": 850000,
+        "harvest_type": "Multi",
+        "rarity": "Divine",
+        "restock_1_in": 100,
+        "base_time": 70 * 60,
+    },
+    "mushroom": {
+        "id": "mushroom",
+        "name": "Mushroom",
+        "sheckle_cost": 150000,
+        "harvest_type": "Single",
+        "rarity": "Divine",
+        "restock_1_in": 120,
+        "base_time": 65 * 60,
+    },
+    "pepper": {
+        "id": "pepper",
+        "name": "Pepper",
+        "sheckle_cost": 1_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Divine",
+        "restock_1_in": 140,
+        "base_time": 75 * 60,
+    },
+    "cacao": {
+        "id": "cacao",
+        "name": "Cacao",
+        "sheckle_cost": 2_500_000,
+        "harvest_type": "Multi",
+        "rarity": "Divine",
+        "restock_1_in": 160,
+        "base_time": 80 * 60,
+    },
+    "sunflower": {
+        "id": "sunflower",
+        "name": "Sunflower",
+        "sheckle_cost": 5_555_655,
+        "harvest_type": "Multi",
+        "rarity": "Divine",
+        "restock_1_in": 180,
+        "base_time": 90 * 60,
+    },
+    "beanstalk": {
+        "id": "beanstalk",
+        "name": "Beanstalk",
+        "sheckle_cost": 10_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Prismatic",
+        "restock_1_in": 210,
+        "base_time": 100 * 60,
+    },
+    "ember_lily": {
+        "id": "ember_lily",
+        "name": "Ember Lily",
+        "sheckle_cost": 15_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Prismatic",
+        "restock_1_in": 240,
+        "base_time": 110 * 60,
+    },
+    "sugar_apple": {
+        "id": "sugar_apple",
+        "name": "Sugar Apple",
+        "sheckle_cost": 25_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Prismatic",
+        "restock_1_in": 290,
+        "base_time": 120 * 60,
     },
     "burning_bud": {
         "id": "burning_bud",
         "name": "Burning Bud",
-        "rarity": "Rare",
-        "base_time": 40 * 60,
-        "base_value": 600,
-        "max_harvests": 2,
-        "multi_harvest": True,
+        "sheckle_cost": 40_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Prismatic",
+        "restock_1_in": 340,
+        "base_time": 130 * 60,
     },
-    "moonfruit": {
-        "id": "moonfruit",
-        "name": "Moonfruit",
-        "rarity": "Legendary",
-        "base_time": 60 * 60,
-        "base_value": 1200,
-        "max_harvests": 3,
-        "multi_harvest": True,
+    "giant_pinecone": {
+        "id": "giant_pinecone",
+        "name": "Giant Pinecone",
+        "sheckle_cost": 55_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Prismatic",
+        "restock_1_in": 380,
+        "base_time": 140 * 60,
     },
-    "star_peach": {
-        "id": "star_peach",
-        "name": "Star Peach",
-        "rarity": "Mythical",
-        "base_time": 90 * 60,
-        "base_value": 2500,
-        "max_harvests": 2,
-        "multi_harvest": True,
+    "elder_strawberry": {
+        "id": "elder_strawberry",
+        "name": "Elder Strawberry",
+        "sheckle_cost": 70_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Prismatic",
+        "restock_1_in": 400,
+        "base_time": 150 * 60,
     },
-    "ancient_melon": {
-        "id": "ancient_melon",
-        "name": "Ancient Melon",
-        "rarity": "Ancient",
-        "base_time": 2 * 60 * 60,
-        "base_value": 6000,
-        "max_harvests": 1,
-        "multi_harvest": False,
+    "romanesco": {
+        "id": "romanesco",
+        "name": "Romanesco",
+        "sheckle_cost": 88_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Prismatic",
+        "restock_1_in": 440,
+        "base_time": 160 * 60,
     },
-    "sun_core": {
-        "id": "sun_core",
-        "name": "Sun Core",
+    "crimson_thorn": {
+        "id": "crimson_thorn",
+        "name": "Crimson Thorn",
+        "sheckle_cost": 10_000_000_000,
+        "harvest_type": "Multi",
         "rarity": "Transcendent",
+        "restock_1_in": 777,
         "base_time": 3 * 60 * 60,
-        "base_value": 12000,
-        "max_harvests": 1,
-        "multi_harvest": False,
+    },
+    "zebrazinkle": {
+        "id": "zebrazinkle",
+        "name": "Zebrazinkle",
+        "sheckle_cost": 21_000_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Transcendent",
+        "restock_1_in": 1000,
+        "base_time": 3 * 60 * 60,
+    },
+    "octobloom": {
+        "id": "octobloom",
+        "name": "Octobloom",
+        "sheckle_cost": 33_000_000_000,
+        "harvest_type": "Multi",
+        "rarity": "Transcendent",
+        "restock_1_in": 1250,
+        "base_time": 3 * 60 * 60,
     },
 }
 
-# Seed fiyatları – garden coins ile (rarity base)
-GROW_SEED_PRICES = {
-    "Common": 100,
-    "Uncommon": 300,
-    "Rare": 800,
-    "Legendary": 2000,
-    "Mythical": 5000,
-    "Ancient": 50000,
-    "Transcendent": 100000,
+# Multi harvest sayısı – basit sistem
+def get_max_harvests(seed_id: str) -> int:
+    s = GROW_SEEDS[seed_id]
+    return 3 if s["harvest_type"] == "Multi" else 1
+
+
+# --------------------------------------------------------------
+#                 GLOBAL SHOP STOCK & RESTOCK
+# --------------------------------------------------------------
+
+SHOP_REFRESH_SECONDS = 5 * 60  # 5 dakika
+ALWAYS_IN_STOCK = ["carrot", "strawberry", "blueberry", "buttercup", "tomato"]
+
+GARDEN_SHOP_STATE = {
+    "last_refresh": 0.0,
+    "stock": {}  # seed_id -> {"infinite": bool, "amount": int | None}
 }
 
+def _generate_shop_stock():
+    stock: dict[str, dict] = {}
 
-def get_seed_price(seed_id: str) -> int:
-    s = GROW_SEEDS.get(seed_id)
-    if not s:
-        return 0
-    rarity = s["rarity"]
-    base_price = GROW_SEED_PRICES.get(rarity, 100)
-    return base_price
+    # 1) İlk 5 seed hep stokta, sınırsız
+    for sid in ALWAYS_IN_STOCK:
+        if sid in GROW_SEEDS:
+            stock[sid] = {"infinite": True, "amount": None}
+
+    # 2) Diğer seedler: restock_1_in bazlı olasılıkla
+    for sid, sdef in GROW_SEEDS.items():
+        if sid in ALWAYS_IN_STOCK:
+            continue
+
+        n = sdef.get("restock_1_in", 1)
+        chance = 1.0 / n
+        if random.random() <= chance:
+            rarity = sdef["rarity"]
+            # rarity'ye göre stok miktarı
+            if rarity in ("Common", "Uncommon"):
+                min_amt, max_amt = 5, 25
+            elif rarity == "Rare":
+                min_amt, max_amt = 2, 10
+            elif rarity == "Legendary":
+                min_amt, max_amt = 1, 5
+            elif rarity == "Mythical":
+                min_amt, max_amt = 1, 3
+            else:
+                min_amt, max_amt = 1, 1  # Divine, Prism., Transc. → çok nadir
+
+            amount = random.randint(min_amt, max_amt)
+            stock[sid] = {"infinite": False, "amount": amount}
+
+    GARDEN_SHOP_STATE["stock"] = stock
+    GARDEN_SHOP_STATE["last_refresh"] = time.time()
+
+def get_current_shop_stock() -> dict:
+    now = time.time()
+    if now - GARDEN_SHOP_STATE["last_refresh"] > SHOP_REFRESH_SECONDS:
+        _generate_shop_stock()
+    return GARDEN_SHOP_STATE["stock"]
+
+def buy_seed_from_shop(user_id: int, seed_id: str) -> tuple[bool, str]:
+    garden = ensure_garden_profile(user_id)
+    stock = get_current_shop_stock()
+
+    if seed_id not in stock:
+        return False, "❌ This seed is not in stock right now."
+
+    entry = stock[seed_id]
+    cost = GROW_SEEDS[seed_id]["sheckle_cost"]
+
+    if garden["sheckles"] < cost:
+        return False, f"❌ Not enough sheckles. Need **{cost}**, you have **{garden['sheckles']}**."
+
+    if not entry["infinite"]:
+        if entry["amount"] <= 0:
+            return False, "❌ This seed is sold out."
+        entry["amount"] -= 1
+
+    garden["sheckles"] -= cost
+    garden["seeds"][seed_id] = garden["seeds"].get(seed_id, 0) + 1
+    save_data(data)
+
+    return True, f"🛒 Bought **1x {GROW_SEEDS[seed_id]['name']}** for **{cost}** sheckles."
 
 
 # --------------------------------------------------------------
-#                 MUTATION & GIANT SYSTEM
-# --------------------------------------------------------------
-
-def roll_mutation():
-    """
-    Mutasyon oranları (yaklaşık):
-    - %85 normal (x1)
-    - %10 Silver (x5)
-    - %4 Gold (x20)
-    - %1 Rainbow (x50)
-    """
-    r = random.random() * 100
-    if r < 1:
-        return ("Rainbow", 50)
-    elif r < 5:
-        return ("Gold", 20)
-    elif r < 15:
-        return ("Silver", 5)
-    else:
-        return (None, 1)
-
-
-def roll_giant():
-    """
-    Devleşme şansı ~%3
-    Giant → x3 çarpan.
-    """
-    r = random.random() * 100
-    return r < 3
-
-
-# --------------------------------------------------------------
-#                 GARDEN – INTERNAL HELPERS
+#                  GARDEN HELPER FUNCTIONS
 # --------------------------------------------------------------
 
 def get_free_plot(garden: dict) -> int | None:
-    """Boş bir slot ID (1..max_plots) döndürür, yoksa None."""
     max_plots = garden.get("max_plots", 9)
     used = set(int(k) for k in garden.get("plots", {}).keys())
     for i in range(1, max_plots + 1):
@@ -699,11 +909,7 @@ def get_free_plot(garden: dict) -> int | None:
             return i
     return None
 
-
 def describe_plant(plant: dict) -> str:
-    """
-    Bir plot'taki bitkiyi tek satır string olarak anlatır.
-    """
     seed = GROW_SEEDS.get(plant["seed_id"], {"name": plant["seed_id"], "rarity": "?"})
     now = time.time()
     ready = now >= plant["ready_at"]
@@ -720,14 +926,12 @@ def describe_plant(plant: dict) -> str:
 
     h = plant.get("harvests_done", 0)
     max_h = plant.get("max_harvests", 1)
-
     return f"{status} – **{seed['name']}** [{seed['rarity']}] — {h}/{max_h} harvests{time_txt}"
 
-
 def plant_seed_for_user(user_id: int, seed_id: str) -> tuple[bool, str]:
-    """Kullanıcıya ait garden içinde, verilen seed_id'yi ilk boş slota eker."""
     garden = ensure_garden_profile(user_id)
     seeds = garden["seeds"]
+
     if seed_id not in GROW_SEEDS:
         return False, "❌ This seed does not exist."
 
@@ -736,35 +940,31 @@ def plant_seed_for_user(user_id: int, seed_id: str) -> tuple[bool, str]:
 
     slot = get_free_plot(garden)
     if slot is None:
-        return False, "❌ No free plot. Harvest or clear some plants first."
+        return False, "❌ No free plot available."
 
-    info = GROW_SEEDS[seed_id]
+    sdef = GROW_SEEDS[seed_id]
     now = time.time()
-    base_time = info["base_time"]
 
-    garden["plots"][str(slot)] = {
+    plant = {
         "seed_id": seed_id,
         "planted_at": now,
-        "ready_at": now + base_time,
+        "ready_at": now + sdef["base_time"],
         "harvests_done": 0,
-        "max_harvests": info["max_harvests"],
-        "multi_harvest": info["multi_harvest"],
-        "base_value": info["base_value"],
-        "rarity": info["rarity"],
+        "max_harvests": get_max_harvests(seed_id),
     }
 
-    seeds[seed_id] = seeds.get(seed_id, 0) - 1
+    garden["plots"][str(slot)] = plant
+    seeds[seed_id] -= 1
     if seeds[seed_id] <= 0:
         del seeds[seed_id]
 
     save_data(data)
-    return True, f"🌱 Planted **{info['name']}** in a free plot."
+    return True, f"🌱 Planted **{sdef['name']}** in plot **#{slot}**."
 
-
-def harvest_ready_plants(user_id: int) -> tuple[int, int, int, int]:
+def harvest_ready_plants(user_id: int) -> tuple[int, int]:
     """
     Tüm hazır bitkileri hasat eder.
-    Dönen değer: (harvest_sayısı, toplam_coin, mutation_sayısı, giant_sayısı)
+    Dönen: (harvest_sayısı, toplam_sheckles)
     """
     garden = ensure_garden_profile(user_id)
     plots = garden["plots"]
@@ -772,41 +972,29 @@ def harvest_ready_plants(user_id: int) -> tuple[int, int, int, int]:
 
     now = time.time()
     harvested_count = 0
-    total_coins = 0
-    mutation_count = 0
-    giant_count = 0
+    total_sheckles = 0
 
     to_delete = []
 
     for slot_str, plant in list(plots.items()):
         if now < plant["ready_at"]:
-            continue  # daha büyümemiş
+            continue
 
         seed_def = GROW_SEEDS.get(plant["seed_id"])
         if not seed_def:
             to_delete.append(slot_str)
             continue
 
-        mut_name, mut_mult = roll_mutation()
-        is_giant = roll_giant()
-
-        base = plant.get("base_value", seed_def["base_value"])
-        value = base * mut_mult
-        if is_giant:
-            value *= 3
+        cost = seed_def["sheckle_cost"]
+        reward_min = int(cost * 0.8)
+        reward_max = int(cost * 1.2)
+        reward = random.randint(reward_min, reward_max)
 
         harvested_count += 1
-        total_coins += value
-        if mut_name is not None:
-            mutation_count += 1
-        if is_giant:
-            giant_count += 1
+        total_sheckles += reward
 
-        plant["harvests_done"] = plant.get("harvests_done", 0) + 1
-        max_h = plant.get("max_harvests", 1)
-        multi = plant.get("multi_harvest", False)
-
-        if multi and plant["harvests_done"] < max_h:
+        plant["harvests_done"] += 1
+        if plant["harvests_done"] < plant["max_harvests"]:
             plant["planted_at"] = now
             plant["ready_at"] = now + seed_def["base_time"]
             plots[slot_str] = plant
@@ -816,122 +1004,21 @@ def harvest_ready_plants(user_id: int) -> tuple[int, int, int, int]:
     for s in to_delete:
         plots.pop(s, None)
 
-    garden["coins"] += total_coins
+    garden["sheckles"] += total_sheckles
     stats["total_harvests"] += harvested_count
-    stats["total_gcoins_earned"] += total_coins
-    stats["total_mutations"] += mutation_count
-    stats["giants_harvested"] += giant_count
+    stats["total_sheckles_earned"] += total_sheckles
 
     save_data(data)
-    return harvested_count, total_coins, mutation_count, giant_count
+    return harvested_count, total_sheckles
 
 
-# ==============================================================
-#                     SHOP STOCK SYSTEM
-# ==============================================================
-
-# İlk 5 seed HER ZAMAN stokta:
-ALWAYS_IN_STOCK = ["carrot", "tomato", "berry_bush", "apple_tree", "burning_bud"]
-
-# Global shop state (runtime bazlı)
-GARDEN_SHOP_STATE = {
-    "last_refresh": 0.0,
-    "stock": {}  # seed_id -> {"infinite": bool, "amount": int | None}
-}
-
-SHOP_REFRESH_SECONDS = 5 * 60  # 5 dakika
-
-
-def _generate_shop_stock():
-    """5 dakikada bir çağrıldığında yeni stok setini oluşturur."""
-    stock: dict[str, dict] = {}
-
-    # 1) İlk 5 seed her zaman stokta, sınırsız
-    for sid in ALWAYS_IN_STOCK:
-        if sid in GROW_SEEDS:
-            stock[sid] = {"infinite": True, "amount": None}
-
-    # 2) Diğer seedler – rarity'ye göre nadirlik / limit
-    rare_candidates = [sid for sid in GROW_SEEDS.keys() if sid not in ALWAYS_IN_STOCK]
-
-    for sid in rare_candidates:
-        sdef = GROW_SEEDS[sid]
-        rarity = sdef["rarity"]
-        roll = random.random()
-
-        # Rarity'ye göre stoklanma olasılığı
-        if rarity == "Uncommon":
-            chance = 0.5
-            min_amt, max_amt = 10, 25
-        elif rarity == "Rare":
-            chance = 0.25
-            min_amt, max_amt = 5, 15
-        elif rarity == "Legendary":
-            chance = 0.12
-            min_amt, max_amt = 2, 8
-        elif rarity == "Mythical":
-            chance = 0.07
-            min_amt, max_amt = 1, 5
-        elif rarity == "Ancient":
-            chance = 0.04
-            min_amt, max_amt = 1, 3
-        elif rarity == "Transcendent":
-            chance = 0.02
-            min_amt, max_amt = 1, 1
-        else:
-            # Common zaten ALWAYS_IN_STOCK içinde olmalı
-            continue
-
-        if roll <= chance:
-            amount = random.randint(min_amt, max_amt)
-            stock[sid] = {"infinite": False, "amount": amount}
-
-    GARDEN_SHOP_STATE["stock"] = stock
-    GARDEN_SHOP_STATE["last_refresh"] = time.time()
-
-
-def get_current_shop_stock() -> dict:
-    """Her çağrıldığında 5dk kontrol eder, gerekiyorsa yeniler."""
-    now = time.time()
-    if now - GARDEN_SHOP_STATE["last_refresh"] > SHOP_REFRESH_SECONDS:
-        _generate_shop_stock()
-    return GARDEN_SHOP_STATE["stock"]
-
-
-def buy_seed_from_shop(user_id: int, seed_id: str) -> tuple[bool, str]:
-    """Shop stok ve coin kontrolü yaparak tek adet seed satın alır."""
-    garden = ensure_garden_profile(user_id)
-    stock = get_current_shop_stock()
-
-    if seed_id not in stock:
-        return False, "❌ This seed is not in stock right now."
-
-    entry = stock[seed_id]
-    price = get_seed_price(seed_id)
-
-    if garden["coins"] < price:
-        return False, f"❌ Not enough g-coins. Need **{price}**, you have **{garden['coins']}**."
-
-    # Sınırlı stok kontrolü
-    if not entry["infinite"]:
-        if entry["amount"] <= 0:
-            return False, "❌ This seed is sold out."
-        entry["amount"] -= 1
-
-    garden["coins"] -= price
-    garden["seeds"][seed_id] = garden["seeds"].get(seed_id, 0) + 1
-
-    save_data(data)
-    return True, f"🛒 Bought **1x {GROW_SEEDS[seed_id]['name']}** for **{price}** g-coins."
-
-
-# ==============================================================
-#                     EMBED HELPERS
-# ==============================================================
+# --------------------------------------------------------------
+#                     EMBED BUILDERS
+# --------------------------------------------------------------
 
 def build_main_embed(user: discord.abc.User) -> discord.Embed:
     garden = ensure_garden_profile(user.id)
-    coins = garden["coins"]
+    sheckles = garden["sheckles"]
     max_plots = garden["max_plots"]
     plots = garden["plots"]
     seeds = garden["seeds"]
@@ -960,13 +1047,11 @@ def build_main_embed(user: discord.abc.User) -> discord.Embed:
         ),
         color=galaxy_color()
     )
-    embed.add_field(name="💰 Garden Coins", value=f"**{coins}** g-coins", inline=True)
+    embed.add_field(name="💰 Sheckles", value=f"**{sheckles}**", inline=True)
     embed.add_field(name="🪴 Plots", value=f"Used: **{used_plots}/{max_plots}** (Free: `{free_plots}`)", inline=True)
     embed.add_field(name="✨ Ascension", value=f"Level: **{asc}**", inline=True)
     embed.add_field(name="🌾 Seeds in Inventory", value=seeds_txt, inline=False)
-
     return embed
-
 
 def build_garden_embed(user: discord.abc.User) -> discord.Embed:
     garden = ensure_garden_profile(user.id)
@@ -974,7 +1059,7 @@ def build_garden_embed(user: discord.abc.User) -> discord.Embed:
     max_plots = garden["max_plots"]
 
     if not plots:
-        desc = "Your garden is currently empty.\nUse **Seed Shop** and **Plant** buttons to start."
+        desc = "Your garden is currently empty.\nUse **Seed Shop** and **Plant Menu** to start."
     else:
         lines = []
         for i in range(1, max_plots + 1):
@@ -993,29 +1078,28 @@ def build_garden_embed(user: discord.abc.User) -> discord.Embed:
     )
     return embed
 
-
 def build_shop_embed(user: discord.abc.User) -> discord.Embed:
     garden = ensure_garden_profile(user.id)
-    coins = garden["coins"]
+    sheckles = garden["sheckles"]
     stock = get_current_shop_stock()
     remaining = max(0, int(SHOP_REFRESH_SECONDS - (time.time() - GARDEN_SHOP_STATE["last_refresh"])))
 
     lines = []
     if not stock:
-        lines.append("_Shop is empty right now. Refreshing soon..._")
+        lines.append("_Shop is empty right now. It will refresh soon._")
     else:
         for sid, entry in stock.items():
             sdef = GROW_SEEDS[sid]
-            price = get_seed_price(sid)
+            cost = sdef["sheckle_cost"]
             if entry["infinite"]:
                 amt_txt = "∞"
             else:
                 amt_txt = str(entry["amount"])
-            lines.append(f"• **{sdef['name']}** [`{sid}`] [{sdef['rarity']}] — 💰 {price} g-coins — Stock: `{amt_txt}`")
+            lines.append(f"• **{sdef['name']}** [`{sid}`] [{sdef['rarity']}] — 💰 {cost} sheckles — Stock: `{amt_txt}`")
 
     desc = (
-        f"Your balance: **{coins}** g-coins\n"
-        f"Shop refreshes every **5 minutes**.\n"
+        f"Your balance: **{sheckles}** sheckles\n"
+        f"Shop refreshes globally every **5 minutes**.\n"
         f"Next refresh in: **{remaining // 60}m {remaining % 60}s**\n\n"
         + ("\n".join(lines) if lines else "")
     )
@@ -1027,7 +1111,6 @@ def build_shop_embed(user: discord.abc.User) -> discord.Embed:
     )
     return embed
 
-
 def build_stats_embed(user: discord.abc.User) -> discord.Embed:
     garden = ensure_garden_profile(user.id)
     stats = garden["stats"]
@@ -1038,15 +1121,13 @@ def build_stats_embed(user: discord.abc.User) -> discord.Embed:
         color=galaxy_color()
     )
     embed.add_field(name="🌾 Total Harvests", value=str(stats.get("total_harvests", 0)), inline=True)
-    embed.add_field(name="💰 Total g-coins Earned", value=str(stats.get("total_gcoins_earned", 0)), inline=True)
-    embed.add_field(name="✨ Total Mutations", value=str(stats.get("total_mutations", 0)), inline=True)
-    embed.add_field(name="🌟 Giants Harvested", value=str(stats.get("giants_harvested", 0)), inline=True)
+    embed.add_field(name="💰 Total Sheckles Earned", value=str(stats.get("total_sheckles_earned", 0)), inline=True)
     return embed
 
 
-# ==============================================================
-#                     DISCORD UI – VIEWS
-# ==============================================================
+# --------------------------------------------------------------
+#                        DISCORD VIEWS
+# --------------------------------------------------------------
 
 class MainMenuView(discord.ui.View):
     def __init__(self, owner_id: int):
@@ -1059,8 +1140,6 @@ class MainMenuView(discord.ui.View):
         await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
         return False
 
-    # ---------------- BUTTONS -----------------
-
     @discord.ui.button(label="🌾 View Garden", style=discord.ButtonStyle.green)
     async def view_garden(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = build_garden_embed(interaction.user)
@@ -1069,19 +1148,17 @@ class MainMenuView(discord.ui.View):
 
     @discord.ui.button(label="🧺 Harvest All", style=discord.ButtonStyle.blurple)
     async def harvest_all(self, interaction: discord.Interaction, button: discord.ui.Button):
-        harvested, coins_gained, muts, giants = harvest_ready_plants(interaction.user.id)
-        main_embed = build_main_embed(interaction.user)
-        await interaction.response.edit_message(embed=main_embed, view=MainMenuView(self.owner_id))
+        harvested, total = harvest_ready_plants(interaction.user.id)
+        embed = build_main_embed(interaction.user)
+        view = MainMenuView(self.owner_id)
+        await interaction.response.edit_message(embed=embed, view=view)
         if harvested == 0:
-            await interaction.followup.send("🌱 Nothing is ready yet.", ephemeral=True)
+            await interaction.followup.send("🌱 Nothing was ready to harvest.", ephemeral=True)
         else:
-            msg = (
-                f"🧺 Harvested **{harvested}** plants!\n"
-                f"💰 Earned **{coins_gained}** g-coins\n"
-                f"✨ Mutations: **{muts}**\n"
-                f"🌟 Giants: **{giants}**"
+            await interaction.followup.send(
+                f"🧺 Harvested **{harvested}** plants and earned **{total}** sheckles!",
+                ephemeral=True
             )
-            await interaction.followup.send(msg, ephemeral=True)
 
     @discord.ui.button(label="🛒 Seed Shop", style=discord.ButtonStyle.gray)
     async def seed_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1089,20 +1166,11 @@ class MainMenuView(discord.ui.View):
         view = ShopView(self.owner_id)
         await interaction.response.edit_message(embed=embed, view=view)
 
-    @discord.ui.button(label="🌱 Quick Plant", style=discord.ButtonStyle.primary)
-    async def quick_plant(self, interaction: discord.Interaction, button: discord.ui.Button):
-        garden = ensure_garden_profile(interaction.user.id)
-        seeds = garden["seeds"]
-        if not seeds:
-            await interaction.response.send_message("❌ You don't have any seeds.", ephemeral=True)
-            return
-
-        best_sid = max(seeds.items(), key=lambda x: x[1])[0]
-        ok, msg = plant_seed_for_user(interaction.user.id, best_sid)
-
-        main_embed = build_main_embed(interaction.user)
-        await interaction.response.edit_message(embed=main_embed, view=MainMenuView(self.owner_id))
-        await interaction.followup.send(msg, ephemeral=True)
+    @discord.ui.button(label="🌱 Plant Menu", style=discord.ButtonStyle.primary)
+    async def plant_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = build_garden_embed(interaction.user)
+        view = PlantView(self.owner_id)
+        await interaction.response.edit_message(embed=embed, view=view)
 
     @discord.ui.button(label="📊 Stats", style=discord.ButtonStyle.secondary)
     async def stats(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1124,22 +1192,20 @@ class GardenView(discord.ui.View):
 
     @discord.ui.button(label="🧺 Harvest Ready", style=discord.ButtonStyle.blurple)
     async def harvest_ready(self, interaction: discord.Interaction, button: discord.ui.Button):
-        harvested, coins_gained, muts, giants = harvest_ready_plants(interaction.user.id)
+        harvested, total = harvest_ready_plants(interaction.user.id)
         embed = build_garden_embed(interaction.user)
-        await interaction.response.edit_message(embed=embed, view=GardenView(self.owner_id))
+        view = GardenView(self.owner_id)
+        await interaction.response.edit_message(embed=embed, view=view)
 
         if harvested == 0:
             await interaction.followup.send("🌱 No plants were ready.", ephemeral=True)
         else:
-            msg = (
-                f"🧺 Harvested **{harvested}** plants!\n"
-                f"💰 Earned **{coins_gained}** g-coins\n"
-                f"✨ Mutations: **{muts}**\n"
-                f"🌟 Giants: **{giants}**"
+            await interaction.followup.send(
+                f"🧺 Harvested **{harvested}** plants and earned **{total}** sheckles!",
+                ephemeral=True
             )
-            await interaction.followup.send(msg, ephemeral=True)
 
-    @discord.ui.button(label="🔄 Back to Main", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="🔙 Back to Main", style=discord.ButtonStyle.gray)
     async def back_main(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = build_main_embed(interaction.user)
         view = MainMenuView(self.owner_id)
@@ -1151,14 +1217,14 @@ class ShopView(discord.ui.View):
         super().__init__(timeout=120)
         self.owner_id = owner_id
 
-        # Dinamik butonlar – her stoktaki seed için bir buton
         stock = get_current_shop_stock()
         for sid in stock.keys():
             sdef = GROW_SEEDS.get(sid)
             if not sdef:
                 continue
-            button = SeedBuyButton(seed_id=sid, label=f"Buy {sdef['name']}")
-            self.add_item(button)
+            if len(self.children) >= 23:  # 25 limit, 2 buton altta
+                break
+            self.add_item(SeedBuyButton(seed_id=sid, label=sdef["name"]))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
@@ -1166,10 +1232,8 @@ class ShopView(discord.ui.View):
         await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
         return False
 
-    @discord.ui.button(label="🔄 Refresh Shop", style=discord.ButtonStyle.blurple, row=3)
-    async def refresh_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Zorla yeni stok üret (timer'a bakmadan)
-        _generate_shop_stock()
+    @discord.ui.button(label="🔄 Refresh View", style=discord.ButtonStyle.blurple, row=3)
+    async def refresh_view(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = build_shop_embed(interaction.user)
         view = ShopView(self.owner_id)
         await interaction.response.edit_message(embed=embed, view=view)
@@ -1183,14 +1247,57 @@ class ShopView(discord.ui.View):
 
 class SeedBuyButton(discord.ui.Button):
     def __init__(self, seed_id: str, label: str):
-        super().__init__(label=label, style=discord.ButtonStyle.green, row=0)
+        super().__init__(label=f"Buy {label}", style=discord.ButtonStyle.green, row=0)
         self.seed_id = seed_id
 
     async def callback(self, interaction: discord.Interaction):
         ok, msg = buy_seed_from_shop(interaction.user.id, self.seed_id)
-        # Embed'i güncelle (shop paneli yeniden render)
         embed = build_shop_embed(interaction.user)
-        view = ShopView(interaction.message.embeds[0].colour)  # owner_id directly from state not embed; fix below
+        view = ShopView(interaction.user.id)
+        await interaction.response.edit_message(embed=embed, view=view)
+        await interaction.followup.send(msg, ephemeral=True)
+
+
+class PlantView(discord.ui.View):
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=120)
+        self.owner_id = owner_id
+
+        garden = ensure_garden_profile(owner_id)
+        seeds = garden["seeds"]
+
+        for sid, amt in seeds.items():
+            if len(self.children) >= 23:
+                break
+            sdef = GROW_SEEDS.get(sid)
+            if not sdef:
+                continue
+            self.add_item(PlantButton(seed_id=sid, label=f"{sdef['name']} ×{amt}"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
+            return True
+        await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="🔙 Back to Main", style=discord.ButtonStyle.gray, row=3)
+    async def back_main(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = build_main_embed(interaction.user)
+        view = MainMenuView(self.owner_id)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class PlantButton(discord.ui.Button):
+    def __init__(self, seed_id: str, label: str):
+        super().__init__(label=label, style=discord.ButtonStyle.primary, row=0)
+        self.seed_id = seed_id
+
+    async def callback(self, interaction: discord.Interaction):
+        ok, msg = plant_seed_for_user(interaction.user.id, self.seed_id)
+        embed = build_garden_embed(interaction.user)
+        view = PlantView(interaction.user.id)
+        await interaction.response.edit_message(embed=embed, view=view)
+        await interaction.followup.send(msg, ephemeral=True)
 
 
 class StatsView(discord.ui.View):
@@ -1211,9 +1318,63 @@ class StatsView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 
-# ==============================================================
-#                     MAIN COMMAND
-# ==============================================================
+# --------------------------------------------------------------
+#                     BACKUP / RESTORE
+# --------------------------------------------------------------
+
+@bot.command(name="savegag")
+@commands.has_guild_permissions(manage_guild=True)
+async def save_gag(ctx: commands.Context):
+    """
+    Sunucudaki TÜM kullanıcıların garden verisini JSON dosyası olarak gönderir.
+    """
+    gag_dump = {}
+    for uid, udata in data.items():
+        if "garden" in udata:
+            gag_dump[uid] = udata["garden"]
+
+    raw = json.dumps(gag_dump, indent=2)
+    bio = io.BytesIO(raw.encode("utf-8"))
+    bio.seek(0)
+
+    filename = f"growagarden_backup_{int(time.time())}.json"
+    file = discord.File(bio, filename=filename)
+
+    await ctx.send(
+        content="📁 Grow a Garden backup created. Keep this file safe!",
+        file=file
+    )
+
+@bot.command(name="restoregag")
+@commands.has_guild_permissions(manage_guild=True)
+async def restore_gag(ctx: commands.Context):
+    """
+    !restoregag komutuyla, mesaja ekli JSON backup dosyasını yükler.
+    DIKKAT: Sadece garden verisini değiştirir, diğer oyunlara dokunmaz.
+    """
+    if not ctx.message.attachments:
+        return await ctx.send("❌ Please attach a JSON backup file to this command.")
+
+    attachment = ctx.message.attachments[0]
+    try:
+        raw = await attachment.read()
+        gag_dump = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        return await ctx.send(f"❌ Failed to read JSON: `{e}`")
+
+    # garden verilerini geri yaz
+    count = 0
+    for uid, garden_data in gag_dump.items():
+        u = data.setdefault(str(uid), {})
+        u["garden"] = garden_data
+        count += 1
+
+    save_data(data)
+    await ctx.send(f"✅ Restored Grow a Garden data for **{count}** users.")
+
+# --------------------------------------------------------------
+#                     MAIN GARDEN COMMAND
+# --------------------------------------------------------------
 
 @bot.command(name="growagarden", aliases=["garden", "gg"])
 async def growagarden_cmd(ctx: commands.Context):
@@ -1225,6 +1386,7 @@ async def growagarden_cmd(ctx: commands.Context):
     embed = build_main_embed(ctx.author)
     view = MainMenuView(ctx.author.id)
     await ctx.send(embed=embed, view=view)
+
 
 
 
