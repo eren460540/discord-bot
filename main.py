@@ -1212,19 +1212,41 @@ class GardenView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 
+# --------------------------------------------------------------
+#                       FIXED SHOP VIEW
+# --------------------------------------------------------------
+
 class ShopView(discord.ui.View):
     def __init__(self, owner_id: int):
         super().__init__(timeout=120)
         self.owner_id = owner_id
 
         stock = get_current_shop_stock()
+
+        row_index = 0
+        col_index = 0
+
         for sid in stock.keys():
             sdef = GROW_SEEDS.get(sid)
             if not sdef:
                 continue
-            if len(self.children) >= 23:  # 25 limit, 2 buton altta
+
+            # Discord limit: 5 rows × 5 columns = 25 buttons
+            if row_index >= 5:
                 break
-            self.add_item(SeedBuyButton(seed_id=sid, label=sdef["name"]))
+
+            btn = SeedBuyButton(seed_id=sid, label=sdef["name"])
+            btn.row = row_index
+            self.add_item(btn)
+
+            col_index += 1
+            if col_index >= 5:
+                col_index = 0
+                row_index += 1
+
+        # Bottom row: refresh + back
+        self.add_item(ShopRefreshButton(row=4))
+        self.add_item(BackToMainButton(row=4))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
@@ -1232,22 +1254,34 @@ class ShopView(discord.ui.View):
         await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
         return False
 
-    @discord.ui.button(label="🔄 Refresh View", style=discord.ButtonStyle.blurple, row=3)
-    async def refresh_view(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class ShopRefreshButton(discord.ui.Button):
+    def __init__(self, row):
+        super().__init__(label="🔄 Refresh", style=discord.ButtonStyle.blurple, row=row)
+
+    async def callback(self, interaction: discord.Interaction):
         embed = build_shop_embed(interaction.user)
-        view = ShopView(self.owner_id)
+        view = ShopView(interaction.user.id)
         await interaction.response.edit_message(embed=embed, view=view)
 
-    @discord.ui.button(label="🔙 Back to Main", style=discord.ButtonStyle.gray, row=3)
-    async def back_main(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class BackToMainButton(discord.ui.Button):
+    def __init__(self, row):
+        super().__init__(label="🔙 Back", style=discord.ButtonStyle.gray, row=row)
+
+    async def callback(self, interaction: discord.Interaction):
         embed = build_main_embed(interaction.user)
-        view = MainMenuView(self.owner_id)
+        view = MainMenuView(interaction.user.id)
         await interaction.response.edit_message(embed=embed, view=view)
 
+
+# --------------------------------------------------------------
+#             FIXED SEED BUY BUTTON (IMPORTANT)
+# --------------------------------------------------------------
 
 class SeedBuyButton(discord.ui.Button):
     def __init__(self, seed_id: str, label: str):
-        super().__init__(label=f"Buy {label}", style=discord.ButtonStyle.green, row=0)
+        super().__init__(label=f"Buy {label}", style=discord.ButtonStyle.green)
         self.seed_id = seed_id
 
     async def callback(self, interaction: discord.Interaction):
@@ -1258,6 +1292,10 @@ class SeedBuyButton(discord.ui.Button):
         await interaction.followup.send(msg, ephemeral=True)
 
 
+# --------------------------------------------------------------
+#                       PLANT VIEW
+# --------------------------------------------------------------
+
 class PlantView(discord.ui.View):
     def __init__(self, owner_id: int):
         super().__init__(timeout=120)
@@ -1266,13 +1304,26 @@ class PlantView(discord.ui.View):
         garden = ensure_garden_profile(owner_id)
         seeds = garden["seeds"]
 
+        row_index = 0
+        col_index = 0
+
         for sid, amt in seeds.items():
-            if len(self.children) >= 23:
+            if row_index >= 5:
                 break
             sdef = GROW_SEEDS.get(sid)
             if not sdef:
                 continue
-            self.add_item(PlantButton(seed_id=sid, label=f"{sdef['name']} ×{amt}"))
+
+            btn = PlantButton(seed_id=sid, label=f"{sdef['name']} ×{amt}")
+            btn.row = row_index
+            self.add_item(btn)
+
+            col_index += 1
+            if col_index >= 5:
+                col_index = 0
+                row_index += 1
+
+        self.add_item(BackToMainButton(row=4))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
@@ -1280,16 +1331,10 @@ class PlantView(discord.ui.View):
         await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
         return False
 
-    @discord.ui.button(label="🔙 Back to Main", style=discord.ButtonStyle.gray, row=3)
-    async def back_main(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_main_embed(interaction.user)
-        view = MainMenuView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
 
 class PlantButton(discord.ui.Button):
     def __init__(self, seed_id: str, label: str):
-        super().__init__(label=label, style=discord.ButtonStyle.primary, row=0)
+        super().__init__(label=label, style=discord.ButtonStyle.primary)
         self.seed_id = seed_id
 
     async def callback(self, interaction: discord.Interaction):
@@ -1299,6 +1344,10 @@ class PlantButton(discord.ui.Button):
         await interaction.response.edit_message(embed=embed, view=view)
         await interaction.followup.send(msg, ephemeral=True)
 
+
+# --------------------------------------------------------------
+#                         STATS VIEW
+# --------------------------------------------------------------
 
 class StatsView(discord.ui.View):
     def __init__(self, owner_id: int):
@@ -1316,6 +1365,7 @@ class StatsView(discord.ui.View):
         embed = build_main_embed(interaction.user)
         view = MainMenuView(self.owner_id)
         await interaction.response.edit_message(embed=embed, view=view)
+
 
 
 # --------------------------------------------------------------
