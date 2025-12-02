@@ -15,18 +15,42 @@ JOINS_CHANNEL = 1443625716859273406
 LEAVES_CHANNEL = 1443625744793342132
 SUSPICIOUS_SERVER = 1140681007197073468
 
-
 # Categories where commands are disabled
-DISABLED_CATEGORIES = set([1431610646654488661])
+DISABLED_CATEGORIES = {1431610646654488661}
 
 # Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
 
 
+# --------------------------------------------------------------
+#                    DATA MANAGEMENT (LOAD / SAVE)
+# --------------------------------------------------------------
+# Ensure file exists
+if not os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "w") as f:
+        json.dump({}, f, indent=4)
 
+
+def load_data():
+    with open(DATA_FILE, "r") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
+
+def save_data(d):
+    with open(DATA_FILE, "w") as f:
+        json.dump(d, f, indent=4)
+
+
+# Load data *after* load_data() exists
 data = load_data()
+
+# Anti abuse fingerprint store
 data.setdefault("_device_fingerprints", {})
 device_fp = data["_device_fingerprints"]
+
 
 # --------------------------------------------------------------
 #      Payout / Deposit / Wheel persistent data setup
@@ -42,35 +66,33 @@ data.setdefault("deposit_bonuses", {})
 # Daily wheel last-spin timestamps
 data.setdefault("wheel_last_spin", {})
 
+# Save after setting defaults
 save_data(data)
 
 
+# --------------------------------------------------------------
+#                          OWNER
+# --------------------------------------------------------------
+OWNER_ID = 1317419437854560288  # Replace with real owner ID
 
 
-
-OWNER_ID = 1317419437854560288  # 🔁 REPLACE with your real Discord user ID
-
-def normalize_currency(method: str):
-    m = method.lower()
-    if "gem" in m:
-        return "gems"
-    if "exp" in m:
-        return "exp"
-    return None
-
-
-
-
-
-# ---------------------- INTENTS ---------------------- #
-intents = discord.Intents.all()   # <--- this enables EVERYTHING
+# --------------------------------------------------------------
+#                       INTENTS & BOT INIT
+# --------------------------------------------------------------
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# ---------------------- CONSTANTS ---------------------- #
-MAX_BET = 200_000_000  # 200m
-LOTTERY_BONUS = 0.10   # 10% extra on the pot for lottery winner
 
-# ---------------------- CHEST CONFIG ---------------------- #
+# --------------------------------------------------------------
+#                         CONSTANTS
+# --------------------------------------------------------------
+MAX_BET = 200_000_000
+LOTTERY_BONUS = 0.10
+
+
+# --------------------------------------------------------------
+#                         CHEST CONFIG
+# --------------------------------------------------------------
 COMMON_PRICE = 25_000_000
 COMMON_REWARD_AMOUNTS = [15_000_000, 30_000_000, 40_000_000, 50_000_000]
 COMMON_REWARD_CHANCES = [50, 30, 15, 5]
@@ -142,28 +164,12 @@ CHEST_CONFIG = {
 
 CHEST_ORDER = ["common", "rare", "epic", "legendary", "mythic", "galaxy"]
 
-# ---------------------- DATA MANAGEMENT ---------------------- #
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        json.dump({}, f)
+
+# --------------------------------------------------------------
+#                       HELPERS (NO CHANGE)
+# --------------------------------------------------------------
 
 
-def load_data():
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_data(d):
-    with open(DATA_FILE, "w") as f:
-        json.dump(d, f, indent=4)
-
-
-data = load_data()
-data.setdefault("_device_fingerprints", {})
-device_fp = data["_device_fingerprints"]
-
-
-# ---------------------- HELPERS ---------------------- #
 
 
 
