@@ -480,6 +480,297 @@ def parse_market_number(value: str) -> int:
 
 
 
+
+# ==============================================================
+#               WITHDRAW SYSTEM (REQUEST → CLAIM / DENY)
+# ==============================================================
+
+# Storage init
+data.setdefault("withdraw_requests", [])
+withdraw_requests = data["withdraw_requests"]
+data.setdefault("last_withdraw_id", 0)
+
+# Admin to notify on new withdraws (by name)
+ADMIN_NOTIFY_NAME = "eren460540"
+# If you ever want to use ID instead, set:
+# ADMIN_NOTIFY_ID = 123456789012345678
+ADMIN_NOTIFY_ID = None
+
+
+def get_next_withdraw_id():
+    """Always produces a unique withdraw ID."""
+    data["last_withdraw_id"] += 1
+    save_data(data)
+    return data["last_withdraw_id"]
+
+
+# --------------------------------------------------------------
+#            !withdraw <username text> <amount>
+# --------------------------------------------------------------
+@bot.command()
+async def withdraw(ctx, *, args=None):
+    """
+    Example:
+    !withdraw Eren#1234 500m
+    !withdraw 'BigEren MainAccount' 1.2b
+    """
+    if args is None:
+        return await ctx.send("❌ Usage: `!withdraw <username> <amount>`")
+
+    parts = args.split()
+    if len(parts) < 2:
+        return await ctx.send("❌ Please provide BOTH a username and an amount.\nExample: `!withdraw Eren 50m`")
+
+    # username text = everything except last part
+    username_text = " ".join(parts[:-1])
+    amount_text = parts[-1]
+
+    ensure_user(ctx.author.id)
+    u = data[str(ctx.author.id)]
+    u.setdefault("last_withdraw", 0.0)
+
+    # ----- Cooldown (1 hour) -----
+    now = time.time()
+    cooldown = 3600  # 1h in seconds
+    last = u.get("last_withdraw", 0.0)
+
+    if now - last < cooldown:
+        remaining = int(cooldown - (now - last))
+        mins = remaining // 60
+        secs = remaining % 60
+        return await ctx.send(
+            f"⏳ You must wait **{mins}m {secs}s** before creating another withdraw request."
+        )
+
+    # parse amount (supports k/m/b/t, commas, etc)
+    amount = parse_amount(amount_text, u["gems"])
+    if amount is None or amount <= 0:
+        return await ctx.send("❌ Invalid amount format.\nExample: `50m`, `1.2b`, `250k`, `1,000,000`")
+
+    if u["gems"] < amount:
+        return await ctx.send("❌ You do not have enough gems for that withdraw.")
+
+    # Deduct immediately
+    u["gems"] -= amount
+    u["last_withdraw"] = now
+    save_data(data)
+
+    withdraw_id = get_next_withdraw_id()
+
+    # Save request
+    req = {
+        "id": withdraw_id,
+        "user_id": str(ctx.author.id),
+        "username": username_text,
+        "amount": amount,
+        "timestamp": int(now)
+    }
+    withdraw_requests.append(req)
+    save_data(data)
+
+    # Confirm to user
+    embed = discord.Embed(
+        title="💸 Withdraw Request Created",
+        description=(
+            f"Your withdraw request has been added to the queue.\n\n"
+            f"🆔 **Withdraw ID:** `{withdraw_id}`\n"
+            f"👤 **Name Provided:** `{username_text}`\n"
+            f"💰 **Amount:** `{fmt(amount)}`\n"
+            f"⏱ **Created:** <t:{req['timestamp']}:R>\n\n"
+            f"An admin will review your withdrawal soon."
+        ),
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
+
+    # ----- Notify Eren in DM (if found) -----
+    notify_user = None
+
+    # 1) Try by ID if set
+    if ADMIN_NOTIFY_ID is not None:
+        notify_user = bot.get_user(ADMIN_NOTIFY_ID)
+        if notify_user is None:
+            try:
+                notify_user = await bot.fetch_user(ADMIN_NOTIFY_ID)
+            except Exception:
+                notify_user = None
+
+    # 2) Try by name in this guild (fallback)
+    if notify_user is None:
+        notify_user = discord.utils.get(ctx.guild.members, name=ADMIN_NOTIFY_NAME)
+
+    if notify_user:
+        try:
+            admin_embed = discord.Embed(
+                title="📥 New Withdraw Request",
+                description=(
+                    f"👤 From: {ctx.author.mention} (`{ctx.author.id}`)\n"
+                    f"🆔 ID: `{withdraw_id}`\n"
+                    f"🪪 Name Text: `{username_text}`\n"
+                    f"💰 Amount: `{fmt(amount)}`\n"
+                    f"⏱ Created: <t:{req['timestamp']}:R>\n\n"
+                    f"Use `!list` to see all pending.\n"
+                    f"Use `!claimed {withdraw_id}` to approve.\n"
+                    f"Use `!deny {withdraw_id} [reason]` to deny & refund."
+                ),
+                color=discord.Color.orange()
+            )
+            await notify_user.send(embed=admin_embed)
+        except Exception:
+            # If DM fails, ignore silently (no crash)
+            pass
+
+
+# --------------------------------------------------------------
+#                   !list — pending withdraws
+# --------------------------------------------------------------
+@bot.command()
+async def list(ctx):
+    """Shows all pending withdraw requests."""
+    if not withdraw_requests:
+        return await ctx.send("📭 No pending withdrawal requests at the moment.")
+
+    embed = discord.Embed(
+        title="📑 Pending Withdrawals",
+        color=galaxy_color()
+    )
+
+    for r in withdraw_requests:
+        user = ctx.guild.get_member(int(r["user_id"]))
+        user_display = user.mention if user else f"`{r['user_id']}`"
+
+        embed.add_field(
+            name=f"🆔 ID {r['id']}",
+            value=(
+                f"👤 **User:** {user_display}\n"
+                f"🪪 **Name Text:** `{r['username']}`\n"
+                f"💰 **Amount:** `{fmt(r['amount'])}`\n"
+                f"⏱ **Created:** <t:{r['timestamp']}:R>"
+            ),
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+
+# --------------------------------------------------------------
+#                  !claimed <id> — approve
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def claimed(ctx, withdraw_id: int):
+    """
+    Marks a withdraw as completed (already paid externally).
+    Removes it from the list and DMs the user.
+    """
+    for r in list(withdraw_requests):
+        if r["id"] == withdraw_id:
+            withdraw_requests.remove(r)
+            save_data(data)
+
+            user_id = int(r["user_id"])
+            user = ctx.guild.get_member(user_id) or bot.get_user(user_id)
+
+            # DM user (if possible)
+            if user:
+                dm_embed = discord.Embed(
+                    title="🎉 Withdrawal Completed!",
+                    description=(
+                        f"Your withdrawal has been **processed successfully**! 💸\n\n"
+                        f"🆔 **Withdraw ID:** `{withdraw_id}`\n"
+                        f"🪪 **Name:** `{r['username']}`\n"
+                        f"💰 **Amount Claimed:** `{fmt(r['amount'])}`\n"
+                        f"⏱️ Processed: <t:{int(time.time())}:R>\n\n"
+                        f"✨ Thank you for using Galaxy Casino!"
+                    ),
+                    color=discord.Color.green()
+                )
+                dm_embed.set_footer(text="Galaxy Casino • Withdrawal System")
+
+                try:
+                    await user.send(embed=dm_embed)
+                except Exception:
+                    await ctx.send("⚠️ Could not DM the user (DMs closed).")
+
+            confirm_embed = discord.Embed(
+                title="✅ Withdraw Claimed",
+                description=(
+                    f"🆔 ID `{withdraw_id}` has been **marked as claimed** and removed from the queue.\n"
+                    f"👤 User ID: `{r['user_id']}`\n"
+                    f"💰 Amount: `{fmt(r['amount'])}`"
+                ),
+                color=discord.Color.green()
+            )
+            return await ctx.send(embed=confirm_embed)
+
+    await ctx.send("❌ Withdraw ID not found.")
+
+
+# --------------------------------------------------------------
+#                !deny <id> [reason] — deny + refund
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def deny(ctx, withdraw_id: int, *, reason: str = "No reason provided."):
+    """
+    Denies a withdraw request:
+    - Refunds the gems back to the user
+    - Removes entry from the list
+    - DMs the user
+    """
+    for r in list(withdraw_requests):
+        if r["id"] == withdraw_id:
+            withdraw_requests.remove(r)
+            save_data(data)
+
+            user_id = int(r["user_id"])
+            ensure_user(user_id)
+            uid = str(user_id)
+            data[uid]["gems"] += r["amount"]
+            save_data(data)
+
+            user = ctx.guild.get_member(user_id) or bot.get_user(user_id)
+
+            # DM user if possible
+            if user:
+                dm_embed = discord.Embed(
+                    title="❌ Withdrawal Denied",
+                    description=(
+                        f"Your withdrawal request has been **denied**.\n\n"
+                        f"🆔 **Withdraw ID:** `{withdraw_id}`\n"
+                        f"🪪 **Name:** `{r['username']}`\n"
+                        f"💰 **Amount Refunded:** `{fmt(r['amount'])}`\n"
+                        f"📝 **Reason:** {reason}\n\n"
+                        f"Your gems have been **returned** to your casino balance."
+                    ),
+                    color=discord.Color.red()
+                )
+                dm_embed.set_footer(text="Galaxy Casino • Withdrawal System")
+
+                try:
+                    await user.send(embed=dm_embed)
+                except Exception:
+                    await ctx.send("⚠️ Could not DM the user (DMs closed).")
+
+            confirm_embed = discord.Embed(
+                title="🚫 Withdraw Denied",
+                description=(
+                    f"🆔 ID `{withdraw_id}` has been **denied**.\n"
+                    f"👤 User ID: `{r['user_id']}`\n"
+                    f"💰 Amount refunded: `{fmt(r['amount'])}`\n"
+                    f"📝 Reason: {reason}"
+                ),
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=confirm_embed)
+
+    await ctx.send("❌ Withdraw ID not found.")
+
+
+
+
+
+
 # ==============================================================
 #                    GROW A GARDEN – FULL SYSTEM
 # ==============================================================
@@ -4266,15 +4557,14 @@ async def tax(ctx, percent: float):
 
 
 
-
 # ==============================================================
-#                          HELP (USER)
+#                       HELP (PLAYER)
 # ==============================================================
 @bot.command()
 async def help(ctx):
     embed = discord.Embed(
-        title="🌌 Galaxy Casino — Commands Menu",
-        description="Use commands with `!` prefix.\nHere is your full player command list:",
+        title="🌌 Galaxy Casino — Player Commands",
+        description="Use `!command` to play.\nHere are your main commands:",
         color=galaxy_color()
     )
 
@@ -4282,13 +4572,13 @@ async def help(ctx):
     embed.add_field(
         name="💰 Economy",
         value=(
-            "**!balance / !bal [@user]** — Check gem balance\n"
-            "**!daily** — Get your daily 25m\n"
-            "**!work** — Earn 10–15m every hour\n"
-            "**!gift @user amount** — Send gems to users\n"
-            "**!sell <name> <income> <price>** — Create marketplace listings\n"
-            " Example: `!sell Los_Mobilis 66m 70m`\n"
-            " 💵 Buyer must also have **price × 50** in bot balance"
+            "**!balance / !bal [@user]** — Check gems\n"
+            "**!daily** — Claim daily 25m\n"
+            "**!work** — Earn 10–15m\n"
+            "**!gift @user amount** — Gift gems\n"
+            "**!sell <name> <income> <price>** — Create a listing\n"
+            "**!withdraw <username> <amount>** — Request a real withdrawal\n"
+            "**!list** — View pending withdraw queue"
         ),
         inline=False
     )
@@ -4297,75 +4587,43 @@ async def help(ctx):
     embed.add_field(
         name="🎮 Games",
         value=(
-            "**!coinflip amount heads/tails** — 50/50 gamble\n"
-            "**!slots amount** — Slots machine (3×4)\n"
-            "**!mines amount [1–15]** — Avoid the mines\n"
-            "**!tower amount** — Climb 10-row tower\n"
+            "**!coinflip amount heads/tails** — 50/50\n"
+            "**!slots amount** — Slot machine\n"
+            "**!mines amount [mines]** — Mines game\n"
+            "**!tower amount** — 10-floor tower\n"
             "**!blackjack amount** — Interactive blackjack\n"
             "**!chests** — Open Galaxy Chests"
         ),
         inline=False
     )
 
-    # ---------------- Invite System ----------------
-    embed.add_field(
-        name="🎉 Invite Rewards",
-        value=(
-            "**Invite friends to earn gems!**\n"
-            "Rewards & penalties:\n"
-            "• Valid invite: **+50m** to inviter\n"
-            "• Member leaves: **-50m** from inviter\n"
-            "• Suspicious / alt joins → **NO REWARD**\n"
-            "• Anti-alt checks:\n"
-            "  – account age\n"
-            "  – avatar\n"
-            "  – rejoin detection\n"
-            "  – ALT (same device) detection\n"
-            "  – restricted server detection"
-        ),
-        inline=False
-    )
-
     # ---------------- Player Info ----------------
     embed.add_field(
-        name="📊 Player Info",
+        name="📊 Player Information",
         value=(
-            "**!history** — Your last 10 games\n"
-            "**!stats** — Full statistics\n"
-            "**!leaderboard** — Top 10 richest\n"
-            "**!membercount** — Server member stats"
+            "**!history** — Last 10 games\n"
+            "**!stats** — Full stats\n"
+            "**!leaderboard** — Top richest\n"
+            "**!membercount** — Server stats"
         ),
         inline=False
     )
 
     # ---------------- Events ----------------
     embed.add_field(
-        name="🎟 Events & Specials",
+        name="🎟 Events",
         value=(
-            "**!lottery <ticket_price> <duration>** — Admin-run lottery event\n"
-            "**!guessthecolor <prize>** — Guess the color event\n"
-            "**Mystery Boxes** — Admin-only claim boxes"
+            "**!guessthecolor amount** — Guess the color\n"
+            "**!guessthenumber amount** — Guess 1–10\n"
+            "**!splitorsteal amount** — PvP Split-or-Steal event"
         ),
         inline=False
     )
 
-    # ---------------- Admin Section ----------------
-    embed.add_field(
-        name="🛠 Admin?",
-        value=(
-            "If you are an admin, use **!helpadmin** for:\n"
-            "• Currency control\n"
-            "• Chest & events controls\n"
-            "• Bless / curse system\n"
-            "• Suspicious join reviewing\n"
-            "• Backups & restores\n"
-            "• Category locking system"
-        ),
-        inline=False
-    )
-
-    embed.set_footer(text="Galaxy Casino • Enjoy your stay 💎🌌")
+    embed.set_footer(text="Galaxy Casino • Good luck 💎🌌")
     await ctx.send(embed=embed)
+
+
 
 
 
@@ -4388,11 +4646,26 @@ async def helpadmin(ctx):
         name="💰 Gem Management",
         value=(
             "**!admin give @user amount** — Add gems\n"
-            "**!admin remove @user amount** — Remove gems (can go negative)\n"
-            "**!giverole <role> amount** — Give gems to all humans in a role\n"
-            "**!removerole <role> amount** — Remove gems from all humans in a role\n"
-            "**!giveall amount** — Give gems to the entire server\n"
-            "**!tax percent** — Remove % of every user's balance"
+            "**!admin remove @user amount** — Remove gems\n"
+            "**!giverole <role> amount** — Give gems to role\n"
+            "**!removerole <role> amount** — Remove gems from role\n"
+            "**!giveall amount** — Give gems to all users\n"
+            "**!tax percent** — Remove % of all balances"
+        ),
+        inline=False
+    )
+
+    # ---------------- Withdraw System ----------------
+    embed.add_field(
+        name="💸 Withdraw System",
+        value=(
+            "**!withdraw <username> <amount>** — User creates request\n"
+            "**!list** — View all pending requests\n"
+            "**!claimed <id>** — Mark a withdraw as paid\n"
+            "**!deny <id> [reason]** — Deny & refund gems\n\n"
+            "• Automatic DM notification to admin\n"
+            "• 1 hour cooldown per user\n"
+            "• Amount auto-deducted when requested"
         ),
         inline=False
     )
@@ -4404,36 +4677,29 @@ async def helpadmin(ctx):
             "**Automatic Checks:**\n"
             "• Account age\n"
             "• Avatar\n"
+            "• ALT detection\n"
             "• Rejoin detection\n"
-            "• ALT detection (same device)\n"
-            "• Restricted server detection\n\n"
-            "**Manual Review Panel:**\n"
-            "• Shows all red/green flags\n"
-            "• Shows inviter + invite code\n"
-            "• Shows fingerprint, avatar, rejoin & age\n\n"
-            "**Buttons:**\n"
-            "🟢 Accept — Give +50m reward\n"
-            "🔴 Deny — Reject reward\n\n"
-            "**Leave Penalty:**\n"
-            "• If an invited user leaves → inviter gets **-50m**"
+            "• Restricted server detection\n"
+            "\n"
+            "**Review Panel:**\n"
+            "🟢 Accept — Give +50m\n"
+            "🔴 Deny — Reject reward"
         ),
         inline=False
     )
 
-    # ---------------- Events, Rig & Specials ----------------
+    # ---------------- Rig System & Events ----------------
     embed.add_field(
-        name="🎁 Events • Rig • Specials",
+        name="🎁 Events & Rig Control",
         value=(
-            "**!guessthecolor amount** — Infinite color guessing event\n"
-            "**!guessthenumber amount** — Infinite number event (1–10)\n"
-            "**!splitorsteal prize** — 2-player Split or Steal game\n"
-            "**!lottery <ticket_price> <duration>** — Lottery system (+10% bonus)\n"
-            "**!chests** — Open chest panel\n"
-            "**!bless user [games/off]** — Force wins (rig)\n"
-            "**!curse user [games/off]** — Force losses (rig)\n"
-            "**!status** — Show current bless/curse status\n"
-            "**!rainbow** — Drops a rainbow color sequence\n"
-            "**!taco** — Makes it rain TACOS 🌮"
+            "**!guessthecolor amount** — Guess the color\n"
+            "**!guessthenumber amount** — Guess 1–10\n"
+            "**!splitorsteal amount** — Run Split-or-Steal\n"
+            "**!lottery <ticket_price> <duration>** — Lottery\n"
+            "**!chests** — Chest panel\n"
+            "**!bless user_id [games/off]** — Forced wins\n"
+            "**!curse user_id [games/off]** — Forced losses\n"
+            "**!status** — Show active rigs"
         ),
         inline=False
     )
@@ -4442,11 +4708,12 @@ async def helpadmin(ctx):
     embed.add_field(
         name="📁 Server Management",
         value=(
-            "**!lockcat <category_id>** — Disable all commands in a category\n"
-            "**!unlockcat <category_id>** — Re-enable commands\n"
-            "**!cleanhistory <duration>** — Reset gems from inactive users\n"
-            "**!membercount** — Show server member stats\n"
-            "**!dm \"message\" \"role ID\"** — DM all humans with that role"
+            "**!lockcat <id>** — Disable commands in a category\n"
+            "**!unlockcat <id>** — Re-enable commands\n"
+            "**!cleanhistory <duration>** — Remove inactive users\n"
+            "**!membercount** — Server member stats\n"
+            "**!dm \"msg\" \"roleID\"** — DM a role\n"
+            "**!dmall \"msg\"** — DM entire server (rate-limited)"
         ),
         inline=False
     )
@@ -4455,9 +4722,9 @@ async def helpadmin(ctx):
     embed.add_field(
         name="💾 Backups",
         value=(
-            "**!savebackup** — Create an instant JSON backup\n"
-            "**!restorelatest** — Restore the newest backup\n"
-            "**!restorebackup** — Restore from uploaded backup JSON"
+            "**!savebackup** — Save backup\n"
+            "**!restorelatest** — Restore latest\n"
+            "**!restorebackup** — Restore uploaded JSON"
         ),
         inline=False
     )
