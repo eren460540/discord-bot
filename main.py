@@ -4162,21 +4162,25 @@ async def help(ctx):
         color=galaxy_color()
     )
 
-    # ---------------- Economy ----------------
-    embed.add_field(
-        name="💰 Economy",
-        value=(
-            "**!balance / !bal [@user]** — Check gems\n"
-            "**!daily** — Claim daily 25m\n"
-            "**!wheel** — Claim daily Wheel\n"
-            "**!gift @user amount** — Gift gems\n"
-            "**!sell <name> <income> <price>** — Create a listing\n"
-            "**!withdraw "username" "amount" "Gems/EXP"\n"
-            "**!deposit "username" "amount" "Gems/EXP"\n"
-            "**!list** — View pending withdraw queue"
-        ),
-        inline=False
-    )
+
+    # ---------------- Eco ----------------
+
+
+embed.add_field(
+    name="💰 Economy",
+    value=(
+        "**!balance / !bal [@user]** — Check gems\n"
+        "**!daily** — Claim daily 25m\n"
+        "**!wheel** — Claim daily Wheel\n"
+        "**!gift @user amount** — Gift gems\n"
+        "**!sell <name> <income> <price>** — Create a listing\n"
+        "**!withdraw 'username' 'amount' 'Gems/EXP'**\n"
+        "**!deposit 'username' 'amount' 'Gems/EXP'**\n"
+        "**!list** — View pending withdraw queue"
+    ),
+    inline=False
+)
+
 
     # ---------------- Games ----------------
     embed.add_field(
