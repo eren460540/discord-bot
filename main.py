@@ -23,6 +23,43 @@ DISABLED_CATEGORIES = set([1431610646654488661])
 BACKUP_CHANNEL_ID = 1431610647921295451
 
 
+
+# --------------------------------------------------------------
+#      Payout / Deposit / Wheel persistent data setup
+# --------------------------------------------------------------
+data.setdefault("withdrawals", [])
+data.setdefault("deposits", [])
+data.setdefault("next_withdraw_id", 1)
+data.setdefault("next_deposit_id", 1)
+
+# Deposit bonus for NEXT claimed deposit (C-choice)
+# { "user_id_str": int_percent }
+data.setdefault("deposit_bonuses", {})
+
+# Daily wheel last-spin timestamps
+# { "user_id_str": unix_time }
+data.setdefault("wheel_last_spin", {})
+
+save_data(data)
+
+
+
+
+
+OWNER_ID = 1317419437854560288  # 🔁 REPLACE with your real Discord user ID
+
+def normalize_currency(method: str):
+    m = method.lower()
+    if "gem" in m:
+        return "gems"
+    if "exp" in m:
+        return "exp"
+    return None
+
+
+
+
+
 # ---------------------- INTENTS ---------------------- #
 intents = discord.Intents.all()   # <--- this enables EVERYTHING
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
@@ -482,1254 +519,855 @@ def parse_market_number(value: str) -> int:
 
 
 # ==============================================================
-#               WITHDRAW SYSTEM (REQUEST → CLAIM / DENY)
+#         ADVANCED WITHDRAW + DEPOSIT QUEUE SYSTEM + WHEEL
 # ==============================================================
 
-# Storage init
-data.setdefault("withdraw_requests", [])
-withdraw_requests = data["withdraw_requests"]
-data.setdefault("last_withdraw_id", 0)
-
-# Admin to notify on new withdraws (by name)
-ADMIN_NOTIFY_NAME = "eren460540"
-# If you ever want to use ID instead, set:
-# ADMIN_NOTIFY_ID = 123456789012345678
-ADMIN_NOTIFY_ID = None
-
-
-def get_next_withdraw_id():
-    """Always produces a unique withdraw ID."""
-    data["last_withdraw_id"] += 1
-    save_data(data)
-    return data["last_withdraw_id"]
-
-
-# --------------------------------------------------------------
-#            !withdraw <username text> <amount>
-# --------------------------------------------------------------
-@bot.command()
-async def withdraw(ctx, *, args=None):
-    """
-    Example:
-    !withdraw Eren#1234 500m
-    !withdraw 'BigEren MainAccount' 1.2b
-    """
-    if args is None:
-        return await ctx.send("❌ Usage: `!withdraw <username> <amount>`")
-
-    parts = args.split()
-    if len(parts) < 2:
-        return await ctx.send("❌ Please provide BOTH a username and an amount.\nExample: `!withdraw Eren 50m`")
-
-    # username text = everything except last part
-    username_text = " ".join(parts[:-1])
-    amount_text = parts[-1]
-
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
-    u.setdefault("last_withdraw", 0.0)
-
-    # ----- Cooldown (1 hour) -----
-    now = time.time()
-    cooldown = 3600  # 1h in seconds
-    last = u.get("last_withdraw", 0.0)
-
-    if now - last < cooldown:
-        remaining = int(cooldown - (now - last))
-        mins = remaining // 60
-        secs = remaining % 60
-        return await ctx.send(
-            f"⏳ You must wait **{mins}m {secs}s** before creating another withdraw request."
-        )
-
-    # parse amount (supports k/m/b/t, commas, etc)
-    amount = parse_amount(amount_text, u["gems"])
-    if amount is None or amount <= 0:
-        return await ctx.send("❌ Invalid amount format.\nExample: `50m`, `1.2b`, `250k`, `1,000,000`")
-
-    if u["gems"] < amount:
-        return await ctx.send("❌ You do not have enough gems for that withdraw.")
-
-    # Deduct immediately
-    u["gems"] -= amount
-    u["last_withdraw"] = now
-    save_data(data)
-
-    withdraw_id = get_next_withdraw_id()
-
-    # Save request
-    req = {
-        "id": withdraw_id,
-        "user_id": str(ctx.author.id),
-        "username": username_text,
-        "amount": amount,
-        "timestamp": int(now)
-    }
-    withdraw_requests.append(req)
-    save_data(data)
-
-    # Confirm to user
-    embed = discord.Embed(
-        title="💸 Withdraw Request Created",
-        description=(
-            f"Your withdraw request has been added to the queue.\n\n"
-            f"🆔 **Withdraw ID:** `{withdraw_id}`\n"
-            f"👤 **Name Provided:** `{username_text}`\n"
-            f"💰 **Amount:** `{fmt(amount)}`\n"
-            f"⏱ **Created:** <t:{req['timestamp']}:R>\n\n"
-            f"An admin will review your withdrawal soon."
-        ),
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed)
-
-    # ----- Notify Eren in DM (if found) -----
-    notify_user = None
-
-    # 1) Try by ID if set
-    if ADMIN_NOTIFY_ID is not None:
-        notify_user = bot.get_user(ADMIN_NOTIFY_ID)
-        if notify_user is None:
-            try:
-                notify_user = await bot.fetch_user(ADMIN_NOTIFY_ID)
-            except Exception:
-                notify_user = None
-
-    # 2) Try by name in this guild (fallback)
-    if notify_user is None:
-        notify_user = discord.utils.get(ctx.guild.members, name=ADMIN_NOTIFY_NAME)
-
-    if notify_user:
-        try:
-            admin_embed = discord.Embed(
-                title="📥 New Withdraw Request",
-                description=(
-                    f"👤 From: {ctx.author.mention} (`{ctx.author.id}`)\n"
-                    f"🆔 ID: `{withdraw_id}`\n"
-                    f"🪪 Name Text: `{username_text}`\n"
-                    f"💰 Amount: `{fmt(amount)}`\n"
-                    f"⏱ Created: <t:{req['timestamp']}:R>\n\n"
-                    f"Use `!list` to see all pending.\n"
-                    f"Use `!claimed {withdraw_id}` to approve.\n"
-                    f"Use `!deny {withdraw_id} [reason]` to deny & refund."
-                ),
-                color=discord.Color.orange()
-            )
-            await notify_user.send(embed=admin_embed)
-        except Exception:
-            # If DM fails, ignore silently (no crash)
-            pass
-
-
-# --------------------------------------------------------------
-#                   !list — pending withdraws
-# --------------------------------------------------------------
-@bot.command()
-async def list(ctx):
-    """Shows all pending withdraw requests."""
-    if not withdraw_requests:
-        return await ctx.send("📭 No pending withdrawal requests at the moment.")
-
-    embed = discord.Embed(
-        title="📑 Pending Withdrawals",
-        color=galaxy_color()
-    )
-
-    for r in withdraw_requests:
-        user = ctx.guild.get_member(int(r["user_id"]))
-        user_display = user.mention if user else f"`{r['user_id']}`"
-
-        embed.add_field(
-            name=f"🆔 ID {r['id']}",
-            value=(
-                f"👤 **User:** {user_display}\n"
-                f"🪪 **Name Text:** `{r['username']}`\n"
-                f"💰 **Amount:** `{fmt(r['amount'])}`\n"
-                f"⏱ **Created:** <t:{r['timestamp']}:R>"
-            ),
-            inline=False
-        )
-
-    await ctx.send(embed=embed)
-
-
-# --------------------------------------------------------------
-#                  !claimed <id> — approve
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def claimed(ctx, withdraw_id: int):
-    """
-    Marks a withdraw as completed (already paid externally).
-    Removes it from the list and DMs the user.
-    """
-    for r in list(withdraw_requests):
-        if r["id"] == withdraw_id:
-            withdraw_requests.remove(r)
-            save_data(data)
-
-            user_id = int(r["user_id"])
-            user = ctx.guild.get_member(user_id) or bot.get_user(user_id)
-
-            # DM user (if possible)
-            if user:
-                dm_embed = discord.Embed(
-                    title="🎉 Withdrawal Completed!",
-                    description=(
-                        f"Your withdrawal has been **processed successfully**! 💸\n\n"
-                        f"🆔 **Withdraw ID:** `{withdraw_id}`\n"
-                        f"🪪 **Name:** `{r['username']}`\n"
-                        f"💰 **Amount Claimed:** `{fmt(r['amount'])}`\n"
-                        f"⏱️ Processed: <t:{int(time.time())}:R>\n\n"
-                        f"✨ Thank you for using Galaxy Casino!"
-                    ),
-                    color=discord.Color.green()
-                )
-                dm_embed.set_footer(text="Galaxy Casino • Withdrawal System")
-
-                try:
-                    await user.send(embed=dm_embed)
-                except Exception:
-                    await ctx.send("⚠️ Could not DM the user (DMs closed).")
-
-            confirm_embed = discord.Embed(
-                title="✅ Withdraw Claimed",
-                description=(
-                    f"🆔 ID `{withdraw_id}` has been **marked as claimed** and removed from the queue.\n"
-                    f"👤 User ID: `{r['user_id']}`\n"
-                    f"💰 Amount: `{fmt(r['amount'])}`"
-                ),
-                color=discord.Color.green()
-            )
-            return await ctx.send(embed=confirm_embed)
-
-    await ctx.send("❌ Withdraw ID not found.")
-
-
-# --------------------------------------------------------------
-#                !deny <id> [reason] — deny + refund
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def deny(ctx, withdraw_id: int, *, reason: str = "No reason provided."):
-    """
-    Denies a withdraw request:
-    - Refunds the gems back to the user
-    - Removes entry from the list
-    - DMs the user
-    """
-    for r in list(withdraw_requests):
-        if r["id"] == withdraw_id:
-            withdraw_requests.remove(r)
-            save_data(data)
-
-            user_id = int(r["user_id"])
-            ensure_user(user_id)
-            uid = str(user_id)
-            data[uid]["gems"] += r["amount"]
-            save_data(data)
-
-            user = ctx.guild.get_member(user_id) or bot.get_user(user_id)
-
-            # DM user if possible
-            if user:
-                dm_embed = discord.Embed(
-                    title="❌ Withdrawal Denied",
-                    description=(
-                        f"Your withdrawal request has been **denied**.\n\n"
-                        f"🆔 **Withdraw ID:** `{withdraw_id}`\n"
-                        f"🪪 **Name:** `{r['username']}`\n"
-                        f"💰 **Amount Refunded:** `{fmt(r['amount'])}`\n"
-                        f"📝 **Reason:** {reason}\n\n"
-                        f"Your gems have been **returned** to your casino balance."
-                    ),
-                    color=discord.Color.red()
-                )
-                dm_embed.set_footer(text="Galaxy Casino • Withdrawal System")
-
-                try:
-                    await user.send(embed=dm_embed)
-                except Exception:
-                    await ctx.send("⚠️ Could not DM the user (DMs closed).")
-
-            confirm_embed = discord.Embed(
-                title="🚫 Withdraw Denied",
-                description=(
-                    f"🆔 ID `{withdraw_id}` has been **denied**.\n"
-                    f"👤 User ID: `{r['user_id']}`\n"
-                    f"💰 Amount refunded: `{fmt(r['amount'])}`\n"
-                    f"📝 Reason: {reason}"
-                ),
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=confirm_embed)
-
-    await ctx.send("❌ Withdraw ID not found.")
-
-
-
-
-
-
-# ==============================================================
-#                    GROW A GARDEN – FULL SYSTEM
-# ==============================================================
-
-import time
 import random
-import json
-import io
+import time
 import discord
 from discord.ext import commands
 
 # --------------------------------------------------------------
-#                  GARDEN PROFILE / ECONOMY
+# DATA STORAGE INIT
 # --------------------------------------------------------------
+data.setdefault("withdrawals", [])
+data.setdefault("deposits", [])
+data.setdefault("next_withdraw_id", 1)
+data.setdefault("next_deposit_id", 1)
+data.setdefault("deposit_bonuses", {})
+data.setdefault("wheel_last_spin", {})
 
-def ensure_garden_profile(user_id: int):
-    """
-    Kullanıcı için garden profili yoksa oluşturur.
-    Para birimi: SHECKLES
-    Başlangıç: 10 sheckles
-    """
-    ensure_user(user_id)
-    u = data.setdefault(str(user_id), {})
-    g = u.setdefault("garden", {})
+save_data(data)
 
-    g.setdefault("sheckles", 10)       # herkes 10 sheckles ile başlar
-    g.setdefault("seeds", {})          # {"carrot": 3, ...}
-    g.setdefault("plots", {})          # {"1": plant_dict, ...}
-    g.setdefault("max_plots", 9)       # 3x3 başlangıç
-    g.setdefault("ascension_level", 0)
-    g.setdefault("ascension_points", 0)
-    g.setdefault("stats", {
-        "total_harvests": 0,
-        "total_sheckles_earned": 0,
-        "huge_harvests": 0,
-    })
-
-    save_data(data)
-    return g
-
-# Plant objesi:
-# {
-#   "seed_id": str,
-#   "planted_at": float,
-#   "ready_at": float,
-#   "harvests_done": int,
-#   "max_harvests": int
-# }
+# OWNER (receives notifications)
+OWNER_ID =  YOUR_USER_ID_HERE   # <<<--- CHANGE THIS TO YOUR ID
 
 
 # --------------------------------------------------------------
-#                   SEED DEFINITIONS (FROM TABLE)
+# CURRENCY NORMALIZER
 # --------------------------------------------------------------
-
-# harvest_type: "Single" or "Multi"
-# rarity: Common / Uncommon / Rare / Legendary / Mythical / Divine / Prismatic / Transcendent
-# restock_1_in: fotoğraftaki "1 in X" değeri (1 => her rotasyonda her zaman)
-# base_time: büyüme süresi (saniye) – oyuna göre yaklaşık ayarlanmış
-# Kazanç: sheckle_cost etrafında rastgele (0.8x – 1.2x)
-
-GROW_SEEDS = {
-    "carrot": {
-        "id": "carrot",
-        "name": "Carrot",
-        "sheckle_cost": 10,
-        "harvest_type": "Single",
-        "rarity": "Common",
-        "restock_1_in": 1,
-        "base_time": 5 * 60,
-    },
-    "strawberry": {
-        "id": "strawberry",
-        "name": "Strawberry",
-        "sheckle_cost": 50,
-        "harvest_type": "Multi",
-        "rarity": "Common",
-        "restock_1_in": 1,
-        "base_time": 6 * 60,
-    },
-    "blueberry": {
-        "id": "blueberry",
-        "name": "Blueberry",
-        "sheckle_cost": 400,
-        "harvest_type": "Multi",
-        "rarity": "Uncommon",
-        "restock_1_in": 1,
-        "base_time": 8 * 60,
-    },
-    "buttercup": {  # Orange Tulip satırı
-        "id": "buttercup",
-        "name": "Buttercup",
-        "sheckle_cost": 600,
-        "harvest_type": "Single",
-        "rarity": "Uncommon",
-        "restock_1_in": 3,  # 1 in 3
-        "base_time": 10 * 60,
-    },
-    "tomato": {
-        "id": "tomato",
-        "name": "Tomato",
-        "sheckle_cost": 800,
-        "harvest_type": "Multi",
-        "rarity": "Rare",
-        "restock_1_in": 1,
-        "base_time": 10 * 60,
-    },
-    "corn": {
-        "id": "corn",
-        "name": "Corn",
-        "sheckle_cost": 1300,
-        "harvest_type": "Multi",
-        "rarity": "Rare",
-        "restock_1_in": 6,  # 16%
-        "base_time": 12 * 60,
-    },
-    "daffodil": {
-        "id": "daffodil",
-        "name": "Daffodil",
-        "sheckle_cost": 1000,
-        "harvest_type": "Single",
-        "rarity": "Rare",
-        "restock_1_in": 7,
-        "base_time": 12 * 60,
-    },
-    "watermelon": {
-        "id": "watermelon",
-        "name": "Watermelon",
-        "sheckle_cost": 2500,
-        "harvest_type": "Single",
-        "rarity": "Legendary",
-        "restock_1_in": 8,
-        "base_time": 20 * 60,
-    },
-    "pumpkin": {
-        "id": "pumpkin",
-        "name": "Pumpkin",
-        "sheckle_cost": 3000,
-        "harvest_type": "Single",
-        "rarity": "Legendary",
-        "restock_1_in": 10,
-        "base_time": 20 * 60,
-    },
-    "apple": {
-        "id": "apple",
-        "name": "Apple",
-        "sheckle_cost": 3250,
-        "harvest_type": "Multi",
-        "rarity": "Legendary",
-        "restock_1_in": 14,
-        "base_time": 22 * 60,
-    },
-    "bamboo": {
-        "id": "bamboo",
-        "name": "Bamboo",
-        "sheckle_cost": 4000,
-        "harvest_type": "Single",
-        "rarity": "Legendary",
-        "restock_1_in": 5,
-        "base_time": 22 * 60,
-    },
-    "coconut": {
-        "id": "coconut",
-        "name": "Coconut",
-        "sheckle_cost": 6000,
-        "harvest_type": "Multi",
-        "rarity": "Mythical",
-        "restock_1_in": 20,
-        "base_time": 30 * 60,
-    },
-    "cactus": {
-        "id": "cactus",
-        "name": "Cactus",
-        "sheckle_cost": 15000,
-        "harvest_type": "Multi",
-        "rarity": "Mythical",
-        "restock_1_in": 30,
-        "base_time": 35 * 60,
-    },
-    "dragon_fruit": {
-        "id": "dragon_fruit",
-        "name": "Dragon Fruit",
-        "sheckle_cost": 50000,
-        "harvest_type": "Multi",
-        "rarity": "Mythical",
-        "restock_1_in": 50,
-        "base_time": 45 * 60,
-    },
-    "mango": {
-        "id": "mango",
-        "name": "Mango",
-        "sheckle_cost": 100000,
-        "harvest_type": "Multi",
-        "rarity": "Mythical",
-        "restock_1_in": 80,
-        "base_time": 60 * 60,
-    },
-    "grape": {
-        "id": "grape",
-        "name": "Grape",
-        "sheckle_cost": 850000,
-        "harvest_type": "Multi",
-        "rarity": "Divine",
-        "restock_1_in": 100,
-        "base_time": 70 * 60,
-    },
-    "mushroom": {
-        "id": "mushroom",
-        "name": "Mushroom",
-        "sheckle_cost": 150000,
-        "harvest_type": "Single",
-        "rarity": "Divine",
-        "restock_1_in": 120,
-        "base_time": 65 * 60,
-    },
-    "pepper": {
-        "id": "pepper",
-        "name": "Pepper",
-        "sheckle_cost": 1_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Divine",
-        "restock_1_in": 140,
-        "base_time": 75 * 60,
-    },
-    "cacao": {
-        "id": "cacao",
-        "name": "Cacao",
-        "sheckle_cost": 2_500_000,
-        "harvest_type": "Multi",
-        "rarity": "Divine",
-        "restock_1_in": 160,
-        "base_time": 80 * 60,
-    },
-    "sunflower": {
-        "id": "sunflower",
-        "name": "Sunflower",
-        "sheckle_cost": 5_555_655,
-        "harvest_type": "Multi",
-        "rarity": "Divine",
-        "restock_1_in": 180,
-        "base_time": 90 * 60,
-    },
-    "beanstalk": {
-        "id": "beanstalk",
-        "name": "Beanstalk",
-        "sheckle_cost": 10_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Prismatic",
-        "restock_1_in": 210,
-        "base_time": 100 * 60,
-    },
-    "ember_lily": {
-        "id": "ember_lily",
-        "name": "Ember Lily",
-        "sheckle_cost": 15_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Prismatic",
-        "restock_1_in": 240,
-        "base_time": 110 * 60,
-    },
-    "sugar_apple": {
-        "id": "sugar_apple",
-        "name": "Sugar Apple",
-        "sheckle_cost": 25_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Prismatic",
-        "restock_1_in": 290,
-        "base_time": 120 * 60,
-    },
-    "burning_bud": {
-        "id": "burning_bud",
-        "name": "Burning Bud",
-        "sheckle_cost": 40_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Prismatic",
-        "restock_1_in": 340,
-        "base_time": 130 * 60,
-    },
-    "giant_pinecone": {
-        "id": "giant_pinecone",
-        "name": "Giant Pinecone",
-        "sheckle_cost": 55_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Prismatic",
-        "restock_1_in": 380,
-        "base_time": 140 * 60,
-    },
-    "elder_strawberry": {
-        "id": "elder_strawberry",
-        "name": "Elder Strawberry",
-        "sheckle_cost": 70_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Prismatic",
-        "restock_1_in": 400,
-        "base_time": 150 * 60,
-    },
-    "romanesco": {
-        "id": "romanesco",
-        "name": "Romanesco",
-        "sheckle_cost": 88_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Prismatic",
-        "restock_1_in": 440,
-        "base_time": 160 * 60,
-    },
-    "crimson_thorn": {
-        "id": "crimson_thorn",
-        "name": "Crimson Thorn",
-        "sheckle_cost": 10_000_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Transcendent",
-        "restock_1_in": 777,
-        "base_time": 3 * 60 * 60,
-    },
-    "zebrazinkle": {
-        "id": "zebrazinkle",
-        "name": "Zebrazinkle",
-        "sheckle_cost": 21_000_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Transcendent",
-        "restock_1_in": 1000,
-        "base_time": 3 * 60 * 60,
-    },
-    "octobloom": {
-        "id": "octobloom",
-        "name": "Octobloom",
-        "sheckle_cost": 33_000_000_000,
-        "harvest_type": "Multi",
-        "rarity": "Transcendent",
-        "restock_1_in": 1250,
-        "base_time": 3 * 60 * 60,
-    },
-}
-
-# Multi harvest sayısı – basit sistem
-def get_max_harvests(seed_id: str) -> int:
-    s = GROW_SEEDS[seed_id]
-    return 3 if s["harvest_type"] == "Multi" else 1
-
-
-# --------------------------------------------------------------
-#                 GLOBAL SHOP STOCK & RESTOCK
-# --------------------------------------------------------------
-
-SHOP_REFRESH_SECONDS = 5 * 60  # 5 dakika
-ALWAYS_IN_STOCK = ["carrot", "strawberry", "blueberry", "buttercup", "tomato"]
-
-GARDEN_SHOP_STATE = {
-    "last_refresh": 0.0,
-    "stock": {}  # seed_id -> {"infinite": bool, "amount": int | None}
-}
-
-def _generate_shop_stock():
-    stock: dict[str, dict] = {}
-
-    # 1) İlk 5 seed hep stokta, sınırsız
-    for sid in ALWAYS_IN_STOCK:
-        if sid in GROW_SEEDS:
-            stock[sid] = {"infinite": True, "amount": None}
-
-    # 2) Diğer seedler: restock_1_in bazlı olasılıkla
-    for sid, sdef in GROW_SEEDS.items():
-        if sid in ALWAYS_IN_STOCK:
-            continue
-
-        n = sdef.get("restock_1_in", 1)
-        chance = 1.0 / n
-        if random.random() <= chance:
-            rarity = sdef["rarity"]
-            # rarity'ye göre stok miktarı
-            if rarity in ("Common", "Uncommon"):
-                min_amt, max_amt = 5, 25
-            elif rarity == "Rare":
-                min_amt, max_amt = 2, 10
-            elif rarity == "Legendary":
-                min_amt, max_amt = 1, 5
-            elif rarity == "Mythical":
-                min_amt, max_amt = 1, 3
-            else:
-                min_amt, max_amt = 1, 1  # Divine, Prism., Transc. → çok nadir
-
-            amount = random.randint(min_amt, max_amt)
-            stock[sid] = {"infinite": False, "amount": amount}
-
-    GARDEN_SHOP_STATE["stock"] = stock
-    GARDEN_SHOP_STATE["last_refresh"] = time.time()
-
-def get_current_shop_stock() -> dict:
-    now = time.time()
-    if now - GARDEN_SHOP_STATE["last_refresh"] > SHOP_REFRESH_SECONDS:
-        _generate_shop_stock()
-    return GARDEN_SHOP_STATE["stock"]
-
-def buy_seed_from_shop(user_id: int, seed_id: str) -> tuple[bool, str]:
-    garden = ensure_garden_profile(user_id)
-    stock = get_current_shop_stock()
-
-    if seed_id not in stock:
-        return False, "❌ This seed is not in stock right now."
-
-    entry = stock[seed_id]
-    cost = GROW_SEEDS[seed_id]["sheckle_cost"]
-
-    if garden["sheckles"] < cost:
-        return False, f"❌ Not enough sheckles. Need **{cost}**, you have **{garden['sheckles']}**."
-
-    if not entry["infinite"]:
-        if entry["amount"] <= 0:
-            return False, "❌ This seed is sold out."
-        entry["amount"] -= 1
-
-    garden["sheckles"] -= cost
-    garden["seeds"][seed_id] = garden["seeds"].get(seed_id, 0) + 1
-    save_data(data)
-
-    return True, f"🛒 Bought **1x {GROW_SEEDS[seed_id]['name']}** for **{cost}** sheckles."
-
-
-# --------------------------------------------------------------
-#                  GARDEN HELPER FUNCTIONS
-# --------------------------------------------------------------
-
-def get_free_plot(garden: dict) -> int | None:
-    max_plots = garden.get("max_plots", 9)
-    used = set(int(k) for k in garden.get("plots", {}).keys())
-    for i in range(1, max_plots + 1):
-        if i not in used:
-            return i
+def normalize_currency(method: str):
+    m = method.lower()
+    if "gem" in m:
+        return "gems"
+    if "exp" in m:
+        return "exp"
     return None
 
-def describe_plant(plant: dict) -> str:
-    seed = GROW_SEEDS.get(plant["seed_id"], {"name": plant["seed_id"], "rarity": "?"})
-    now = time.time()
-    ready = now >= plant["ready_at"]
-    remaining = max(0, int(plant["ready_at"] - now))
 
-    if ready:
-        status = "✅ Ready"
-        time_txt = ""
-    else:
-        mins = remaining // 60
-        secs = remaining % 60
-        status = "⏳ Growing"
-        time_txt = f" ({mins}m {secs}s left)"
+# ==============================================================
+#                    WITHDRAW SYSTEM
+# ==============================================================
 
-    h = plant.get("harvests_done", 0)
-    max_h = plant.get("max_harvests", 1)
-    return f"{status} – **{seed['name']}** [{seed['rarity']}] — {h}/{max_h} harvests{time_txt}"
+WITHDRAW_COOLDOWN = 3600  # 1 hour
 
-def plant_seed_for_user(user_id: int, seed_id: str) -> tuple[bool, str]:
-    garden = ensure_garden_profile(user_id)
-    seeds = garden["seeds"]
 
-    if seed_id not in GROW_SEEDS:
-        return False, "❌ This seed does not exist."
+@bot.command()
+@commands.cooldown(1, WITHDRAW_COOLDOWN, commands.BucketType.user)
+async def withdraw(ctx, username: str, amount: str, payment_method: str):
+    """
+    !withdraw "username text" "amount" "Gems/EXP"
+    """
 
-    if seeds.get(seed_id, 0) <= 0:
-        return False, "❌ You don't have that seed."
+    ensure_user(ctx.author.id)
+    uid = str(ctx.author.id)
 
-    slot = get_free_plot(garden)
-    if slot is None:
-        return False, "❌ No free plot available."
+    currency_key = normalize_currency(payment_method)
+    if currency_key is None:
+        return await ctx.send("❌ Payment method must be **Gems** or **EXP**.")
 
-    sdef = GROW_SEEDS[seed_id]
-    now = time.time()
+    bal = data[uid].get(currency_key, 0)
 
-    plant = {
-        "seed_id": seed_id,
-        "planted_at": now,
-        "ready_at": now + sdef["base_time"],
-        "harvests_done": 0,
-        "max_harvests": get_max_harvests(seed_id),
+    val = parse_amount(amount, bal, allow_all=False)
+    if val is None or val <= 0:
+        return await ctx.send("❌ Invalid amount.")
+
+    if val > bal:
+        return await ctx.send("❌ You don't have enough balance.")
+
+    # Deduct immediately
+    data[uid][currency_key] = bal - val
+    save_data(data)
+
+    wid = data["next_withdraw_id"]
+    data["next_withdraw_id"] += 1
+
+    req = {
+        "id": wid,
+        "user_id": ctx.author.id,
+        "username": username,
+        "amount": val,
+        "currency": currency_key.upper(),
+        "status": "pending",
+        "created_at": time.time()
     }
-
-    garden["plots"][str(slot)] = plant
-    seeds[seed_id] -= 1
-    if seeds[seed_id] <= 0:
-        del seeds[seed_id]
-
+    data["withdrawals"].append(req)
     save_data(data)
-    return True, f"🌱 Planted **{sdef['name']}** in plot **#{slot}**."
 
-def harvest_ready_plants(user_id: int) -> tuple[int, int]:
-    """
-    Tüm hazır bitkileri hasat eder.
-    Dönen: (harvest_sayısı, toplam_sheckles)
-    """
-    garden = ensure_garden_profile(user_id)
-    plots = garden["plots"]
-    stats = garden["stats"]
+    # DM user
+    try:
+        embed = discord.Embed(
+            title="📤 Withdrawal Created",
+            description=(
+                f"ID: `#{wid}`\n"
+                f"Username: `{username}`\n"
+                f"Amount: **{fmt(val)} {req['currency']}**\n"
+                "Awaiting admin review."
+            ),
+            color=discord.Color.orange()
+        )
+        await ctx.author.send(embed=embed)
+    except:
+        pass
 
-    now = time.time()
-    harvested_count = 0
-    total_sheckles = 0
+    # Notify owner
+    owner = bot.get_user(OWNER_ID)
+    if owner:
+        try:
+            embed2 = discord.Embed(
+                title="📤 New Withdrawal",
+                description=(
+                    f"User: {ctx.author.mention}\n"
+                    f"ID: `#{wid}`\n"
+                    f"Amount: **{fmt(val)} {req['currency']}**\n"
+                    f"`!claimwithdraw {wid}`\n"
+                    f"`!denywithdraw {wid}`"
+                ),
+                color=discord.Color.red()
+            )
+            await owner.send(embed=embed2)
+        except:
+            pass
 
-    to_delete = []
+    await ctx.send(f"✅ Withdrawal request **#{wid}** added.")
 
-    for slot_str, plant in list(plots.items()):
-        if now < plant["ready_at"]:
-            continue
 
-        seed_def = GROW_SEEDS.get(plant["seed_id"])
-        if not seed_def:
-            to_delete.append(slot_str)
-            continue
-
-        cost = seed_def["sheckle_cost"]
-        reward_min = int(cost * 0.8)
-        reward_max = int(cost * 1.2)
-        reward = random.randint(reward_min, reward_max)
-
-        harvested_count += 1
-        total_sheckles += reward
-
-        plant["harvests_done"] += 1
-        if plant["harvests_done"] < plant["max_harvests"]:
-            plant["planted_at"] = now
-            plant["ready_at"] = now + seed_def["base_time"]
-            plots[slot_str] = plant
-        else:
-            to_delete.append(slot_str)
-
-    for s in to_delete:
-        plots.pop(s, None)
-
-    garden["sheckles"] += total_sheckles
-    stats["total_harvests"] += harvested_count
-    stats["total_sheckles_earned"] += total_sheckles
-
-    save_data(data)
-    return harvested_count, total_sheckles
+# Error (cooldown)
+@withdraw.error
+async def withdraw_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        remaining = int(error.retry_after)
+        m, s = divmod(remaining, 60)
+        return await ctx.send(
+            f"⏳ You can withdraw again in **{m}m {s}s**."
+        )
+    raise error
 
 
 # --------------------------------------------------------------
-#                     EMBED BUILDERS
+# LIST WITHDRAWALS
 # --------------------------------------------------------------
+@bot.command(name="withdrawlist")
+async def withdrawlist(ctx):
+    pending = [w for w in data["withdrawals"] if w["status"] == "pending"]
+    if not pending:
+        return await ctx.send("📭 No pending withdrawals.")
 
-def build_main_embed(user: discord.abc.User) -> discord.Embed:
-    garden = ensure_garden_profile(user.id)
-    sheckles = garden["sheckles"]
-    max_plots = garden["max_plots"]
-    plots = garden["plots"]
-    seeds = garden["seeds"]
-    asc = garden["ascension_level"]
-
-    used_plots = len(plots)
-    free_plots = max_plots - used_plots
-
-    if seeds:
-        seed_lines = []
-        for sid, amt in seeds.items():
-            s = GROW_SEEDS.get(sid)
-            if not s:
-                continue
-            seed_lines.append(f"• **{s['name']}** [{s['rarity']}] × `{amt}`")
-        seeds_txt = "\n".join(seed_lines)
-    else:
-        seeds_txt = "_You don't have any seeds yet._"
+    pending.sort(key=lambda x: x["id"])
+    lines = [
+        f"`#{w['id']:03}` • <@{w['user_id']}> • **{fmt(w['amount'])} {w['currency']}** • `{w['username']}`"
+        for w in pending
+    ]
 
     embed = discord.Embed(
-        title="🌱 Grow a Garden — Main Panel",
-        description=(
-            "Welcome to your **Galaxy Garden**!\n"
-            "Use the buttons below to manage your farm.\n\n"
-            "Everything works via buttons — no text commands needed."
-        ),
-        color=galaxy_color()
+        title="📤 Pending Withdrawals",
+        description="\n".join(lines),
+        color=discord.Color.orange()
     )
-    embed.add_field(name="💰 Sheckles", value=f"**{sheckles}**", inline=True)
-    embed.add_field(name="🪴 Plots", value=f"Used: **{used_plots}/{max_plots}** (Free: `{free_plots}`)", inline=True)
-    embed.add_field(name="✨ Ascension", value=f"Level: **{asc}**", inline=True)
-    embed.add_field(name="🌾 Seeds in Inventory", value=seeds_txt, inline=False)
-    return embed
+    await ctx.send(embed=embed)
 
-def build_garden_embed(user: discord.abc.User) -> discord.Embed:
-    garden = ensure_garden_profile(user.id)
-    plots = garden["plots"]
-    max_plots = garden["max_plots"]
 
-    if not plots:
-        desc = "Your garden is currently empty.\nUse **Seed Shop** and **Plant Menu** to start."
-    else:
-        lines = []
-        for i in range(1, max_plots + 1):
-            key = str(i)
-            if key in plots:
-                plant = plots[key]
-                lines.append(f"#{i}: " + describe_plant(plant))
-            else:
-                lines.append(f"#{i}: 🕳 Empty plot")
-        desc = "\n".join(lines)
+# --------------------------------------------------------------
+# CLAIM WITHDRAW
+# --------------------------------------------------------------
+@bot.command(name="claimwithdraw")
+@commands.has_guild_permissions(manage_guild=True)
+async def claimwithdraw(ctx, wid: int):
+    for w in data["withdrawals"]:
+        if w["id"] == wid:
+            if w["status"] != "pending":
+                return await ctx.send("⚠️ Already processed.")
 
-    embed = discord.Embed(
-        title=f"🌾 {user.name}'s Garden",
-        description=desc,
-        color=galaxy_color()
-    )
-    return embed
+            w["status"] = "claimed"
+            w["claimed_by"] = ctx.author.id
+            w["claimed_at"] = time.time()
+            save_data(data)
 
-def build_shop_embed(user: discord.abc.User) -> discord.Embed:
-    garden = ensure_garden_profile(user.id)
-    sheckles = garden["sheckles"]
-    stock = get_current_shop_stock()
-    remaining = max(0, int(SHOP_REFRESH_SECONDS - (time.time() - GARDEN_SHOP_STATE["last_refresh"])))
+            user = bot.get_user(w["user_id"])
+            if user:
+                try:
+                    embed = discord.Embed(
+                        title="🎉 Withdrawal Completed",
+                        description=(
+                            f"ID: `#{wid}`\n"
+                            f"Amount: **{fmt(w['amount'])} {w['currency']}**\n"
+                            "Your withdrawal has been processed."
+                        ),
+                        color=discord.Color.green()
+                    )
+                    await user.send(embed=embed)
+                except:
+                    pass
+
+            return await ctx.send(f"✅ Withdrawal **#{wid}** claimed.")
+
+    await ctx.send("❌ Withdrawal ID not found.")
+
+
+# --------------------------------------------------------------
+# DENY WITHDRAW
+# --------------------------------------------------------------
+@bot.command(name="denywithdraw")
+@commands.has_guild_permissions(manage_guild=True)
+async def denywithdraw(ctx, wid: int, *, reason="No reason provided"):
+    for w in data["withdrawals"]:
+        if w["id"] == wid:
+            if w["status"] != "pending":
+                return await ctx.send("⚠️ Already processed.")
+
+            uid = str(w["user_id"])
+            ensure_user(uid)
+
+            currency = w["currency"].lower()
+            data[uid][currency] = data[uid].get(currency, 0) + w["amount"]
+
+            w["status"] = "denied"
+            w["denied_by"] = ctx.author.id
+            w["denied_at"] = time.time()
+            w["deny_reason"] = reason
+            save_data(data)
+
+            user = bot.get_user(w["user_id"])
+            if user:
+                try:
+                    embed = discord.Embed(
+                        title="❌ Withdrawal Denied",
+                        description=(
+                            f"ID: `#{wid}`\n"
+                            f"Amount refunded: **{fmt(w['amount'])} {w['currency']}**\n"
+                            f"Reason: `{reason}`"
+                        ),
+                        color=discord.Color.red()
+                    )
+                    await user.send(embed=embed)
+                except:
+                    pass
+
+            return await ctx.send(f"🚫 Withdrawal **#{wid}** denied & refunded.")
+
+    await ctx.send("❌ Withdrawal ID not found.")
+
+
+# ==============================================================
+#                   DEPOSIT SYSTEM
+# ==============================================================
+
+@bot.command()
+async def deposit(ctx, username: str, amount: str, payment_method: str):
+
+    ensure_user(ctx.author.id)
+    uid = str(ctx.author.id)
+
+    currency_key = normalize_currency(payment_method)
+    if currency_key is None:
+        return await ctx.send("❌ Method must be **Gems** or **EXP**.")
+
+    val = parse_amount(amount, None)
+    if val is None or val <= 0:
+        return await ctx.send("❌ Invalid amount.")
+
+    did = data["next_deposit_id"]
+    data["next_deposit_id"] += 1
+
+    entry = {
+        "id": did,
+        "user_id": ctx.author.id,
+        "username": username,
+        "amount": val,
+        "currency": currency_key.upper(),
+        "status": "pending",
+        "created_at": time.time()
+    }
+    data["deposits"].append(entry)
+    save_data(data)
+
+    # DM user
+    try:
+        embed = discord.Embed(
+            title="📥 Deposit Request Created",
+            description=(
+                f"ID: `#{did}`\n"
+                f"Amount: **{fmt(val)} {entry['currency']}**\n"
+                "Waiting for admin approval."
+            ),
+            color=discord.Color.blue()
+        )
+        await ctx.author.send(embed=embed)
+    except:
+        pass
+
+    # Notify owner
+    owner = bot.get_user(OWNER_ID)
+    if owner:
+        try:
+            embed2 = discord.Embed(
+                title="📥 New Deposit",
+                description=(
+                    f"User: {ctx.author.mention}\n"
+                    f"ID: `#{did}`\n"
+                    f"Amount: **{fmt(val)} {entry['currency']}**\n"
+                    f"`!claimdeposit {did}`\n"
+                    f"`!denydeposit {did}`"
+                ),
+                color=discord.Color.blue()
+            )
+            await owner.send(embed=embed2)
+        except:
+            pass
+
+    await ctx.send(f"✅ Deposit request **#{did}** created.")
+
+
+# LIST DEPOSITS
+@bot.command(name="depositlist")
+async def depositlist(ctx):
+    pending = [d for d in data["deposits"] if d["status"] == "pending"]
+    if not pending:
+        return await ctx.send("📭 No pending deposits.")
+
+    pending.sort(key=lambda x: x["id"])
 
     lines = []
-    if not stock:
-        lines.append("_Shop is empty right now. It will refresh soon._")
-    else:
-        for sid, entry in stock.items():
-            sdef = GROW_SEEDS[sid]
-            cost = sdef["sheckle_cost"]
-            if entry["infinite"]:
-                amt_txt = "∞"
-            else:
-                amt_txt = str(entry["amount"])
-            lines.append(f"• **{sdef['name']}** [`{sid}`] [{sdef['rarity']}] — 💰 {cost} sheckles — Stock: `{amt_txt}`")
+    bonus_map = data["deposit_bonuses"]
 
-    desc = (
-        f"Your balance: **{sheckles}** sheckles\n"
-        f"Shop refreshes globally every **5 minutes**.\n"
-        f"Next refresh in: **{remaining // 60}m {remaining % 60}s**\n\n"
-        + ("\n".join(lines) if lines else "")
-    )
+    for d in pending:
+        uid = str(d["user_id"])
+        percent = bonus_map.get(uid, 0)
+        extra = f" • +{percent}% BONUS" if percent > 0 else ""
+        lines.append(
+            f"`#{d['id']:03}` • <@{d['user_id']}> • "
+            f"**{fmt(d['amount'])} {d['currency']}** • `{d['username']}`{extra}"
+        )
 
     embed = discord.Embed(
-        title="🛒 Garden Seed Shop",
-        description=desc,
-        color=galaxy_color()
+        title="📥 Pending Deposits",
+        description="\n".join(lines),
+        color=discord.Color.blue()
     )
-    return embed
-
-def build_stats_embed(user: discord.abc.User) -> discord.Embed:
-    garden = ensure_garden_profile(user.id)
-    stats = garden["stats"]
-
-    embed = discord.Embed(
-        title=f"📊 {user.name}'s Garden Stats",
-        description="Overall statistics for your Galaxy Garden.",
-        color=galaxy_color()
-    )
-    embed.add_field(name="🌾 Total Harvests", value=str(stats.get("total_harvests", 0)), inline=True)
-    embed.add_field(name="💰 Total Sheckles Earned", value=str(stats.get("total_sheckles_earned", 0)), inline=True)
-    return embed
+    await ctx.send(embed=embed)
 
 
-# --------------------------------------------------------------
-#                        DISCORD VIEWS
-# --------------------------------------------------------------
-
-class MainMenuView(discord.ui.View):
-    def __init__(self, owner_id: int):
-        super().__init__(timeout=120)
-        self.owner_id = owner_id
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
-            return True
-        await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
-        return False
-
-    @discord.ui.button(label="🌾 View Garden", style=discord.ButtonStyle.green)
-    async def view_garden(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_garden_embed(interaction.user)
-        view = GardenView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    @discord.ui.button(label="🧺 Harvest All", style=discord.ButtonStyle.blurple)
-    async def harvest_all(self, interaction: discord.Interaction, button: discord.ui.Button):
-        harvested, total = harvest_ready_plants(interaction.user.id)
-        embed = build_main_embed(interaction.user)
-        view = MainMenuView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-        if harvested == 0:
-            await interaction.followup.send("🌱 Nothing was ready to harvest.", ephemeral=True)
-        else:
-            await interaction.followup.send(
-                f"🧺 Harvested **{harvested}** plants and earned **{total}** sheckles!",
-                ephemeral=True
-            )
-
-    @discord.ui.button(label="🛒 Seed Shop", style=discord.ButtonStyle.gray)
-    async def seed_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_shop_embed(interaction.user)
-        view = ShopView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    @discord.ui.button(label="🌱 Plant Menu", style=discord.ButtonStyle.primary)
-    async def plant_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_garden_embed(interaction.user)
-        view = PlantView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    @discord.ui.button(label="📊 Stats", style=discord.ButtonStyle.secondary)
-    async def stats(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_stats_embed(interaction.user)
-        view = StatsView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-class GardenView(discord.ui.View):
-    def __init__(self, owner_id: int):
-        super().__init__(timeout=120)
-        self.owner_id = owner_id
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
-            return True
-        await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
-        return False
-
-    @discord.ui.button(label="🧺 Harvest Ready", style=discord.ButtonStyle.blurple)
-    async def harvest_ready(self, interaction: discord.Interaction, button: discord.ui.Button):
-        harvested, total = harvest_ready_plants(interaction.user.id)
-        embed = build_garden_embed(interaction.user)
-        view = GardenView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-        if harvested == 0:
-            await interaction.followup.send("🌱 No plants were ready.", ephemeral=True)
-        else:
-            await interaction.followup.send(
-                f"🧺 Harvested **{harvested}** plants and earned **{total}** sheckles!",
-                ephemeral=True
-            )
-
-    @discord.ui.button(label="🔙 Back to Main", style=discord.ButtonStyle.gray)
-    async def back_main(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_main_embed(interaction.user)
-        view = MainMenuView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-# --------------------------------------------------------------
-#                       FIXED SHOP VIEW
-# --------------------------------------------------------------
-
-class ShopView(discord.ui.View):
-    def __init__(self, owner_id: int):
-        super().__init__(timeout=120)
-        self.owner_id = owner_id
-
-        stock = get_current_shop_stock()
-
-        row_index = 0
-        col_index = 0
-
-        for sid in stock.keys():
-            sdef = GROW_SEEDS.get(sid)
-            if not sdef:
-                continue
-
-            # Discord limit: 5 rows × 5 columns = 25 buttons
-            if row_index >= 5:
-                break
-
-            btn = SeedBuyButton(seed_id=sid, label=sdef["name"])
-            btn.row = row_index
-            self.add_item(btn)
-
-            col_index += 1
-            if col_index >= 5:
-                col_index = 0
-                row_index += 1
-
-        # Bottom row: refresh + back
-        self.add_item(ShopRefreshButton(row=4))
-        self.add_item(BackToMainButton(row=4))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
-            return True
-        await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
-        return False
-
-
-class ShopRefreshButton(discord.ui.Button):
-    def __init__(self, row):
-        super().__init__(label="🔄 Refresh", style=discord.ButtonStyle.blurple, row=row)
-
-    async def callback(self, interaction: discord.Interaction):
-        embed = build_shop_embed(interaction.user)
-        view = ShopView(interaction.user.id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-class BackToMainButton(discord.ui.Button):
-    def __init__(self, row):
-        super().__init__(label="🔙 Back", style=discord.ButtonStyle.gray, row=row)
-
-    async def callback(self, interaction: discord.Interaction):
-        embed = build_main_embed(interaction.user)
-        view = MainMenuView(interaction.user.id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-# --------------------------------------------------------------
-#             FIXED SEED BUY BUTTON (IMPORTANT)
-# --------------------------------------------------------------
-
-class SeedBuyButton(discord.ui.Button):
-    def __init__(self, seed_id: str, label: str):
-        super().__init__(label=f"Buy {label}", style=discord.ButtonStyle.green)
-        self.seed_id = seed_id
-
-    async def callback(self, interaction: discord.Interaction):
-        ok, msg = buy_seed_from_shop(interaction.user.id, self.seed_id)
-        embed = build_shop_embed(interaction.user)
-        view = ShopView(interaction.user.id)
-        await interaction.response.edit_message(embed=embed, view=view)
-        await interaction.followup.send(msg, ephemeral=True)
-
-
-# --------------------------------------------------------------
-#                       PLANT VIEW
-# --------------------------------------------------------------
-
-class PlantView(discord.ui.View):
-    def __init__(self, owner_id: int):
-        super().__init__(timeout=120)
-        self.owner_id = owner_id
-
-        garden = ensure_garden_profile(owner_id)
-        seeds = garden["seeds"]
-
-        row_index = 0
-        col_index = 0
-
-        for sid, amt in seeds.items():
-            if row_index >= 5:
-                break
-            sdef = GROW_SEEDS.get(sid)
-            if not sdef:
-                continue
-
-            btn = PlantButton(seed_id=sid, label=f"{sdef['name']} ×{amt}")
-            btn.row = row_index
-            self.add_item(btn)
-
-            col_index += 1
-            if col_index >= 5:
-                col_index = 0
-                row_index += 1
-
-        self.add_item(BackToMainButton(row=4))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
-            return True
-        await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
-        return False
-
-
-class PlantButton(discord.ui.Button):
-    def __init__(self, seed_id: str, label: str):
-        super().__init__(label=label, style=discord.ButtonStyle.primary)
-        self.seed_id = seed_id
-
-    async def callback(self, interaction: discord.Interaction):
-        ok, msg = plant_seed_for_user(interaction.user.id, self.seed_id)
-        embed = build_garden_embed(interaction.user)
-        view = PlantView(interaction.user.id)
-        await interaction.response.edit_message(embed=embed, view=view)
-        await interaction.followup.send(msg, ephemeral=True)
-
-
-# --------------------------------------------------------------
-#                         STATS VIEW
-# --------------------------------------------------------------
-
-class StatsView(discord.ui.View):
-    def __init__(self, owner_id: int):
-        super().__init__(timeout=120)
-        self.owner_id = owner_id
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.owner_id or interaction.user.guild_permissions.manage_guild:
-            return True
-        await interaction.response.send_message("❌ This is not your garden panel.", ephemeral=True)
-        return False
-
-    @discord.ui.button(label="🔙 Back to Main", style=discord.ButtonStyle.gray)
-    async def back_main(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_main_embed(interaction.user)
-        view = MainMenuView(self.owner_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-
-# --------------------------------------------------------------
-#                     BACKUP / RESTORE
-# --------------------------------------------------------------
-
-@bot.command(name="savegag")
+# CLAIM DEPOSIT (APPLIES BONUS C)
+@bot.command(name="claimdeposit")
 @commands.has_guild_permissions(manage_guild=True)
-async def save_gag(ctx: commands.Context):
-    """
-    Sunucudaki TÜM kullanıcıların garden verisini JSON dosyası olarak gönderir.
-    """
-    gag_dump = {}
-    for uid, udata in data.items():
-        if "garden" in udata:
-            gag_dump[uid] = udata["garden"]
+async def claimdeposit(ctx, did: int):
 
-    raw = json.dumps(gag_dump, indent=2)
-    bio = io.BytesIO(raw.encode("utf-8"))
-    bio.seek(0)
+    for d in data["deposits"]:
+        if d["id"] == did:
+            if d["status"] != "pending":
+                return await ctx.send("⚠️ Already processed.")
 
-    filename = f"growagarden_backup_{int(time.time())}.json"
-    file = discord.File(bio, filename=filename)
+            uid = str(d["user_id"])
+            ensure_user(uid)
+            currency = d["currency"].lower()
 
-    await ctx.send(
-        content="📁 Grow a Garden backup created. Keep this file safe!",
-        file=file
-    )
+            base = d["amount"]
+            bonus_map = data["deposit_bonuses"]
+            percent = bonus_map.get(uid, 0)
 
-@bot.command(name="restoregag")
+            bonus_amt = base * percent // 100 if percent > 0 else 0
+            total = base + bonus_amt
+
+            # add final to balance
+            data[uid][currency] = data[uid].get(currency, 0) + total
+
+            # consume the bonus
+            bonus_map[uid] = 0
+            save_data(data)
+
+            d["status"] = "claimed"
+            d["claimed_by"] = ctx.author.id
+            d["claimed_at"] = time.time()
+            d["bonus_used"] = percent
+            d["bonus_amount"] = bonus_amt
+            save_data(data)
+
+            # DM user
+            user = bot.get_user(d["user_id"])
+            if user:
+                try:
+                    embed = discord.Embed(
+                        title="🎉 Deposit Claimed",
+                        description=(
+                            f"ID: `#{did}`\n"
+                            f"Base: **{fmt(base)} {d['currency']}**\n"
+                            f"Bonus: **+{percent}% = {fmt(bonus_amt)}**\n"
+                            f"Total credited: **{fmt(total)} {d['currency']}**"
+                        ),
+                        color=discord.Color.green()
+                    )
+                    await user.send(embed=embed)
+                except:
+                    pass
+
+            return await ctx.send(f"✅ Deposit **#{did}** claimed (credited **{fmt(total)}**).")
+
+    await ctx.send("❌ Deposit ID not found.")
+
+
+# DENY DEPOSIT
+@bot.command(name="denydeposit")
 @commands.has_guild_permissions(manage_guild=True)
-async def restore_gag(ctx: commands.Context):
-    """
-    !restoregag komutuyla, mesaja ekli JSON backup dosyasını yükler.
-    DIKKAT: Sadece garden verisini değiştirir, diğer oyunlara dokunmaz.
-    """
-    if not ctx.message.attachments:
-        return await ctx.send("❌ Please attach a JSON backup file to this command.")
+async def denydeposit(ctx, did: int, *, reason="No reason provided"):
+    for d in data["deposits"]:
+        if d["id"] == did:
+            if d["status"] != "pending":
+                return await ctx.send("⚠️ Already processed.")
 
-    attachment = ctx.message.attachments[0]
-    try:
-        raw = await attachment.read()
-        gag_dump = json.loads(raw.decode("utf-8"))
-    except Exception as e:
-        return await ctx.send(f"❌ Failed to read JSON: `{e}`")
+            d["status"] = "denied"
+            d["denied_by"] = ctx.author.id
+            d["denied_at"] = time.time()
+            d["deny_reason"] = reason
+            save_data(data)
 
-    # garden verilerini geri yaz
-    count = 0
-    for uid, garden_data in gag_dump.items():
-        u = data.setdefault(str(uid), {})
-        u["garden"] = garden_data
-        count += 1
+            # DM user
+            user = bot.get_user(d["user_id"])
+            if user:
+                try:
+                    embed = discord.Embed(
+                        title="❌ Deposit Denied",
+                        description=(
+                            f"ID: `#{did}`\n"
+                            f"Reason: `{reason}`"
+                        ),
+                        color=discord.Color.red()
+                    )
+                    await user.send(embed=embed)
+                except:
+                    pass
 
+            return await ctx.send(f"🚫 Deposit **#{did}** denied.")
+
+    await ctx.send("❌ Deposit ID not found.")
+
+
+# ==============================================================
+#                     DAILY WHEEL SYSTEM
+# ==============================================================
+
+WHEEL_COOLDOWN = 86400  # 24 hours
+
+# Visible but weighted system
+WHEEL_PRIZES = [
+    {"name": "5m Gems", "type": "gems", "amount": 5_000_000, "weight": 10},
+    {"name": "10m Gems", "type": "gems", "amount": 10_000_000, "weight": 10},
+    {"name": "10% Deposit Bonus", "type": "bonus", "bonus": 10, "weight": 10},
+    {"name": "25% Deposit Bonus", "type": "bonus", "bonus": 25, "weight": 25},
+    {"name": "100m Gems", "type": "gems", "amount": 100_000_000, "weight": 4},
+    {"name": "200m Gems", "type": "gems", "amount": 200_000_000, "weight": 1},
+
+    # 0% bait rewards
+    {"name": "1b Gems", "type": "gems", "amount": 1_000_000_000, "weight": 0},
+    {"name": "3b Gems", "type": "gems", "amount": 3_000_000_000, "weight": 0},
+    {"name": "5b Gems", "type": "gems", "amount": 5_000_000_000, "weight": 0},
+    {"name": "251.2m/s Tang Tang Keletang", "type": "gems", "amount": 251_200_000, "weight": 0},
+]
+
+
+def wheel_pick():
+    total = sum(p["weight"] for p in WHEEL_PRIZES)
+    r = random.uniform(0, total)
+    upto = 0
+    for p in WHEEL_PRIZES:
+        if p["weight"] > 0:
+            if upto + p["weight"] >= r:
+                return p
+            upto += p["weight"]
+    return WHEEL_PRIZES[0]
+
+
+@bot.command()
+async def wheel(ctx):
+
+    uid = str(ctx.author.id)
+    ensure_user(uid)
+
+    last = data["wheel_last_spin"].get(uid, 0)
+    now = time.time()
+
+    if now - last < WHEEL_COOLDOWN:
+        rem = int(WHEEL_COOLDOWN - (now - last))
+        h, rem = divmod(rem, 3600)
+        m, s = divmod(rem, 60)
+        return await ctx.send(
+            f"⏳ Your next spin is in **{h}h {m}m {s}s**."
+        )
+
+    data["wheel_last_spin"][uid] = now
     save_data(data)
-    await ctx.send(f"✅ Restored Grow a Garden data for **{count}** users.")
+
+    prize = wheel_pick()
+
+    # apply reward
+    if prize["type"] == "gems":
+        data[uid]["gems"] += prize["amount"]
+        save_data(data)
+
+    elif prize["type"] == "bonus":
+        data["deposit_bonuses"][uid] = data["deposit_bonuses"].get(uid, 0) + prize["bonus"]
+        save_data(data)
+
+    # send result
+    embed = discord.Embed(
+        title="🎡 Daily Wheel Result",
+        description=f"🎁 **{prize['name']}**",
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
+
+
+
+
+
 
 # --------------------------------------------------------------
-#                     MAIN GARDEN COMMAND
+#                      DEPOSIT SYSTEM
 # --------------------------------------------------------------
 
-@bot.command(name="growagarden", aliases=["garden", "gg"])
-async def growagarden_cmd(ctx: commands.Context):
+@bot.command()
+async def deposit(ctx, username: str, amount: str, payment_method: str):
     """
-    Tek komut: !growagarden
-    Her şey butonlarla yönetilir.
+    Usage:
+    !deposit "RobloxName or anything" "amount" "Gems/EXP"
+
+    This does NOT change your balance immediately.
+    Admin must claim it with !claimdeposit <id>.
     """
-    ensure_garden_profile(ctx.author.id)
-    embed = build_main_embed(ctx.author)
-    view = MainMenuView(ctx.author.id)
-    await ctx.send(embed=embed, view=view)
+
+    ensure_user(ctx.author.id)
+
+    currency_key = normalize_currency(payment_method)
+    if currency_key is None:
+        return await ctx.send(
+            "❌ Payment method must be **Gems** or **EXP** (any case)."
+        )
+
+    val = parse_amount(amount, None, allow_all=False)
+    if val is None or val <= 0:
+        return await ctx.send("❌ Invalid amount.")
+
+    did = data.get("next_deposit_id", 1)
+    data["next_deposit_id"] = did + 1
+
+    entry = {
+        "id": did,
+        "user_id": ctx.author.id,
+        "username": username,
+        "amount": val,
+        "currency": currency_key.upper(),  # GEMS / EXP
+        "status": "pending",
+        "created_at": time.time()
+    }
+    data["deposits"].append(entry)
+    save_data(data)
+
+    # DM user
+    try:
+        embed_user = discord.Embed(
+            title="📥 Deposit Request Created",
+            description=(
+                f"ID: `#{did}`\n"
+                f"Username: `{username}`\n"
+                f"Amount: **{fmt(val)} {entry['currency']}**\n\n"
+                "An admin will verify and add it to your balance."
+            ),
+            color=discord.Color.blue()
+        )
+        await ctx.author.send(embed=embed_user)
+    except:
+        pass
+
+    # DM owner
+    owner = bot.get_user(OWNER_ID)
+    if owner:
+        try:
+            embed_owner = discord.Embed(
+                title="📥 New Deposit Request",
+                description=(
+                    f"User: {ctx.author.mention} (`{ctx.author.id}`)\n"
+                    f"ID: `#{did}`\n"
+                    f"Username: `{username}`\n"
+                    f"Amount: **{fmt(val)} {entry['currency']}**"
+                ),
+                color=discord.Color.blue()
+            )
+            await owner.send(embed=embed_owner)
+        except:
+            pass
+
+    await ctx.send(f"✅ Deposit request **#{did}** created.")
 
 
+# ---------------- DEPOSIT LIST ----------------
+@bot.command(name="depositlist")
+async def depositlist(ctx):
+    pending = [d for d in data["deposits"] if d["status"] == "pending"]
+    if not pending:
+        return await ctx.send("📭 There are **no pending deposits**.")
 
+    pending.sort(key=lambda x: x["id"])
+
+    # For showing which deposit will get bonus C
+    bonus_map = data.get("deposit_bonuses", {})
+    first_for_user = {}
+    for d in pending:
+        uid = str(d["user_id"])
+        if uid not in first_for_user:
+            first_for_user[uid] = d["id"]
+
+    lines = []
+    for d in pending:
+        uid = str(d["user_id"])
+        base = f"`#{d['id']:03}` • <@{d['user_id']}> • **{fmt(d['amount'])} {d['currency']}** • `{d['username']}`"
+        bonus_percent = bonus_map.get(uid, 0)
+        if bonus_percent > 0 and first_for_user.get(uid) == d["id"]:
+            base += f" • **+ Deposit Bonus {bonus_percent}%**"
+        lines.append(base)
+
+    embed = discord.Embed(
+        title="📥 Pending Deposits",
+        description="\n".join(lines),
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed)
+
+
+# ---------------- CLAIM DEPOSIT (applies bonus C) ----------------
+@bot.command(name="claimdeposit")
+@commands.has_guild_permissions(manage_guild=True)
+async def claimdeposit(ctx, did: int):
+    for d in data["deposits"]:
+        if d["id"] == did:
+            if d["status"] != "pending":
+                return await ctx.send("⚠️ This deposit is already processed.")
+
+            uid = str(d["user_id"])
+            ensure_user(uid)
+
+            currency_key = d["currency"].lower()  # gems / exp
+            base = d["amount"]
+
+            bonus_map = data.setdefault("deposit_bonuses", {})
+            bonus_percent = int(bonus_map.get(uid, 0) or 0)
+
+            bonus_amount = 0
+            total = base
+            bonus_text = "No bonus applied."
+
+            if bonus_percent > 0:
+                bonus_amount = base * bonus_percent // 100
+                total = base + bonus_amount
+                bonus_text = (
+                    f"Deposit bonus **{bonus_percent}%** applied: "
+                    f"+**{fmt(bonus_amount)} {d['currency']}**."
+                )
+                # C-choice: consume bonus completely
+                bonus_map[uid] = 0
+
+            data[uid][currency_key] = data[uid].get(currency_key, 0) + total
+
+            d["status"] = "claimed"
+            d["claimed_by"] = ctx.author.id
+            d["claimed_at"] = time.time()
+            d["bonus_percent_used"] = bonus_percent
+            d["bonus_amount"] = bonus_amount
+            save_data(data)
+
+            user = bot.get_user(d["user_id"])
+            if user:
+                try:
+                    embed_user = discord.Embed(
+                        title="✅ Deposit Claimed",
+                        description=(
+                            f"ID: `#{d['id']}`\n"
+                            f"Base: **{fmt(base)} {d['currency']}**\n"
+                            f"{bonus_text}\n\n"
+                            f"Final credited: **{fmt(total)} {d['currency']}**"
+                        ),
+                        color=discord.Color.green()
+                    )
+                    await user.send(embed=embed_user)
+                except:
+                    pass
+
+            await ctx.send(
+                f"✅ Deposit **#{did}** claimed. "
+                f"Credited **{fmt(total)} {d['currency']}** to <@{d['user_id']}>."
+            )
+            return
+
+    await ctx.send("❌ Deposit ID not found.")
+
+
+# ---------------- DENY DEPOSIT ----------------
+@bot.command(name="denydeposit")
+@commands.has_guild_permissions(manage_guild=True)
+async def denydeposit(ctx, did: int, *, reason: str = "No reason provided"):
+    for d in data["deposits"]:
+        if d["id"] == did:
+            if d["status"] != "pending":
+                return await ctx.send("⚠️ This deposit is already processed.")
+
+            d["status"] = "denied"
+            d["denied_by"] = ctx.author.id
+            d["denied_at"] = time.time()
+            d["deny_reason"] = reason
+            save_data(data)
+
+            user = bot.get_user(d["user_id"])
+            if user:
+                try:
+                    embed_user = discord.Embed(
+                        title="❌ Deposit Denied",
+                        description=(
+                            f"ID: `#{d['id']}`\n"
+                            f"Amount: **{fmt(d['amount'])} {d['currency']}**\n"
+                            f"Reason: `{reason}`"
+                        ),
+                        color=discord.Color.red()
+                    )
+                    await user.send(embed=embed_user)
+                except:
+                    pass
+
+            await ctx.send(f"❌ Deposit **#{did}** marked as DENIED.")
+            return
+
+    await ctx.send("❌ Deposit ID not found.")
+
+
+# --------------------------------------------------------------
+#                      DAILY WHEEL SYSTEM
+# --------------------------------------------------------------
+
+WHEEL_FREE_COOLDOWN = 24 * 60 * 60  # 24h
+
+# Visible prizes (weights used for random, 0 = impossible)
+WHEEL_PRIZES = [
+    # real rewards
+    {"name": "5m Gems", "type": "gems", "amount": 5_000_000, "weight": 10},
+    {"name": "10m Gems", "type": "gems", "amount": 10_000_000, "weight": 10},
+    {"name": "10% Deposit Bonus", "type": "bonus", "bonus": 10, "weight": 10},
+    {"name": "25% Deposit Bonus", "type": "bonus", "bonus": 25, "weight": 25},
+    {"name": "100m Gems", "type": "gems", "amount": 100_000_000, "weight": 4},
+    {"name": "200m Gems", "type": "gems", "amount": 200_000_000, "weight": 1},
+
+    # bait rewards (visible but 0% chance)
+    {"name": "5b Gems", "type": "gems", "amount": 5_000_000_000, "weight": 0},
+    {"name": "3b Gems", "type": "gems", "amount": 3_000_000_000, "weight": 0},
+    {"name": "1b Gems", "type": "gems", "amount": 1_000_000_000, "weight": 0},
+    {"name": "251.2m/s Tang Tang Keletang", "type": "gems", "amount": 251_200_000, "weight": 0},
+]
+
+
+def roll_wheel_prize():
+    total_weight = sum(p["weight"] for p in WHEEL_PRIZES)
+    r = random.uniform(0, total_weight)
+    upto = 0
+    for p in WHEEL_PRIZES:
+        w = p["weight"]
+        if w <= 0:
+            continue
+        if upto + w >= r:
+            return p
+        upto += w
+    # fallback (shouldn't happen)
+    return WHEEL_PRIZES[0]
+
+
+@bot.command()
+async def wheel(ctx):
+    """Daily wheel: 1 free spin per 24h."""
+    ensure_user(ctx.author.id)
+    uid = str(ctx.author.id)
+
+    last_map = data.setdefault("wheel_last_spin", {})
+    last = last_map.get(uid, 0)
+    now = time.time()
+
+    if now - last < WHEEL_FREE_COOLDOWN:
+        remaining = int(WHEEL_FREE_COOLDOWN - (now - last))
+        hours, rem = divmod(remaining, 3600)
+        minutes, seconds = divmod(rem, 60)
+        return await ctx.send(
+            f"⏳ You already used your daily **!wheel**.\n"
+            f"Next spin in **{hours}h {minutes}m {seconds}s**."
+        )
+
+    # allow spin
+    last_map[uid] = now
+    save_data(data)
+
+    prize = roll_wheel_prize()
+
+    title = "🎡 Daily Wheel"
+    desc_lines = [
+        f"**Player:** {ctx.author.mention}",
+        "",
+        "**Visible rewards:**",
+        "• 5m Gems",
+        "• 10m Gems",
+        "• 10% Deposit Bonus",
+        "• 25% Deposit Bonus",
+        "• 100m Gems",
+        "• 200m Gems",
+        "• 5b Gems",
+        "• 3b Gems",
+        "• 1b Gems",
+        "• 251.2m/s Tang Tang Keletang",
+        "",
+        f"**Result:** 🎁 **{prize['name']}**"
+    ]
+
+    # Apply prize
+    if prize["type"] == "gems":
+        ensure_user(uid)
+        data[uid]["gems"] = data[uid].get("gems", 0) + prize["amount"]
+        save_data(data)
+
+        add_history(ctx.author.id, {
+            "game": "wheel",
+            "bet": 0,
+            "result": prize["name"],
+            "earned": prize["amount"],
+            "timestamp": time.time()
+        })
+
+    elif prize["type"] == "bonus":
+        bonus_map = data.setdefault("deposit_bonuses", {})
+        current = int(bonus_map.get(uid, 0) or 0)
+        bonus_map[uid] = current + int(prize["bonus"])
+        save_data(data)
+
+        add_history(ctx.author.id, {
+            "game": "wheel",
+            "bet": 0,
+            "result": f"deposit_bonus_{prize['bonus']}%",
+            "earned": 0,
+            "timestamp": time.time()
+        })
+
+        desc_lines.append("")
+        desc_lines.append(
+            f"💳 You now have **+{bonus_map[uid]}%** deposit bonus stored for your **next claimed `!deposit`**."
+        )
+
+    embed = discord.Embed(
+        title=title,
+        description="\n".join(desc_lines),
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
 
 
 
@@ -2343,50 +1981,6 @@ async def guessthecolor(ctx, prize: str):
         await ctx.send(embed=win_embed)
         break
 
-
-# --------------------------------------------------------------
-#                      WORK (10m–15m)
-# --------------------------------------------------------------
-@bot.command()
-async def work(ctx):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
-    now = time.time()
-    cooldown = 3600  # 1 hour
-    last = u.get("last_work", 0)
-
-    if now - last < cooldown:
-        remaining = cooldown - (now - last)
-        minutes = int(remaining // 60)
-        seconds = int(remaining % 60)
-        embed = discord.Embed(
-            title="🛠 Galaxy Work",
-            description=f"⏳ You are still resting.\nTry again in **{minutes}m {seconds}s**.",
-            color=galaxy_color()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    reward = random.randint(7_500_000, 15_000_000)
-    u["gems"] += reward
-    u["last_work"] = now
-    save_data(data)
-
-    add_history(ctx.author.id, {
-        "game": "work",
-        "bet": 0,
-        "result": "work",
-        "earned": reward,
-        "timestamp": now
-    })
-
-    embed = discord.Embed(
-        title="🛠 Galaxy Work Complete",
-        description=f"✨ {ctx.author.mention}, you earned **{fmt(reward)}** gems from your job.",
-        color=galaxy_color()
-    )
-    embed.set_footer(text="Hard work shines brightest among the stars. 🌌")
-    await ctx.send(embed=embed)
 
 
 # --------------------------------------------------------------
@@ -3721,7 +3315,7 @@ async def history(ctx):
     await ctx.send(embed=embed)
 
 
-# --------------------------------------------------------------
+ # --------------------------------------------------------------
 #                      CHECK
 # --------------------------------------------------------------
 
@@ -4498,7 +4092,7 @@ async def savebackup(ctx):
     await ctx.send(embed=embed)
 
 
-# --------------------------------------------------------------
+ # --------------------------------------------------------------
 #                      TAX COMMAND
 # --------------------------------------------------------------
 @bot.command()
@@ -4574,10 +4168,11 @@ async def help(ctx):
         value=(
             "**!balance / !bal [@user]** — Check gems\n"
             "**!daily** — Claim daily 25m\n"
-            "**!work** — Earn 10–15m\n"
+            "**!wheel** — Claim daily Wheel\n"
             "**!gift @user amount** — Gift gems\n"
             "**!sell <name> <income> <price>** — Create a listing\n"
-            "**!withdraw <username> <amount>** — Request a real withdrawal\n"
+            "**!withdraw "username" "amount" "Gems/EXP"\n"
+            "**!deposit "username" "amount" "Gems/EXP"\n"
             "**!list** — View pending withdraw queue"
         ),
         inline=False
@@ -4628,8 +4223,7 @@ async def help(ctx):
 
 
 
-
-# ==============================================================
+ # ==============================================================
 #                       HELP (ADMIN)
 # ==============================================================
 @bot.command()
@@ -4643,94 +4237,50 @@ async def helpadmin(ctx):
 
     # ---------------- Currency Control ----------------
     embed.add_field(
-        name="💰 Gem Management",
+        name="💰 Gem / EXP Management",
         value=(
             "**!admin give @user amount** — Add gems\n"
-            "**!admin remove @user amount** — Remove gems\n"
-            "**!giverole <role> amount** — Give gems to role\n"
-            "**!removerole <role> amount** — Remove gems from role\n"
-            "**!giveall amount** — Give gems to all users\n"
-            "**!tax percent** — Remove % of all balances"
+            "**!admin remove @user amount** — Remove gems (can go negative)\n"
+            "**!giverole <role> amount** — Give gems to all humans in a role\n"
+            "**!removerole <role> amount** — Remove gems from all humans in a role\n"
+            "**!giveall amount** — Give gems to the entire server\n"
+            "**!tax percent** — Remove % of every user's balance"
         ),
         inline=False
     )
 
-    # ---------------- Withdraw System ----------------
+    # ---------------- Withdraw / Deposit ----------------
     embed.add_field(
-        name="💸 Withdraw System",
+        name="🏦 Withdraw & Deposit",
         value=(
-            "**!withdraw <username> <amount>** — User creates request\n"
-            "**!list** — View all pending requests\n"
-            "**!claimed <id>** — Mark a withdraw as paid\n"
-            "**!deny <id> [reason]** — Deny & refund gems\n\n"
-            "• Automatic DM notification to admin\n"
-            "• 1 hour cooldown per user\n"
-            "• Amount auto-deducted when requested"
+            "**!withdrawlist** — Show all pending withdrawals\n"
+            "**!claimwithdraw <id>** — Mark withdrawal as claimed\n"
+            "**!denywithdraw <id> [reason]** — Deny and refund\n\n"
+            "**!depositlist** — Show all pending deposits\n"
+            "**!claimdeposit <id>** — Claim deposit (applies stored deposit bonus)\n"
+            "**!denydeposit <id> [reason]** — Deny deposit\n\n"
+            "💳 Deposit Bonus: earned via `!wheel`, stored per user and consumed on the **next claimed deposit**."
         ),
         inline=False
     )
 
-    # ---------------- Invite Review System ----------------
+    # ---------------- Wheel ----------------
     embed.add_field(
-        name="🧩 Invite Review System",
+        name="🎡 Wheel & Bonuses",
         value=(
-            "**Automatic Checks:**\n"
-            "• Account age\n"
-            "• Avatar\n"
-            "• ALT detection\n"
-            "• Rejoin detection\n"
-            "• Restricted server detection\n"
-            "\n"
-            "**Review Panel:**\n"
-            "🟢 Accept — Give +50m\n"
-            "🔴 Deny — Reject reward"
+            "**!wheel** — Daily spin (1x every 24h)\n"
+            "Rewards: 5m, 10m, 100m, 200m gems + 10%/25% deposit bonus.\n"
+            "Some huge rewards are visible but **0% chance** as bait."
         ),
         inline=False
     )
 
-    # ---------------- Rig System & Events ----------------
-    embed.add_field(
-        name="🎁 Events & Rig Control",
-        value=(
-            "**!guessthecolor amount** — Guess the color\n"
-            "**!guessthenumber amount** — Guess 1–10\n"
-            "**!splitorsteal amount** — Run Split-or-Steal\n"
-            "**!lottery <ticket_price> <duration>** — Lottery\n"
-            "**!chests** — Chest panel\n"
-            "**!bless user_id [games/off]** — Forced wins\n"
-            "**!curse user_id [games/off]** — Forced losses\n"
-            "**!status** — Show active rigs"
-        ),
-        inline=False
-    )
-
-    # ---------------- Server Control ----------------
-    embed.add_field(
-        name="📁 Server Management",
-        value=(
-            "**!lockcat <id>** — Disable commands in a category\n"
-            "**!unlockcat <id>** — Re-enable commands\n"
-            "**!cleanhistory <duration>** — Remove inactive users\n"
-            "**!membercount** — Server member stats\n"
-            "**!dm \"msg\" \"roleID\"** — DM a role\n"
-            "**!dmall \"msg\"** — DM entire server (rate-limited)"
-        ),
-        inline=False
-    )
-
-    # ---------------- Backups ----------------
-    embed.add_field(
-        name="💾 Backups",
-        value=(
-            "**!savebackup** — Save backup\n"
-            "**!restorelatest** — Restore latest\n"
-            "**!restorebackup** — Restore uploaded JSON"
-        ),
-        inline=False
-    )
+    # (Other sections like Invite Review, Rig System, Server Control, Backups ...)
+    # Keep your previous fields for those parts.
 
     embed.set_footer(text="Admins need 'Manage Server' permission to use these commands.")
     await ctx.send(embed=embed)
+
 
 
 
@@ -4795,6 +4345,7 @@ async def dm(ctx, message: str, role_id: str):
     )
 
     await status_msg.edit(content=None, embed=embed)
+
 
 
 
@@ -4999,7 +4550,7 @@ async def splitorsteal(ctx, prize: str):
     c1 = choices[p1_id]
     c2 = choices[p2_id]
 
-    # ---------------- EVALUATE OUTCOME ----------------
+ # ---------------- EVALUATE OUTCOME ----------------
     if c1 == "steal" and c2 == "steal":
         result = "💀 **Both players stole — nobody gets anything!**"
     elif c1 == "steal" and c2 == "split":
