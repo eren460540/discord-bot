@@ -24,6 +24,10 @@ BACKUP_CHANNEL_ID = 1431610647921295451
 
 
 
+data = load_data()
+data.setdefault("_device_fingerprints", {})
+device_fp = data["_device_fingerprints"]
+
 # --------------------------------------------------------------
 #      Payout / Deposit / Wheel persistent data setup
 # --------------------------------------------------------------
@@ -33,11 +37,9 @@ data.setdefault("next_withdraw_id", 1)
 data.setdefault("next_deposit_id", 1)
 
 # Deposit bonus for NEXT claimed deposit (C-choice)
-# { "user_id_str": int_percent }
 data.setdefault("deposit_bonuses", {})
 
 # Daily wheel last-spin timestamps
-# { "user_id_str": unix_time }
 data.setdefault("wheel_last_spin", {})
 
 save_data(data)
