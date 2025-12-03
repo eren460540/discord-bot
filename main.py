@@ -1000,18 +1000,15 @@ WHEEL_PRIZES = [
 ]
 
 
-def roll_wheel_prize():
-    total_weight = sum(p["weight"] for p in WHEEL_PRIZES)
-    r = random.uniform(0, total_weight)
+def wheel_pick():
+    total = sum(p["weight"] for p in WHEEL_PRIZES)
+    r = random.uniform(0, total)
     upto = 0
     for p in WHEEL_PRIZES:
-        w = p["weight"]
-        if w <= 0:
-            continue
-        if upto + w >= r:
-            return p
-        upto += w
-    # fallback (shouldn't happen)
+        if p["weight"] > 0:
+            if upto + p["weight"] >= r:
+                return p
+            upto += p["weight"]
     return WHEEL_PRIZES[0]
 
 
