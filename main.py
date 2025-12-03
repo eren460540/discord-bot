@@ -52,6 +52,23 @@ def save_data(d):
 # Load data *after* load_data() exists
 data = load_data()
 
+
+# --------------------------------------------------------------
+#  FIX MISSING KEYS FOR DEPOSIT / WITHDRAW SYSTEM
+# --------------------------------------------------------------
+data.setdefault("next_deposit_id", 1)
+data.setdefault("deposits", [])
+data.setdefault("next_withdraw_id", 1)
+data.setdefault("withdrawals", [])
+data.setdefault("deposit_bonuses", {})
+data.setdefault("wheel_last_spin", {})
+data.setdefault("quests", {})
+data.setdefault("quest_last_reset", 0)
+
+save_data(data)
+
+
+
 # --------------------------------------------------------------
 #   REQUIRED DEFAULTS FOR DEPOSITS + QUESTS (ADD THIS!)
 # --------------------------------------------------------------
