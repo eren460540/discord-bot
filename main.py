@@ -1131,7 +1131,7 @@ async def depositlist(ctx):
 
 
 # --------------------------------------------------------------
-#                     CLAIM DEPOSIT
+#                        CLAIM DEPOSIT
 # --------------------------------------------------------------
 
 @bot.command(name="claimdeposit")
@@ -1139,65 +1139,83 @@ async def depositlist(ctx):
 async def claimdeposit(ctx, did: int):
 
     for d in data["deposits"]:
-        if d["id"] == did:
+        if d["id"] != did:
+            continue
 
-            if d["status"] != "pending":
-                return await ctx.send("⚠️ Already processed.")
+        if d["status"] != "pending":
+            return await ctx.send("⚠️ Already processed.")
 
-            uid = str(d["user_id"])
-            ensure_user(uid)
-            currency = d["currency"].lower()
-            base = d["amount"]
+        uid = str(d["user_id"])
+        ensure_user(uid)
 
-            # Bonus
-            bonus_map = data["deposit_bonuses"]
-            percent = bonus_map.get(uid, 0)
-            bonus_amt = base * percent // 100 if percent > 0 else 0
-            total = base + bonus_amt
+        # ensure keys exist
+        data[uid].setdefault("gems", 0)
+        data[uid].setdefault("exp", 0)
 
-            # Add to balance
-            data[uid][currency] = data[uid].get(currency, 0) + total
+        currency = d["currency"].lower()   # "gems" or "exp"
+        base = int(d["amount"])
 
-            # Count toward free income (ONLY GEMS)
-            if currency == "gems":
-                data[uid]["free_income"] = data[uid].get("free_income", 0) + total
+        # bonus
+        bonus_map = data["deposit_bonuses"]
+        percent = int(bonus_map.get(uid, 0))
 
-            # Update deposit stats for quests
+        bonus_amt = (base * percent) // 100 if percent > 0 else 0
+        total = base + bonus_amt
+
+        # credit user
+        data[uid][currency] += total
+
+        # quest progress
+        try:
             _quest_add_deposit(uid, base)
+        except:
+            pass
 
-            # Consume bonus
-            bonus_map[uid] = 0
-            save_data(data)
+        # history entry
+        add_history(uid, {
+            "game": "deposit",
+            "bet": 0,
+            "result": "deposit_claimed",
+            "earned": total,
+            "timestamp": time.time()
+        })
 
-            # Save deposit record
-            d["status"] = "claimed"
-            d["claimed_by"] = ctx.author.id
-            d["claimed_at"] = time.time()
-            d["bonus_used"] = percent
-            d["bonus_amount"] = bonus_amt
-            save_data(data)
+        # consume bonus
+        bonus_map[uid] = 0
 
-            # DM user
-            user = bot.get_user(d["user_id"])
-            if user:
-                try:
-                    embed = discord.Embed(
-                        title="🎉 Deposit Claimed",
-                        description=(
-                            f"ID: `#{did}`\n"
-                            f"Base: **{fmt(base)} {d['currency']}**\n"
-                            f"Bonus: **+{percent}% = {fmt(bonus_amt)}**\n"
-                            f"Total credited: **{fmt(total)} {d['currency']}**"
-                        ),
-                        color=discord.Color.green()
-                    )
-                    await user.send(embed=embed)
-                except:
-                    pass
+        # update deposit entry
+        d["status"] = "claimed"
+        d["claimed_by"] = ctx.author.id
+        d["claimed_at"] = time.time()
+        d["bonus_used"] = percent
+        d["bonus_amount"] = bonus_amt
 
-            return await ctx.send(f"✅ Deposit **#{did}** claimed (credited **{fmt(total)}**).")
+        save_data(data)
+
+        # DM user
+        user = bot.get_user(d["user_id"])
+        if user:
+            try:
+                embed = discord.Embed(
+                    title="🎉 Deposit Claimed",
+                    description=(
+                        f"ID: #{did}\n"
+                        f"Base: {fmt(base)} {d['currency']}\n"
+                        f"Bonus: +{percent}% = {fmt(bonus_amt)}\n"
+                        f"Total credited: {fmt(total)} {d['currency']}"
+                    ),
+                    color=discord.Color.green()
+                )
+                await user.send(embed=embed)
+            except:
+                pass
+
+        return await ctx.send(
+            f"✅ Deposit #{did} claimed — credited {fmt(total)} {d['currency']}"
+        )
 
     await ctx.send("❌ Deposit ID not found.")
+
 
 
 # --------------------------------------------------------------
