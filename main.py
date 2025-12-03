@@ -22,6 +22,14 @@ DISABLED_CATEGORIES = {1431610646654488661}
 BACKUP_CHANNEL_ID = 1431610647921295451
 
 
+GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack"]
+
+
+
+_quest_add_earn(uid, amount)
+_quest_add_wager(uid, amount)
+
+
 # --------------------------------------------------------------
 #                    DATA MANAGEMENT (LOAD / SAVE)
 # --------------------------------------------------------------
@@ -88,6 +96,7 @@ data.setdefault("wheel_last_spin", {})
 
 # Save after setting defaults
 save_data(data)
+
 
 
 # --------------------------------------------------------------
@@ -290,7 +299,14 @@ def ensure_user(user_id):
     save_data(data)
 
 
+
+
+# ---------------------- PATCHED add_history ---------------------- #
+
 def add_history(user_id, entry):
+    """
+    Original history logger + quest hooks.
+    """
     ensure_user(user_id)
     uid = str(user_id)
     hist = data[uid].get("history", [])
@@ -298,7 +314,24 @@ def add_history(user_id, entry):
     if len(hist) > 50:
         hist = hist[-50:]
     data[uid]["history"] = hist
+
+    # ----- QUEST HOOKS -----
+    game = entry.get("game", "")
+    bet = entry.get("bet", 0) or 0
+    earned = entry.get("earned", 0) or 0
+
+    # Only gambling games count (NO daily, NO wheel, NO admin stuff)
+    if game in GAMBLE_GAMES:
+        if bet > 0:
+            _quest_add_wager(user_id, bet)
+        if earned > 0:
+            _quest_add_earn(user_id, earned)
+
     save_data(data)
+
+
+
+
 
 
 def parse_amount(text, user_gems=None, allow_all=False):
