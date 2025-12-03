@@ -590,21 +590,15 @@ def parse_market_number(value: str) -> int:
 
 
 
-
-
-
-
-# --------------------------------------------------------------
+# ==============================================================
 #                     DAILY QUEST SYSTEM
-# --------------------------------------------------------------
+# ==============================================================
 
-import time
-
-QUEST_RESET_INTERVAL = 24 * 60 * 60  # 24h
+QUEST_RESET_INTERVAL = 24 * 60 * 60  # 24 hours
 
 
 # --------------------------------------------------------------
-#      Quest: Get or Create Quest Data for a User
+#      Get/Create Quest Data for a User
 # --------------------------------------------------------------
 def get_user_quests(uid):
     q = data["quests"].get(uid)
@@ -627,13 +621,12 @@ def get_user_quests(uid):
 
 
 # --------------------------------------------------------------
-#                 Quest Daily Reset Handler
+#                      Quest Reset
 # --------------------------------------------------------------
 def reset_quests():
     data["quests"] = {}
     data["quest_last_reset"] = time.time()
     save_data(data)
-
 
 def check_daily_reset():
     last = data.get("quest_last_reset", 0)
@@ -642,7 +635,7 @@ def check_daily_reset():
 
 
 # --------------------------------------------------------------
-#          Quest Progress Adders (earn / wager / deposit)
+#                  Quest Progress Adders
 # --------------------------------------------------------------
 def _quest_add_earn(uid, amount):
     check_daily_reset()
@@ -650,13 +643,11 @@ def _quest_add_earn(uid, amount):
     q["earn"] += amount
     save_data(data)
 
-
 def _quest_add_deposit(uid, amount):
     check_daily_reset()
     q = get_user_quests(uid)
     q["deposit"] += amount
     save_data(data)
-
 
 def _quest_add_wager(uid, amount):
     check_daily_reset()
@@ -666,7 +657,7 @@ def _quest_add_wager(uid, amount):
 
 
 # --------------------------------------------------------------
-#                      !quest COMMAND
+#                       !quest COMMAND
 # --------------------------------------------------------------
 @bot.command()
 async def quest(ctx):
@@ -682,7 +673,7 @@ async def quest(ctx):
 
     embed = discord.Embed(
         title="📘 Daily Quests",
-        description="Finish all tasks to earn **100m gems + 10% deposit bonus**",
+        description="Complete all tasks for **100m gems + 10% deposit bonus**",
         color=galaxy_color()
     )
 
@@ -704,7 +695,7 @@ async def quest(ctx):
         inline=False
     )
 
-    # Completion Status
+    # Completion status
     if (
         q["earn"] >= q["earn_goal"] and
         q["deposit"] >= q["deposit_goal"] and
@@ -712,13 +703,13 @@ async def quest(ctx):
     ):
         if not q["completed"]:
             embed.add_field(
-                name="🎉 Reward Available!",
-                value="Use **!questclaim** to claim your reward.",
+                name="🎉 Reward Ready!",
+                value="Use **!questclaim** to collect.",
                 inline=False
             )
         else:
             embed.add_field(
-                name="✔ Already Claimed",
+                name="✔ Already Claimed Today",
                 value="Come back tomorrow.",
                 inline=False
             )
@@ -740,7 +731,7 @@ async def questclaim(ctx):
     if q["completed"]:
         return await ctx.send("❌ You already claimed your reward today.")
 
-    # Not yet completed
+    # Not completed
     if (
         q["earn"] < q["earn_goal"] or
         q["deposit"] < q["deposit_goal"] or
@@ -748,15 +739,27 @@ async def questclaim(ctx):
     ):
         return await ctx.send("❌ You haven't completed all quests yet.")
 
-    # Reward user
+    # Reward
     ensure_user(uid)
     data[uid]["gems"] += 100_000_000
+
+    # Count quest reward as free income
+    data[uid]["free_income"] = data[uid].get("free_income", 0) + 100_000_000
+
+    # Deposit bonus +10%
     data["deposit_bonuses"][uid] = data["deposit_bonuses"].get(uid, 0) + 10
 
     q["completed"] = True
     save_data(data)
 
-    await ctx.send("🎉 You claimed **100m gems + 10% deposit bonus**! Great job!")
+    await ctx.send("🎉 You claimed **100m gems + 10% deposit bonus**! Nice work!")
+
+
+
+
+
+
+
 
 # ==============================================================
 #         ADVANCED WITHDRAW + DEPOSIT QUEUE SYSTEM + WHEEL
@@ -1023,7 +1026,7 @@ async def deposit(ctx, username: str, amount: str, payment_method: str):
         "user_id": ctx.author.id,
         "username": username,
         "amount": val,
-        "currency": currency_key.upper(),  # GEMS / EXP
+        "currency": currency_key.upper(),
         "status": "pending",
         "created_at": time.time()
     }
@@ -1067,7 +1070,10 @@ async def deposit(ctx, username: str, amount: str, payment_method: str):
     await ctx.send(f"✅ Deposit request **#{did}** created.")
 
 
-# LIST DEPOSITS
+# --------------------------------------------------------------
+#                     DEPOSIT LIST
+# --------------------------------------------------------------
+
 @bot.command(name="depositlist")
 async def depositlist(ctx):
     pending = [d for d in data["deposits"] if d["status"] == "pending"]
@@ -1075,10 +1081,9 @@ async def depositlist(ctx):
         return await ctx.send("📭 No pending deposits.")
 
     pending.sort(key=lambda x: x["id"])
-
-    lines = []
     bonus_map = data["deposit_bonuses"]
 
+    lines = []
     for d in pending:
         uid = str(d["user_id"])
         percent = bonus_map.get(uid, 0)
@@ -1096,66 +1101,52 @@ async def depositlist(ctx):
     await ctx.send(embed=embed)
 
 
-# CLAIM DEPOSIT (APPLIES BONUS + UPDATES QUEST)
+# --------------------------------------------------------------
+#                     CLAIM DEPOSIT
+# --------------------------------------------------------------
+
 @bot.command(name="claimdeposit")
 @commands.has_guild_permissions(manage_guild=True)
 async def claimdeposit(ctx, did: int):
 
     for d in data["deposits"]:
         if d["id"] == did:
+
             if d["status"] != "pending":
                 return await ctx.send("⚠️ Already processed.")
 
             uid = str(d["user_id"])
             ensure_user(uid)
-            currency = d["currency"].lower()  # "gems" or "exp"
-
+            currency = d["currency"].lower()
             base = d["amount"]
 
-            # --- handle stored deposit bonus ---
+            # Bonus
             bonus_map = data["deposit_bonuses"]
-            percent = int(bonus_map.get(uid, 0) or 0)
+            percent = bonus_map.get(uid, 0)
+            bonus_amt = base * percent // 100 if percent > 0 else 0
+            total = base + bonus_amt
 
-            if percent > 0:
-                bonus_amt = base * percent // 100
-                total = base + bonus_amt
-            else:
-                bonus_amt = 0
-                total = base
-
-            # add final amount to balance
+            # Add to balance
             data[uid][currency] = data[uid].get(currency, 0) + total
 
-            # quest: count full credited deposit towards "Deposit 50m"
-            try:
-                _quest_add_deposit(uid, total)
-            except NameError:
-                # if quests are not loaded for any reason, don't crash
-                pass
+            # Count toward free income (ONLY GEMS)
+            if currency == "gems":
+                data[uid]["free_income"] = data[uid].get("free_income", 0) + total
 
-            # consume the bonus for this user (C-choice)
+            # Update deposit stats for quests
+            _quest_add_deposit(uid, base)
+
+            # Consume bonus
             bonus_map[uid] = 0
             save_data(data)
 
-            # update deposit entry
+            # Save deposit record
             d["status"] = "claimed"
             d["claimed_by"] = ctx.author.id
             d["claimed_at"] = time.time()
             d["bonus_used"] = percent
             d["bonus_amount"] = bonus_amt
             save_data(data)
-
-            # history entry
-            try:
-                add_history(d["user_id"], {
-                    "game": "deposit",
-                    "bet": 0,
-                    "earned": total,
-                    "result": f"claim_{percent}pct",
-                    "timestamp": time.time()
-                })
-            except Exception:
-                pass
 
             # DM user
             user = bot.get_user(d["user_id"])
@@ -1175,20 +1166,22 @@ async def claimdeposit(ctx, did: int):
                 except:
                     pass
 
-            return await ctx.send(
-                f"✅ Deposit **#{did}** claimed "
-                f"(credited **{fmt(total)} {d['currency']}**)."
-            )
+            return await ctx.send(f"✅ Deposit **#{did}** claimed (credited **{fmt(total)}**).")
 
     await ctx.send("❌ Deposit ID not found.")
 
 
-# DENY DEPOSIT
+# --------------------------------------------------------------
+#                     DENY DEPOSIT
+# --------------------------------------------------------------
+
 @bot.command(name="denydeposit")
 @commands.has_guild_permissions(manage_guild=True)
 async def denydeposit(ctx, did: int, *, reason="No reason provided"):
+
     for d in data["deposits"]:
         if d["id"] == did:
+
             if d["status"] != "pending":
                 return await ctx.send("⚠️ Already processed.")
 
@@ -1217,6 +1210,8 @@ async def denydeposit(ctx, did: int, *, reason="No reason provided"):
             return await ctx.send(f"🚫 Deposit **#{did}** denied.")
 
     await ctx.send("❌ Deposit ID not found.")
+
+
 
 
 
@@ -1288,7 +1283,7 @@ def build_spin_sequence(prize_index: int, num_slots: int) -> list[int]:
     return seq
 
 
-# --------------------------------------------------------------
+ # --------------------------------------------------------------
 #                           !wheel
 # --------------------------------------------------------------
 @bot.command()
@@ -4272,7 +4267,9 @@ async def help(ctx):
             "**!sell <name> <income> <price>** — Create a listing\n"
             "**!withdraw 'username' 'amount' 'Gems/EXP'**\n"
             "**!deposit 'username' 'amount' 'Gems/EXP'**\n"
-            "**!list** — View pending withdraw queue"
+            "**!list** — View pending withdraw queue\n"
+            "**!quest** — View daily quests\n"
+            "**!questclaim** — Claim quest rewards"
         ),
         inline=False
     )
@@ -4316,6 +4313,7 @@ async def help(ctx):
 
     embed.set_footer(text="Galaxy Casino • Good luck 💎🌌")
     await ctx.send(embed=embed)
+
 
 
 
