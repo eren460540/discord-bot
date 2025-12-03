@@ -1012,71 +1012,82 @@ def wheel_pick():
     return WHEEL_PRIZES[0]
 
 
+VISIBLE_WHEEL = [
+    "5m Gems",
+    "10m Gems",
+    "10% Deposit Bonus",
+    "25% Deposit Bonus",
+    "100m Gems",
+    "200m Gems",
+    "5b Gems",                      # 0%
+    "3b Gems",                      # 0%
+    "1b Gems",                      # 0%
+    "251.2m/s Tang Tang Keletang"   # 0%
+]
+
+
 @bot.command()
 async def wheel(ctx):
-    """Daily wheel with spinning animation."""
+    """Daily wheel with arrow animation."""
+
     ensure_user(ctx.author.id)
     uid = str(ctx.author.id)
 
-    last = data.setdefault("wheel_last_spin", {}).get(uid, 0)
+    last_map = data.setdefault("wheel_last_spin", {})
+    last = last_map.get(uid, 0)
     now = time.time()
 
-    if now - last < 86400:
-        remaining = int(86400 - (now - last))
+    cooldown = 86400  # 24 hours
+    if now - last < cooldown:
+        remaining = int(cooldown - (now - last))
         h, rem = divmod(remaining, 3600)
         m, s = divmod(rem, 60)
-        return await ctx.send(f"⏳ Next spin in **{h}h {m}m {s}s**.")
+        return await ctx.send(
+            f"⏳ Next spin in **{h}h {m}m {s}s**."
+        )
 
     # Allow spin
-    data["wheel_last_spin"][uid] = now
+    last_map[uid] = now
     save_data(data)
 
-    # REAL result (hidden!)
+    # REAL weighted result
     prize = wheel_pick()
+    final_name = prize["name"]
 
-    # ------- VISUAL LIST (shows 0% rewards too) -------
-    visible = [
-        "5m Gems",
-        "10m Gems",
-        "10% Deposit Bonus",
-        "25% Deposit Bonus",
-        "100m Gems",
-        "200m Gems",
-        "5b Gems",
-        "3b Gems",
-        "1b Gems",
-        "251.2m/s Tang Tang Keletang"
-    ]
+    # Animation start
+    index = 0
+    cycles = 20  # how many arrow moves
+    delay = 0.10
 
-    # ------- ANIMATION -------
     embed = discord.Embed(
         title="🎡 Spinning the Wheel...",
-        description="`> " + visible[0] + " <`",
+        description=f"`> {VISIBLE_WHEEL[index]} <`",
         color=galaxy_color()
     )
     msg = await ctx.send(embed=embed)
 
-    cycles = 18                       # how many times arrow moves
-    delay = 0.12                      # speed of animation
-    index = 0
-
+    # SPIN ANIMATION
     for _ in range(cycles):
-        index = (index + 1) % len(visible)
-        embed.description = f"`> {visible[index]} <`"
+        index = (index + 1) % len(VISIBLE_WHEEL)
+        embed.description = f"`> {VISIBLE_WHEEL[index]} <`"
         await msg.edit(embed=embed)
         await asyncio.sleep(delay)
 
-    # ------- STOP ON REAL PRIZE -------
-    final_name = prize["name"]
+    # STOPPING ON REAL PRIZE
+    # Find where the REAL prize is in the visible list
+    if final_name in VISIBLE_WHEEL:
+        index = VISIBLE_WHEEL.index(final_name)
+    else:
+        index = 0  # unlikely fallback
 
     embed = discord.Embed(
         title="🎉 Wheel Result",
-        description=f"🎁 **{final_name}**",
+        description=f"`> {VISIBLE_WHEEL[index]} <`\n\n🎁 **{final_name}**",
         color=galaxy_color()
     )
     await msg.edit(embed=embed)
 
-    # ------- APPLY REWARD -------
+    # APPLY REWARD
     if prize["type"] == "gems":
         data[uid]["gems"] = data[uid].get("gems", 0) + prize["amount"]
         save_data(data)
