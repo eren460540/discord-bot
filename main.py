@@ -1023,7 +1023,7 @@ async def deposit(ctx, username: str, amount: str, payment_method: str):
         "user_id": ctx.author.id,
         "username": username,
         "amount": val,
-        "currency": currency_key.upper(),
+        "currency": currency_key.upper(),  # GEMS / EXP
         "status": "pending",
         "created_at": time.time()
     }
@@ -1096,7 +1096,7 @@ async def depositlist(ctx):
     await ctx.send(embed=embed)
 
 
-# CLAIM DEPOSIT (APPLIES BONUS C)
+# CLAIM DEPOSIT (APPLIES BONUS + UPDATES QUEST)
 @bot.command(name="claimdeposit")
 @commands.has_guild_permissions(manage_guild=True)
 async def claimdeposit(ctx, did: int):
@@ -1108,28 +1108,54 @@ async def claimdeposit(ctx, did: int):
 
             uid = str(d["user_id"])
             ensure_user(uid)
-            currency = d["currency"].lower()
+            currency = d["currency"].lower()  # "gems" or "exp"
 
             base = d["amount"]
+
+            # --- handle stored deposit bonus ---
             bonus_map = data["deposit_bonuses"]
-            percent = bonus_map.get(uid, 0)
+            percent = int(bonus_map.get(uid, 0) or 0)
 
-            bonus_amt = base * percent // 100 if percent > 0 else 0
-            total = base + bonus_amt
+            if percent > 0:
+                bonus_amt = base * percent // 100
+                total = base + bonus_amt
+            else:
+                bonus_amt = 0
+                total = base
 
-            # add final to balance
+            # add final amount to balance
             data[uid][currency] = data[uid].get(currency, 0) + total
 
-            # consume the bonus
+            # quest: count full credited deposit towards "Deposit 50m"
+            try:
+                _quest_add_deposit(uid, total)
+            except NameError:
+                # if quests are not loaded for any reason, don't crash
+                pass
+
+            # consume the bonus for this user (C-choice)
             bonus_map[uid] = 0
             save_data(data)
 
+            # update deposit entry
             d["status"] = "claimed"
             d["claimed_by"] = ctx.author.id
             d["claimed_at"] = time.time()
             d["bonus_used"] = percent
             d["bonus_amount"] = bonus_amt
             save_data(data)
+
+            # history entry
+            try:
+                add_history(d["user_id"], {
+                    "game": "deposit",
+                    "bet": 0,
+                    "earned": total,
+                    "result": f"claim_{percent}pct",
+                    "timestamp": time.time()
+                })
+            except Exception:
+                pass
 
             # DM user
             user = bot.get_user(d["user_id"])
@@ -1149,7 +1175,10 @@ async def claimdeposit(ctx, did: int):
                 except:
                     pass
 
-            return await ctx.send(f"✅ Deposit **#{did}** claimed (credited **{fmt(total)}**).")
+            return await ctx.send(
+                f"✅ Deposit **#{did}** claimed "
+                f"(credited **{fmt(total)} {d['currency']}**)."
+            )
 
     await ctx.send("❌ Deposit ID not found.")
 
