@@ -1017,87 +1017,76 @@ def roll_wheel_prize():
 
 @bot.command()
 async def wheel(ctx):
-    """Daily wheel: 1 free spin per 24h."""
+    """Daily wheel with spinning animation."""
     ensure_user(ctx.author.id)
     uid = str(ctx.author.id)
 
-    last_map = data.setdefault("wheel_last_spin", {})
-    last = last_map.get(uid, 0)
+    last = data.setdefault("wheel_last_spin", {}).get(uid, 0)
     now = time.time()
 
-    if now - last < WHEEL_FREE_COOLDOWN:
-        remaining = int(WHEEL_FREE_COOLDOWN - (now - last))
-        hours, rem = divmod(remaining, 3600)
-        minutes, seconds = divmod(rem, 60)
-        return await ctx.send(
-            f"⏳ You already used your daily **!wheel**.\n"
-            f"Next spin in **{hours}h {minutes}m {seconds}s**."
-        )
+    if now - last < 86400:
+        remaining = int(86400 - (now - last))
+        h, rem = divmod(remaining, 3600)
+        m, s = divmod(rem, 60)
+        return await ctx.send(f"⏳ Next spin in **{h}h {m}m {s}s**.")
 
-    # allow spin
-    last_map[uid] = now
+    # Allow spin
+    data["wheel_last_spin"][uid] = now
     save_data(data)
 
-    prize = roll_wheel_prize()
+    # REAL result (hidden!)
+    prize = wheel_pick()
 
-    title = "🎡 Daily Wheel"
-    desc_lines = [
-        f"**Player:** {ctx.author.mention}",
-        "",
-        "**Visible rewards:**",
-        "• 5m Gems",
-        "• 10m Gems",
-        "• 10% Deposit Bonus",
-        "• 25% Deposit Bonus",
-        "• 100m Gems",
-        "• 200m Gems",
-        "• 5b Gems",
-        "• 3b Gems",
-        "• 1b Gems",
-        "• 251.2m/s Tang Tang Keletang",
-        "",
-        f"**Result:** 🎁 **{prize['name']}**"
+    # ------- VISUAL LIST (shows 0% rewards too) -------
+    visible = [
+        "5m Gems",
+        "10m Gems",
+        "10% Deposit Bonus",
+        "25% Deposit Bonus",
+        "100m Gems",
+        "200m Gems",
+        "5b Gems",
+        "3b Gems",
+        "1b Gems",
+        "251.2m/s Tang Tang Keletang"
     ]
 
-    # Apply prize
+    # ------- ANIMATION -------
+    embed = discord.Embed(
+        title="🎡 Spinning the Wheel...",
+        description="`> " + visible[0] + " <`",
+        color=galaxy_color()
+    )
+    msg = await ctx.send(embed=embed)
+
+    cycles = 18                       # how many times arrow moves
+    delay = 0.12                      # speed of animation
+    index = 0
+
+    for _ in range(cycles):
+        index = (index + 1) % len(visible)
+        embed.description = f"`> {visible[index]} <`"
+        await msg.edit(embed=embed)
+        await asyncio.sleep(delay)
+
+    # ------- STOP ON REAL PRIZE -------
+    final_name = prize["name"]
+
+    embed = discord.Embed(
+        title="🎉 Wheel Result",
+        description=f"🎁 **{final_name}**",
+        color=galaxy_color()
+    )
+    await msg.edit(embed=embed)
+
+    # ------- APPLY REWARD -------
     if prize["type"] == "gems":
-        ensure_user(uid)
         data[uid]["gems"] = data[uid].get("gems", 0) + prize["amount"]
         save_data(data)
 
-        add_history(ctx.author.id, {
-            "game": "wheel",
-            "bet": 0,
-            "result": prize["name"],
-            "earned": prize["amount"],
-            "timestamp": time.time()
-        })
-
     elif prize["type"] == "bonus":
-        bonus_map = data.setdefault("deposit_bonuses", {})
-        current = int(bonus_map.get(uid, 0) or 0)
-        bonus_map[uid] = current + int(prize["bonus"])
+        data["deposit_bonuses"][uid] = data["deposit_bonuses"].get(uid, 0) + prize["bonus"]
         save_data(data)
-
-        add_history(ctx.author.id, {
-            "game": "wheel",
-            "bet": 0,
-            "result": f"deposit_bonus_{prize['bonus']}%",
-            "earned": 0,
-            "timestamp": time.time()
-        })
-
-        desc_lines.append("")
-        desc_lines.append(
-            f"💳 You now have **+{bonus_map[uid]}%** deposit bonus stored for your **next claimed `!deposit`**."
-        )
-
-    embed = discord.Embed(
-        title=title,
-        description="\n".join(desc_lines),
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed)
 
 
 
