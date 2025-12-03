@@ -547,8 +547,7 @@ data.setdefault("wheel_last_spin", {})
 
 save_data(data)
 
-# OWNER (receives notifications)
-OWNER_ID =  YOUR_USER_ID_HERE   # <<<--- CHANGE THIS TO YOUR ID
+
 
 
 # --------------------------------------------------------------
