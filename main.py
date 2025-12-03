@@ -52,6 +52,18 @@ def save_data(d):
 # Load data *after* load_data() exists
 data = load_data()
 
+# --------------------------------------------------------------
+#   REQUIRED DEFAULTS FOR DEPOSITS + QUESTS (ADD THIS!)
+# --------------------------------------------------------------
+data.setdefault("next_deposit_id", 1)
+data.setdefault("deposits", [])
+data.setdefault("deposit_bonuses", {})
+
+data.setdefault("quests", {})
+data.setdefault("quest_last_reset", 0)
+
+
+
 # --- Required defaults (PREVENT KeyError) ---
 data.setdefault("next_deposit_id", 1)
 data.setdefault("next_withdraw_id", 1)
@@ -4256,7 +4268,7 @@ async def help(ctx):
         color=galaxy_color()
     )
 
-    # ---------------- Eco ----------------
+    # ---------------- Economy ----------------
     embed.add_field(
         name="💰 Economy",
         value=(
@@ -4265,11 +4277,9 @@ async def help(ctx):
             "**!wheel** — Claim daily Wheel\n"
             "**!gift @user amount** — Gift gems\n"
             "**!sell <name> <income> <price>** — Create a listing\n"
-            "**!withdraw 'username' 'amount' 'Gems/EXP'**\n"
-            "**!deposit 'username' 'amount' 'Gems/EXP'**\n"
-            "**!list** — View pending withdraw queue\n"
-            "**!quest** — View daily quests\n"
-            "**!questclaim** — Claim quest rewards"
+            "**!withdraw 'username' 'amount' 'Gems/EXP'** — Request withdrawal\n"
+            "**!deposit 'username' 'amount' 'Gems/EXP'** — Create deposit request\n"
+            "**!list** — View pending withdraw queue"
         ),
         inline=False
     )
@@ -4278,12 +4288,22 @@ async def help(ctx):
     embed.add_field(
         name="🎮 Games",
         value=(
-            "**!coinflip amount heads/tails** — 50/50\n"
+            "**!coinflip amount heads/tails** — 50/50 game\n"
             "**!slots amount** — Slot machine\n"
             "**!mines amount [mines]** — Mines game\n"
             "**!tower amount** — 10-floor tower\n"
             "**!blackjack amount** — Interactive blackjack\n"
             "**!chests** — Open Galaxy Chests"
+        ),
+        inline=False
+    )
+
+    # ---------------- Daily Quests ----------------
+    embed.add_field(
+        name="📘 Daily Quests",
+        value=(
+            "**!quest** — Check your daily quest progress\n"
+            "**!questclaim** — Claim quest reward (100m + 10% deposit bonus)"
         ),
         inline=False
     )
@@ -4294,7 +4314,7 @@ async def help(ctx):
         value=(
             "**!history** — Last 10 games\n"
             "**!stats** — Full stats\n"
-            "**!leaderboard** — Top richest\n"
+            "**!leaderboard** — Top richest players\n"
             "**!membercount** — Server stats"
         ),
         inline=False
@@ -4305,14 +4325,15 @@ async def help(ctx):
         name="🎟 Events",
         value=(
             "**!guessthecolor amount** — Guess the color\n"
-            "**!guessthenumber amount** — Guess 1–10\n"
-            "**!splitorsteal amount** — PvP Split-or-Steal event"
+            "**!guessthenumber amount** — Guess a number 1–10\n"
+            "**!splitorsteal amount** — PvP Split-or-Steal game"
         ),
         inline=False
     )
 
     embed.set_footer(text="Galaxy Casino • Good luck 💎🌌")
     await ctx.send(embed=embed)
+
 
 
 
