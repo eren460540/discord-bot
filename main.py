@@ -976,125 +976,219 @@ async def denydeposit(ctx, did: int, *, reason="No reason provided"):
 
 
 
-# --------------------------------------------------------------
-#                      DAILY WHEEL SYSTEM
-# --------------------------------------------------------------
+# ==============================================================
+#                   ADVANCED SLOT WHEEL SYSTEM
+# ==============================================================
 
-WHEEL_FREE_COOLDOWN = 24 * 60 * 60  # 24h
 
-# Visible prizes (weights used for random, 0 = impossible)
+# One spin per 24h for normal !wheel
+WHEEL_COOLDOWN = 24 * 60 * 60  # 24h
+
+# Make sure storage for wheel + deposit bonus exists
+data.setdefault("wheel_last_spin", {})
+data.setdefault("deposit_bonuses", {})
+
+# Visible rewards (weights = chance, 0 = impossible but still shown)
 WHEEL_PRIZES = [
-    # real rewards
-    {"name": "5m Gems", "type": "gems", "amount": 5_000_000, "weight": 10},
-    {"name": "10m Gems", "type": "gems", "amount": 10_000_000, "weight": 10},
-    {"name": "10% Deposit Bonus", "type": "bonus", "bonus": 10, "weight": 10},
-    {"name": "25% Deposit Bonus", "type": "bonus", "bonus": 25, "weight": 25},
-    {"name": "100m Gems", "type": "gems", "amount": 100_000_000, "weight": 4},
-    {"name": "200m Gems", "type": "gems", "amount": 200_000_000, "weight": 1},
+    {"name": "5m Gems",              "type": "gems",  "amount": 5_000_000,      "weight": 10},
+    {"name": "10m Gems",             "type": "gems",  "amount": 10_000_000,     "weight": 10},
+    {"name": "10% Deposit Bonus",    "type": "bonus", "bonus": 10,              "weight": 10},
+    {"name": "25% Deposit Bonus",    "type": "bonus", "bonus": 25,              "weight": 25},
+    {"name": "100m Gems",            "type": "gems",  "amount": 100_000_000,    "weight": 4},
+    {"name": "200m Gems",            "type": "gems",  "amount": 200_000_000,    "weight": 1},
 
-    # bait rewards (visible but 0% chance)
-    {"name": "5b Gems", "type": "gems", "amount": 5_000_000_000, "weight": 0},
-    {"name": "3b Gems", "type": "gems", "amount": 3_000_000_000, "weight": 0},
-    {"name": "1b Gems", "type": "gems", "amount": 1_000_000_000, "weight": 0},
+    # 0% CHANCE (bait) – appear in animation, never actually landed on
+    {"name": "1b Gems",              "type": "gems",  "amount": 1_000_000_000,  "weight": 0},
+    {"name": "3b Gems",              "type": "gems",  "amount": 3_000_000_000,  "weight": 0},
+    {"name": "5b Gems",              "type": "gems",  "amount": 5_000_000_000,  "weight": 0},
     {"name": "251.2m/s Tang Tang Keletang", "type": "gems", "amount": 251_200_000, "weight": 0},
 ]
 
 
-def wheel_pick():
+def weighted_wheel_result():
+    """Pick final prize based on weights (0% entries never picked)."""
     total = sum(p["weight"] for p in WHEEL_PRIZES)
     r = random.uniform(0, total)
     upto = 0
     for p in WHEEL_PRIZES:
-        if p["weight"] > 0:
-            if upto + p["weight"] >= r:
-                return p
-            upto += p["weight"]
+        w = p["weight"]
+        if w <= 0:
+            continue
+        if upto + w >= r:
+            return p
+        upto += w
     return WHEEL_PRIZES[0]
 
 
-VISIBLE_WHEEL = [
-    "5m Gems",
-    "10m Gems",
-    "10% Deposit Bonus",
-    "25% Deposit Bonus",
-    "100m Gems",
-    "200m Gems",
-    "5b Gems",                      # 0%
-    "3b Gems",                      # 0%
-    "1b Gems",                      # 0%
-    "251.2m/s Tang Tang Keletang"   # 0%
-]
+async def animate_wheel(ctx, user: discord.Member, prize: dict, *, mention_user: bool):
+    """
+    Slot-style animation:
+    - shows ALL rewards in a column
+    - arrow moves down, loops, slows, and stops on 'prize'
+    """
+    names = [p["name"] for p in WHEEL_PRIZES]
+    n = len(names)
 
+    # where final prize must land
+    try:
+        target_index = next(i for i, p in enumerate(WHEEL_PRIZES) if p["name"] == prize["name"])
+    except StopIteration:
+        target_index = 0
 
-@bot.command()
-async def wheel(ctx):
-    """Daily wheel with arrow animation."""
+    # random start position
+    start_index = random.randint(0, n - 1)
 
-    ensure_user(ctx.author.id)
-    uid = str(ctx.author.id)
+    # how many total steps before we stop on target
+    cycles = 3  # full passes over the list
+    total_steps = cycles * n + ((target_index - start_index) % n)
 
-    last_map = data.setdefault("wheel_last_spin", {})
-    last = last_map.get(uid, 0)
-    now = time.time()
+    display_player = user.mention if mention_user else user.display_name
 
-    cooldown = 86400  # 24 hours
-    if now - last < cooldown:
-        remaining = int(cooldown - (now - last))
-        h, rem = divmod(remaining, 3600)
-        m, s = divmod(rem, 60)
-        return await ctx.send(
-            f"⏳ Next spin in **{h}h {m}m {s}s**."
+    # first message
+    msg = await ctx.send("🎡 Spinning the wheel...")
+
+    for step in range(total_steps + 1):
+        current_index = (start_index + step) % n
+
+        # build lines: arrow at current_index, all rewards visible
+        lines = []
+        for i, name in enumerate(names):
+            marker = "➤" if i == current_index else " "
+            lines.append(f"{marker} {name}")
+
+        progress = step / max(total_steps, 1)
+        delay = 0.05 + 0.25 * progress  # fast → slow
+
+        embed = discord.Embed(
+            title="🎡 Wheel Spinning",
+            description=(
+                f"**Player:** {display_player}\n\n"
+                "```"
+                + "\n".join(lines)
+                + "```"
+            ),
+            color=galaxy_color()
         )
-
-    # Allow spin
-    last_map[uid] = now
-    save_data(data)
-
-    # REAL weighted result
-    prize = wheel_pick()
-    final_name = prize["name"]
-
-    # Animation start
-    index = 0
-    cycles = 20  # how many arrow moves
-    delay = 0.10
-
-    embed = discord.Embed(
-        title="🎡 Spinning the Wheel...",
-        description=f"`> {VISIBLE_WHEEL[index]} <`",
-        color=galaxy_color()
-    )
-    msg = await ctx.send(embed=embed)
-
-    # SPIN ANIMATION
-    for _ in range(cycles):
-        index = (index + 1) % len(VISIBLE_WHEEL)
-        embed.description = f"`> {VISIBLE_WHEEL[index]} <`"
-        await msg.edit(embed=embed)
+        await msg.edit(content=None, embed=embed)
         await asyncio.sleep(delay)
 
-    # STOPPING ON REAL PRIZE
-    # Find where the REAL prize is in the visible list
-    if final_name in VISIBLE_WHEEL:
-        index = VISIBLE_WHEEL.index(final_name)
-    else:
-        index = 0  # unlikely fallback
-
-    embed = discord.Embed(
+    # final result embed
+    final_embed = discord.Embed(
         title="🎉 Wheel Result",
-        description=f"`> {VISIBLE_WHEEL[index]} <`\n\n🎁 **{final_name}**",
-        color=galaxy_color()
+        description=f"**🎁 {prize['name']}**",
+        color=discord.Color.green()
     )
-    await msg.edit(embed=embed)
+    await msg.edit(embed=final_embed)
 
-    # APPLY REWARD
+    return msg
+
+
+async def _do_wheel_spin(ctx, user: discord.Member, *, bypass_cooldown: bool, mention_user: bool):
+    """Shared logic for !wheel and !adminwheel."""
+    uid = str(user.id)
+    ensure_user(uid)
+
+    last_map = data.setdefault("wheel_last_spin", {})
+    now = time.time()
+
+    if not bypass_cooldown:
+        last = last_map.get(uid, 0)
+        if now - last < WHEEL_COOLDOWN:
+            remaining = int(WHEEL_COOLDOWN - (now - last))
+            hours, rem = divmod(remaining, 3600)
+            minutes, seconds = divmod(rem, 60)
+            if user.id == ctx.author.id:
+                return await ctx.send(
+                    f"⏳ You already used your daily **!wheel**.\n"
+                    f"Next spin in **{hours}h {minutes}m {seconds}s**."
+                )
+            else:
+                return await ctx.send(
+                    f"⏳ {user.display_name} already used their daily wheel."
+                )
+
+    # mark spin time only for normal daily spins
+    if not bypass_cooldown:
+        last_map[uid] = now
+        save_data(data)
+
+    # pick result by weights
+    prize = weighted_wheel_result()
+
+    # run animation in this channel
+    await animate_wheel(ctx, user, prize, mention_user=mention_user)
+
+    # apply prize
     if prize["type"] == "gems":
         data[uid]["gems"] = data[uid].get("gems", 0) + prize["amount"]
         save_data(data)
 
+        add_history(user.id, {
+            "game": "wheel",
+            "bet": 0,
+            "result": prize["name"],
+            "earned": prize["amount"],
+            "timestamp": time.time()
+        })
+
     elif prize["type"] == "bonus":
-        data["deposit_bonuses"][uid] = data["deposit_bonuses"].get(uid, 0) + prize["bonus"]
+        bonus_map = data.setdefault("deposit_bonuses", {})
+        current = int(bonus_map.get(uid, 0) or 0)
+        bonus_map[uid] = current + int(prize["bonus"])
         save_data(data)
+
+        add_history(user.id, {
+            "game": "wheel",
+            "bet": 0,
+            "result": f"deposit_bonus_{prize['bonus']}%",
+            "earned": 0,
+            "timestamp": time.time()
+        })
+
+
+# --------------------------------------------------------------
+#                      PUBLIC DAILY WHEEL
+# --------------------------------------------------------------
+@bot.command()
+async def wheel(ctx):
+    """Daily wheel (1 spin per 24h for each user)."""
+    await _do_wheel_spin(ctx, ctx.author, bypass_cooldown=False, mention_user=True)
+
+
+# --------------------------------------------------------------
+#                   ADMIN WHEEL (NO COOLDOWN)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def adminwheel(ctx, target: str, spins: int = 1):
+    """
+    Admin command:
+      !adminwheel @user 1
+      !adminwheel everyone 1
+
+    - Ignores cooldown
+    - Does NOT ping users (uses their name only)
+    """
+    spins = max(1, spins)
+
+    # everyone
+    if target.lower() == "everyone":
+        members = [m for m in ctx.guild.members if not m.bot]
+        for member in members:
+            for _ in range(spins):
+                await _do_wheel_spin(ctx, member, bypass_cooldown=True, mention_user=False)
+        return await ctx.send(f"✅ Gave **{spins}** wheel spin(s) to everyone (no pings).")
+
+    # single user
+    try:
+        member = await commands.MemberConverter().convert(ctx, target)
+    except commands.BadArgument:
+        return await ctx.send("❌ Couldn't find that user.")
+
+    for _ in range(spins):
+        await _do_wheel_spin(ctx, member, bypass_cooldown=True, mention_user=False)
+
+    await ctx.send(f"✅ Gave **{spins}** wheel spin(s) to **{member.display_name}** (no ping).")
 
 
 
@@ -3950,7 +4044,7 @@ async def help(ctx):
 
 
 
- # ==============================================================
+# ==============================================================
 #                       HELP (ADMIN)
 # ==============================================================
 @bot.command()
@@ -3993,17 +4087,28 @@ async def helpadmin(ctx):
 
     # ---------------- Wheel ----------------
     embed.add_field(
-        name="🎡 Wheel & Bonuses",
+        name="🎡 Wheel System",
         value=(
             "**!wheel** — Daily spin (1x every 24h)\n"
-            "Rewards: 5m, 10m, 100m, 200m gems + 10%/25% deposit bonus.\n"
-            "Some huge rewards are visible but **0% chance** as bait."
+            "Real weighted rewards: 5m, 10m, 10% bonus, 25% bonus, 100m, 200m.\n"
+            "Huge rewards are **visible but 0% chance** to bait players.\n"
+            "Includes wheel animation + slowing effect."
         ),
         inline=False
     )
 
-    # (Other sections like Invite Review, Rig System, Server Control, Backups ...)
-    # Keep your previous fields for those parts.
+    # ---------------- Admin Wheel (NEW) ----------------
+    embed.add_field(
+        name="🎡 Admin Wheel — Force Spins (NEW)",
+        value=(
+            "**!adminwheel @user <spins>** — Give wheel spins to ONE user (ignores cooldown)\n"
+            "**!adminwheel everyone <spins>** — Give spins to ALL users (no ping)\n\n"
+            "Admin wheel uses the **same reward chances**.\n"
+            "Animation still plays.\n"
+            "0% rewards are still shown visually but never chosen."
+        ),
+        inline=False
+    )
 
     embed.set_footer(text="Admins need 'Manage Server' permission to use these commands.")
     await ctx.send(embed=embed)
