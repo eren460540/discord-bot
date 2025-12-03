@@ -26,9 +26,6 @@ GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack"]
 
 
 
-_quest_add_earn(uid, amount)
-_quest_add_wager(uid, amount)
-
 
 # --------------------------------------------------------------
 #                    DATA MANAGEMENT (LOAD / SAVE)
@@ -303,32 +300,46 @@ def ensure_user(user_id):
 
 
 
-# ---------------------- PATCHED add_history ---------------------- #
+# --------------------------------------------------------------
+#                        HISTORY + QUEST HOOK
+# --------------------------------------------------------------
+GAMBLE_GAMES = {"slots", "mines", "tower", "coinflip", "blackjack"}
+
 
 def add_history(user_id, entry):
     """
-    Original history logger + quest hooks.
+    Central history logger.
+    Also forwards data into the quest system.
+    Expected entry keys (not all required):
+      - game  : str  (e.g. "slots", "daily", "deposit")
+      - bet   : int  (amount wagered)
+      - earned: int  (net profit, can be 0 or negative)
     """
     ensure_user(user_id)
     uid = str(user_id)
+
+    # ---- QUEST HOOKS ----
+    game = entry.get("game")
+    bet = int(entry.get("bet", 0) or 0)
+    earned = int(entry.get("earned", 0) or 0)
+
+    # 1) Earn quest → any positive earn counts
+    if earned > 0:
+        _quest_add_earn(uid, earned)
+
+    # 2) Wager quest → only real gambling games
+    if bet > 0 and game in GAMBLE_GAMES:
+        _quest_add_wager(uid, bet)
+
+    # 3) Deposit quest will be updated directly from claimdeposit,
+    #    so we don't handle it here.
+
+    # ---- NORMAL HISTORY ----
     hist = data[uid].get("history", [])
     hist.append(entry)
     if len(hist) > 50:
         hist = hist[-50:]
     data[uid]["history"] = hist
-
-    # ----- QUEST HOOKS -----
-    game = entry.get("game", "")
-    bet = entry.get("bet", 0) or 0
-    earned = entry.get("earned", 0) or 0
-
-    # Only gambling games count (NO daily, NO wheel, NO admin stuff)
-    if game in GAMBLE_GAMES:
-        if bet > 0:
-            _quest_add_wager(user_id, bet)
-        if earned > 0:
-            _quest_add_earn(user_id, earned)
-
     save_data(data)
 
 
