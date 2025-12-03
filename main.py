@@ -47,6 +47,18 @@ def save_data(d):
 # Load data *after* load_data() exists
 data = load_data()
 
+# --- Required defaults (PREVENT KeyError) ---
+data.setdefault("next_deposit_id", 1)
+data.setdefault("next_withdraw_id", 1)
+data.setdefault("deposits", [])
+data.setdefault("withdrawals", [])
+data.setdefault("deposit_bonuses", {})
+data.setdefault("wheel_last_spin", {})
+save_data(data)
+# -------------------------------------------
+
+
+
 # Anti abuse fingerprint store
 data.setdefault("_device_fingerprints", {})
 device_fp = data["_device_fingerprints"]
