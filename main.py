@@ -60,6 +60,8 @@ data.setdefault("next_deposit_id", 1)
 data.setdefault("next_withdraw_id", 1)
 data.setdefault("deposits", [])
 data.setdefault("withdrawals", [])
+data.setdefault("quests", {})
+data.setdefault("quest_last_reset", 0)
 data.setdefault("deposit_bonuses", {})
 data.setdefault("wheel_last_spin", {})
 save_data(data)
@@ -578,6 +580,172 @@ def parse_market_number(value: str) -> int:
 
 
 
+
+
+
+# --------------------------------------------------------------
+#                     DAILY QUEST SYSTEM
+# --------------------------------------------------------------
+
+import time
+
+QUEST_RESET_INTERVAL = 24 * 60 * 60  # 24h
+
+
+# --------------------------------------------------------------
+#      Quest: Get or Create Quest Data for a User
+# --------------------------------------------------------------
+def get_user_quests(uid):
+    q = data["quests"].get(uid)
+    if not q:
+        q = {
+            "earn": 0,
+            "earn_goal": 50_000_000,
+
+            "deposit": 0,
+            "deposit_goal": 50_000_000,
+
+            "wager": 0,
+            "wager_goal": 100_000_000,
+
+            "completed": False
+        }
+        data["quests"][uid] = q
+        save_data(data)
+    return q
+
+
+# --------------------------------------------------------------
+#                 Quest Daily Reset Handler
+# --------------------------------------------------------------
+def reset_quests():
+    data["quests"] = {}
+    data["quest_last_reset"] = time.time()
+    save_data(data)
+
+
+def check_daily_reset():
+    last = data.get("quest_last_reset", 0)
+    if time.time() - last >= QUEST_RESET_INTERVAL:
+        reset_quests()
+
+
+# --------------------------------------------------------------
+#          Quest Progress Adders (earn / wager / deposit)
+# --------------------------------------------------------------
+def _quest_add_earn(uid, amount):
+    check_daily_reset()
+    q = get_user_quests(uid)
+    q["earn"] += amount
+    save_data(data)
+
+
+def _quest_add_deposit(uid, amount):
+    check_daily_reset()
+    q = get_user_quests(uid)
+    q["deposit"] += amount
+    save_data(data)
+
+
+def _quest_add_wager(uid, amount):
+    check_daily_reset()
+    q = get_user_quests(uid)
+    q["wager"] += amount
+    save_data(data)
+
+
+# --------------------------------------------------------------
+#                      !quest COMMAND
+# --------------------------------------------------------------
+@bot.command()
+async def quest(ctx):
+
+    check_daily_reset()
+    uid = str(ctx.author.id)
+    q = get_user_quests(uid)
+
+    def bar(current, goal):
+        percent = min(100, int((current / goal) * 100))
+        filled = int(percent / 10)
+        return f"[{'█' * filled}{'░' * (10 - filled)}] {percent}%"
+
+    embed = discord.Embed(
+        title="📘 Daily Quests",
+        description="Finish all tasks to earn **100m gems + 10% deposit bonus**",
+        color=galaxy_color()
+    )
+
+    embed.add_field(
+        name="💵 Earn 50m Gems",
+        value=bar(q["earn"], q["earn_goal"]),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🏦 Deposit 50m Gems",
+        value=bar(q["deposit"], q["deposit_goal"]),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🎲 Wager 100m Gems",
+        value=bar(q["wager"], q["wager_goal"]),
+        inline=False
+    )
+
+    # Completion Status
+    if (
+        q["earn"] >= q["earn_goal"] and
+        q["deposit"] >= q["deposit_goal"] and
+        q["wager"] >= q["wager_goal"]
+    ):
+        if not q["completed"]:
+            embed.add_field(
+                name="🎉 Reward Available!",
+                value="Use **!questclaim** to claim your reward.",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="✔ Already Claimed",
+                value="Come back tomorrow.",
+                inline=False
+            )
+
+    await ctx.send(embed=embed)
+
+
+# --------------------------------------------------------------
+#                    !questclaim COMMAND
+# --------------------------------------------------------------
+@bot.command()
+async def questclaim(ctx):
+
+    check_daily_reset()
+    uid = str(ctx.author.id)
+    q = get_user_quests(uid)
+
+    # Already claimed
+    if q["completed"]:
+        return await ctx.send("❌ You already claimed your reward today.")
+
+    # Not yet completed
+    if (
+        q["earn"] < q["earn_goal"] or
+        q["deposit"] < q["deposit_goal"] or
+        q["wager"] < q["wager_goal"]
+    ):
+        return await ctx.send("❌ You haven't completed all quests yet.")
+
+    # Reward user
+    ensure_user(uid)
+    data[uid]["gems"] += 100_000_000
+    data["deposit_bonuses"][uid] = data["deposit_bonuses"].get(uid, 0) + 10
+
+    q["completed"] = True
+    save_data(data)
+
+    await ctx.send("🎉 You claimed **100m gems + 10% deposit bonus**! Great job!")
 
 # ==============================================================
 #         ADVANCED WITHDRAW + DEPOSIT QUEUE SYSTEM + WHEEL
