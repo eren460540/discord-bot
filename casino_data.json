@@ -1,1149 +1,3249 @@
 {
-    "1317419437854560288": {
-        "coins": 1000,
-        "gems": 964.25,
-        "daily_claimed": false,
-        "last_daily": 1763307536.6729512,
-        "history": [
-            {
-                "game": "admin_give",
-                "bet": 0,
-                "result": "give_by_1317419437854560288",
-                "earned": 1000.0,
-                "timestamp": 1763319690.436967
-            },
-            {
-                "game": "tower",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763319749.9726775
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -50.75,
-                "timestamp": 1763319777.3910625
-            }
-        ]
+  "next_deposit_id": 1,
+  "next_withdraw_id": 1,
+  "deposits": [],
+  "withdrawals": [],
+  "deposit_bonuses": {},
+  "wheel_last_spin": {},
+  "wheel_extra_spins": {},
+  "quests": {},
+  "quest_last_reset": 0,
+  "withdraw_history": {},
+  "withdraw_last_time": {},
+  "_device_fingerprints": {},
+  "roblox_links": {}
+}
+
+
+
+
+{
+  "_device_fingerprints": {},
+  "1333808875488411703": {
+    "gems": 360603921.0,
+    "last_daily": 1764800888.4020011,
+    "last_work": 1764445186.5675347,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 12053155,
+        "timestamp": 1764408050.3015673
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 200000000.0,
+        "timestamp": 1764443473.1047451
+      },
+      {
+        "game": "coinflip",
+        "bet": 74220000.0,
+        "result": "win",
+        "earned": 74220000.0,
+        "timestamp": 1764445014.6368732
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11540741,
+        "timestamp": 1764445186.5675347
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764445197.0410402
+      },
+      {
+        "game": "coinflip",
+        "bet": 12790000.0,
+        "result": "win",
+        "earned": 12790000.0,
+        "timestamp": 1764445213.037925
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764800888.4020011
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1440717011666604225": {
+    "gems": 786.3129510581493,
+    "last_daily": 1764853970.4977436,
+    "last_work": 1764604866.9523547,
+    "history": [
+      {
+        "game": "mines",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764856039.2277846
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 164500000.00000006,
+        "timestamp": 1764856047.2117083
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 292075000.00000006,
+        "timestamp": 1764856060.3106003
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856072.9507732
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856081.408461
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856090.912822
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856104.103986
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856112.061647
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 70000000.0,
+        "timestamp": 1764856119.1325119
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856125.6951091
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856138.5000312
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856146.6149328
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856153.475946
+      },
+      {
+        "game": "tower",
+        "bet": 100000000.0,
+        "result": "cashout",
+        "earned": 146037500.00000003,
+        "timestamp": 1764856216.6413455
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856222.4532478
+      },
+      {
+        "game": "mines",
+        "bet": 100000000.0,
+        "result": "cashout",
+        "earned": 77219609.72424194,
+        "timestamp": 1764856265.7626746
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 164500000.00000006,
+        "timestamp": 1764856275.402523
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856285.9494922
+      },
+      {
+        "game": "mines",
+        "bet": 100000000.0,
+        "result": "cashout",
+        "earned": 38585870.06249997,
+        "timestamp": 1764856302.9439578
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 164500000.00000006,
+        "timestamp": 1764856314.6148584
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 292075000.00000006,
+        "timestamp": 1764856323.850747
+      },
+      {
+        "game": "mines",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 55457824.99999997,
+        "timestamp": 1764856336.2030761
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 292075000.00000006,
+        "timestamp": 1764856347.3927417
+      },
+      {
+        "game": "mines",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 55457824.99999997,
+        "timestamp": 1764856357.6660602
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856371.9182656
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 292075000.00000006,
+        "timestamp": 1764856393.2679393
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856400.6483018
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856406.867058
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 292075000.00000006,
+        "timestamp": 1764856417.4733293
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 292075000.00000006,
+        "timestamp": 1764856427.5278594
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856435.1731339
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856440.7316365
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 464301250.00000024,
+        "timestamp": 1764856452.2208767
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856462.1497571
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856473.0307827
+      },
+      {
+        "game": "mines",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 35445000.0,
+        "timestamp": 1764856483.4831357
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856488.12337
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856496.8575485
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856502.9100633
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856510.4553308
+      },
+      {
+        "game": "tower",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764856518.6624734
+      },
+      {
+        "game": "mines",
+        "bet": 50000000.0,
+        "result": "cashout",
+        "earned": 13864456.249999993,
+        "timestamp": 1764856530.4662056
+      },
+      {
+        "game": "mines",
+        "bet": 67000000.0,
+        "result": "cashout",
+        "earned": 18578371.374999985,
+        "timestamp": 1764856544.6989195
+      },
+      {
+        "game": "mines",
+        "bet": 80000000.0,
+        "result": "cashout",
+        "earned": 22183129.999999985,
+        "timestamp": 1764856555.8248363
+      },
+      {
+        "game": "tower",
+        "bet": 50000000.0,
+        "result": "lose",
+        "earned": -50000000.0,
+        "timestamp": 1764856563.2285302
+      },
+      {
+        "game": "tower",
+        "bet": 50000000.0,
+        "result": "lose",
+        "earned": -50000000.0,
+        "timestamp": 1764856572.0270085
+      },
+      {
+        "game": "deposit_gems",
+        "bet": 0,
+        "result": "pending",
+        "earned": 0,
+        "timestamp": 1764869145.5789306
+      },
+      {
+        "game": "mines",
+        "bet": 8000000.0,
+        "result": "lose",
+        "earned": -8000000.0,
+        "timestamp": 1764871601.5487666
+      },
+      {
+        "game": "tower",
+        "bet": 300000.0,
+        "result": "lose",
+        "earned": -300000.0,
+        "timestamp": 1764871612.5749707
+      },
+      {
+        "game": "deposit_gems",
+        "bet": 0,
+        "result": "pending",
+        "earned": 0,
+        "timestamp": 1764871703.3725975
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1317419437854560288": {
+    "gems": 373223594.4132449,
+    "last_daily": 1764830566.677747,
+    "last_work": 0.0,
+    "history": [
+      {
+        "game": "invite_reward",
+        "bet": 0,
+        "result": "invite_1440717011666604225",
+        "earned": 50000000,
+        "timestamp": 1764420768.2985497
+      },
+      {
+        "game": "mines",
+        "bet": 50000000.0,
+        "result": "cashout",
+        "earned": 13864456.249999993,
+        "timestamp": 1764427194.2307708
+      },
+      {
+        "game": "invite_reward",
+        "bet": 0,
+        "result": "invite_1352519406747517032",
+        "earned": 50000000,
+        "timestamp": 1764430793.3104038
+      },
+      {
+        "game": "invite_reward",
+        "bet": 0,
+        "result": "invite_1377003370988179710",
+        "earned": 50000000,
+        "timestamp": 1764431228.067095
+      },
+      {
+        "game": "lottery",
+        "bet": 0,
+        "result": "win",
+        "earned": 379500000,
+        "timestamp": 1764431879.6480725
+      },
+      {
+        "game": "guess_color",
+        "bet": 0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764432171.775481
+      },
+      {
+        "game": "guess_number",
+        "bet": 0,
+        "result": "win_8",
+        "earned": 100000000.0,
+        "timestamp": 1764432222.2193308
+      },
+      {
+        "game": "invite_reward",
+        "bet": 0,
+        "result": "invite_1345545618533388388",
+        "earned": 50000000,
+        "timestamp": 1764493250.6591
+      },
+      {
+        "game": "mines",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764516164.4863944
+      },
+      {
+        "game": "mines",
+        "bet": 66000000.0,
+        "result": "lose",
+        "earned": -66000000.0,
+        "timestamp": 1764516206.6004462
+      },
+      {
+        "game": "mines",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 17000000.0,
+        "timestamp": 1764516227.1717873
+      },
+      {
+        "game": "mines",
+        "bet": 17000000.0,
+        "result": "lose",
+        "earned": -17000000.0,
+        "timestamp": 1764516244.7441866
+      },
+      {
+        "game": "mines",
+        "bet": 75000000.0,
+        "result": "cashout",
+        "earned": 47360063.1632449,
+        "timestamp": 1764516264.3290443
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764830566.677747
+      },
+      {
+        "game": "withdraw_gems",
+        "bet": 120000000,
+        "result": "pending",
+        "earned": -120000000,
+        "timestamp": 1764868685.287886
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1368562971693023382": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1146297185592414219": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1431243993295097937": {
+    "gems": 2354065954.0,
+    "last_daily": 1764431950.7322583,
+    "last_work": 1764441831.8124073,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 12671961,
+        "timestamp": 1764414539.9565074
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 13332544,
+        "timestamp": 1764427084.3198884
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764431950.7322583
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 8003945,
+        "timestamp": 1764431955.7233007
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 2000000000.0,
+        "timestamp": 1764432106.701474
+      },
+      {
+        "game": "guess_number",
+        "bet": 0,
+        "result": "win_5",
+        "earned": 100000000.0,
+        "timestamp": 1764432274.1870587
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11557477,
+        "timestamp": 1764441831.8124073
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1373669409435943032": {
+    "gems": 0.0,
+    "last_daily": 1764418603.1873572,
+    "last_work": 1764418600.0122545,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11573758,
+        "timestamp": 1764418600.0122545
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764418603.1873572
+      },
+      {
+        "game": "tower",
+        "bet": 36573783.0,
+        "result": "lose",
+        "earned": -36573783.0,
+        "timestamp": 1764418635.7803106
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "759255609434046524": {
+    "gems": 0.0,
+    "last_daily": 1764419512.1857471,
+    "last_work": 1764419515.0932431,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764419512.1857471
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 13845788,
+        "timestamp": 1764419515.0932431
+      },
+      {
+        "game": "coinflip",
+        "bet": 38845813.0,
+        "result": "lose",
+        "earned": -38845813.0,
+        "timestamp": 1764419521.6945593
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1010838288413765693": {
+    "gems": 0.0,
+    "last_daily": 1764839374.1140647,
+    "last_work": 1764506994.8040798,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764420642.3626373
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 13042760,
+        "timestamp": 1764420645.7305207
+      },
+      {
+        "game": "mines",
+        "bet": 38042785.0,
+        "result": "cashout",
+        "earned": 21075191.055240892,
+        "timestamp": 1764420668.4520023
+      },
+      {
+        "game": "mines",
+        "bet": 59117976.05524089,
+        "result": "lose",
+        "earned": -59117976.05524089,
+        "timestamp": 1764420684.4126792
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 12144132,
+        "timestamp": 1764506994.8040798
+      },
+      {
+        "game": "mines",
+        "bet": 12144132.0,
+        "result": "cashout",
+        "earned": 12475503.216567993,
+        "timestamp": 1764507045.2553182
+      },
+      {
+        "game": "mines",
+        "bet": 24619635.216567993,
+        "result": "lose",
+        "earned": -24619635.216567993,
+        "timestamp": 1764507063.5395262
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764519223.3400307
+      },
+      {
+        "game": "tower",
+        "bet": 25000000.0,
+        "result": "lose",
+        "earned": -25000000.0,
+        "timestamp": 1764519232.9858398
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764839374.1140647
+      },
+      {
+        "game": "mines",
+        "bet": 25000000.0,
+        "result": "lose",
+        "earned": -25000000.0,
+        "timestamp": 1764839428.896539
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "862975690318807062": {
+    "gems": 6202900.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [
+      {
+        "game": "invite_reward",
+        "bet": 0,
+        "result": "invite_1146297185592414219",
+        "earned": 50000000,
+        "timestamp": 1764420762.9564297
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 50000000.0,
+        "timestamp": 1764427150.7802334
+      },
+      {
+        "game": "mines",
+        "bet": 35000000.0,
+        "result": "cashout",
+        "earned": 6202875.0,
+        "timestamp": 1764427332.4889264
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1280108459450433583": {
+    "gems": 6047025.0,
+    "last_daily": 1764420849.3987794,
+    "last_work": 1764497082.6218302,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764420849.3987794
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 8341772,
+        "timestamp": 1764420851.270082
+      },
+      {
+        "game": "mines",
+        "bet": 30000000.0,
+        "result": "lose",
+        "earned": -30000000.0,
+        "timestamp": 1764420863.516118
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11040238,
+        "timestamp": 1764466494.278628
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764466525.250713
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11664990,
+        "timestamp": 1764497082.6218302
+      },
+      {
+        "game": "blackjack",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764497116.116723
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1371208823422845139": {
+    "gems": 2459022940.660452,
+    "last_daily": 1764835112.450801,
+    "last_work": 1764584612.3688161,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11557762,
+        "timestamp": 1764421226.7758322
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764421230.6378272
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11264540,
+        "timestamp": 1764430825.840607
+      },
+      {
+        "game": "guess_number",
+        "bet": 0,
+        "result": "win_5",
+        "earned": 50000000.0,
+        "timestamp": 1764431439.1565704
+      },
+      {
+        "game": "guess_number",
+        "bet": 0,
+        "result": "win_10",
+        "earned": 100000000.0,
+        "timestamp": 1764431449.729053
+      },
+      {
+        "game": "guess_color",
+        "bet": 0,
+        "result": "win",
+        "earned": 50000000.0,
+        "timestamp": 1764431463.70688
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 2000000000.0,
+        "timestamp": 1764432100.6038516
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 300000000.0,
+        "timestamp": 1764432116.3102014
+      },
+      {
+        "game": "guess_color",
+        "bet": 0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764433506.5739226
+      },
+      {
+        "game": "guess_number",
+        "bet": 0,
+        "result": "win_10",
+        "earned": 100000000.0,
+        "timestamp": 1764433518.5266166
+      },
+      {
+        "game": "tower",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764434429.5177004
+      },
+      {
+        "game": "tower",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764434437.1706831
+      },
+      {
+        "game": "mines",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 84420122.56732148,
+        "timestamp": 1764434460.7714105
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11243727,
+        "timestamp": 1764479303.2609386
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 8645452,
+        "timestamp": 1764521613.8573017
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764584605.4843984
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 8718945,
+        "timestamp": 1764584612.3688161
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764835112.450801
+      },
+      {
+        "game": "mines",
+        "bet": 1000000.0,
+        "result": "lose",
+        "earned": -1000000.0,
+        "timestamp": 1764853633.9359992
+      },
+      {
+        "game": "mines",
+        "bet": 1000000.0,
+        "result": "lose",
+        "earned": -1000000.0,
+        "timestamp": 1764853645.3986702
+      },
+      {
+        "game": "mines",
+        "bet": 1000000.0,
+        "result": "lose",
+        "earned": -1000000.0,
+        "timestamp": 1764853668.0372694
+      },
+      {
+        "game": "mines",
+        "bet": 40000000.0,
+        "result": "lose",
+        "earned": -40000000.0,
+        "timestamp": 1764853679.8258708
+      },
+      {
+        "game": "mines",
+        "bet": 200000000.0,
+        "result": "cashout",
+        "earned": 72172366.09313065,
+        "timestamp": 1764853696.4042723
+      },
+      {
+        "game": "withdraw_gems",
+        "bet": 216000000,
+        "result": "pending",
+        "earned": -216000000,
+        "timestamp": 1764869068.0866523
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1333018132842938502": {
+    "gems": 0.0,
+    "last_daily": 1764797807.3793457,
+    "last_work": 1764531435.668235,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 13405088,
+        "timestamp": 1764423334.3916895
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764423340.8278773
+      },
+      {
+        "game": "tower",
+        "bet": 38405113.0,
+        "result": "cashout",
+        "earned": 133804697.862966,
+        "timestamp": 1764423374.2831252
+      },
+      {
+        "game": "tower",
+        "bet": 50000000.0,
+        "result": "lose",
+        "earned": -50000000.0,
+        "timestamp": 1764423422.7853518
+      },
+      {
+        "game": "tower",
+        "bet": 122209810.862966,
+        "result": "lose",
+        "earned": -122209810.862966,
+        "timestamp": 1764423432.6487048
+      },
+      {
+        "game": "coinflip",
+        "bet": 150000000.0,
+        "result": "lose",
+        "earned": -150000000.0,
+        "timestamp": 1764433030.005002
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 100000000.0,
+        "timestamp": 1764433167.793352
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764433212.6053662
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 12434586,
+        "timestamp": 1764433221.9033346
+      },
+      {
+        "game": "coinflip",
+        "bet": 12434586.0,
+        "result": "lose",
+        "earned": -12434586.0,
+        "timestamp": 1764433229.8114936
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 100000000.0,
+        "timestamp": 1764433477.2318974
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764433561.8465042
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764433574.7144527
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764433624.7720227
+      },
+      {
+        "game": "tower",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764433654.046564
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764433662.5451314
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764433670.6628764
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764433693.4829745
+      },
+      {
+        "game": "tower",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764433866.879718
+      },
+      {
+        "game": "coinflip",
+        "bet": 150000000.0,
+        "result": "lose",
+        "earned": -150000000.0,
+        "timestamp": 1764433886.5815241
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 10095636,
+        "timestamp": 1764449195.6374166
+      },
+      {
+        "game": "tower",
+        "bet": 10095636.0,
+        "result": "lose",
+        "earned": -10095636.0,
+        "timestamp": 1764449205.3129172
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 12494538,
+        "timestamp": 1764453904.3858197
+      },
+      {
+        "game": "tower",
+        "bet": 12494538.0,
+        "result": "lose",
+        "earned": -12494538.0,
+        "timestamp": 1764453916.3581967
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11737367,
+        "timestamp": 1764474980.4385116
+      },
+      {
+        "game": "tower",
+        "bet": 11737367.0,
+        "result": "lose",
+        "earned": -11737367.0,
+        "timestamp": 1764475005.2335622
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 12856026,
+        "timestamp": 1764486785.76048
+      },
+      {
+        "game": "tower",
+        "bet": 12856026.0,
+        "result": "lose",
+        "earned": -12856026.0,
+        "timestamp": 1764486800.07999
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 14726002,
+        "timestamp": 1764507628.1055007
+      },
+      {
+        "game": "tower",
+        "bet": 14726002.0,
+        "result": "lose",
+        "earned": -14726002.0,
+        "timestamp": 1764507649.3669238
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 10686805,
+        "timestamp": 1764519916.1401477
+      },
+      {
+        "game": "tower",
+        "bet": 10686805.0,
+        "result": "lose",
+        "earned": -10686805.0,
+        "timestamp": 1764519921.537248
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 9142126,
+        "timestamp": 1764531435.668235
+      },
+      {
+        "game": "tower",
+        "bet": 9142126.0,
+        "result": "lose",
+        "earned": -9142126.0,
+        "timestamp": 1764531452.2392704
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764797807.3793457
+      },
+      {
+        "game": "tower",
+        "bet": 25000000.0,
+        "result": "lose",
+        "earned": -25000000.0,
+        "timestamp": 1764797814.96649
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1418529312495370361": {
+    "gems": 100000050.0,
+    "last_daily": 1764564843.5417945,
+    "last_work": 0.0,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764426143.828007
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764564843.5417945
+      },
+      {
+        "game": "coinflip",
+        "bet": 50000025.0,
+        "result": "win",
+        "earned": 50000025.0,
+        "timestamp": 1764564863.1867483
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1211475576406278216": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1352519406747517032": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1377003370988179710": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1444349883682263040": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "823589516430016533": {
+    "gems": 278921560.0,
+    "last_daily": 1764431828.8649952,
+    "last_work": 1764431824.226572,
+    "history": [
+      {
+        "game": "guess_color",
+        "bet": 0,
+        "result": "win",
+        "earned": 50000000.0,
+        "timestamp": 1764431496.0048983
+      },
+      {
+        "game": "lottery",
+        "bet": 0,
+        "result": "win",
+        "earned": 220000000,
+        "timestamp": 1764431805.0395613
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 8921535,
+        "timestamp": 1764431824.226572
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764431828.8649952
+      },
+      {
+        "game": "guess_color",
+        "bet": 0,
+        "result": "win",
+        "earned": 25000000.0,
+        "timestamp": 1764431925.4282954
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1175083153820496006": {
+    "gems": 50000025.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 50000000.0,
+        "timestamp": 1764431548.182229
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1229413092568600688": {
+    "gems": 0.0,
+    "last_daily": 1764608882.1256142,
+    "last_work": 1764608890.3476765,
+    "history": [
+      {
+        "game": "guess_number",
+        "bet": 0,
+        "result": "win_6",
+        "earned": 25000000.0,
+        "timestamp": 1764431642.871729
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764431772.275524
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 13288629,
+        "timestamp": 1764431773.967743
+      },
+      {
+        "game": "coinflip",
+        "bet": 8288654.0,
+        "result": "lose",
+        "earned": -8288654.0,
+        "timestamp": 1764431837.6402676
+      },
+      {
+        "game": "guess_color",
+        "bet": 0,
+        "result": "win",
+        "earned": 50000000.0,
+        "timestamp": 1764431991.3358045
+      },
+      {
+        "game": "coinflip",
+        "bet": 50000000.0,
+        "result": "win",
+        "earned": 50000000.0,
+        "timestamp": 1764432011.0527742
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764432018.084107
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764608882.1256142
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 12526226,
+        "timestamp": 1764608890.3476765
+      },
+      {
+        "game": "coinflip",
+        "bet": 37526226.0,
+        "result": "lose",
+        "earned": -37526226.0,
+        "timestamp": 1764608894.9389129
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1257694429444313191": {
+    "gems": 0.0,
+    "last_daily": 1764792671.2018383,
+    "last_work": 1764431823.1130557,
+    "history": [
+      {
+        "game": "guess_color",
+        "bet": 0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764431726.1395645
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 9759061,
+        "timestamp": 1764431823.1130557
+      },
+      {
+        "game": "guess_number",
+        "bet": 0,
+        "result": "win_6",
+        "earned": 50000000.0,
+        "timestamp": 1764431901.4329188
+      },
+      {
+        "game": "guess_number",
+        "bet": 0,
+        "result": "win_6",
+        "earned": 100000000.0,
+        "timestamp": 1764432320.3489733
+      },
+      {
+        "game": "coinflip",
+        "bet": 84000000.0,
+        "result": "lose",
+        "earned": -84000000.0,
+        "timestamp": 1764433064.9916975
+      },
+      {
+        "game": "tower",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764434127.2953796
+      },
+      {
+        "game": "tower",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764434154.4604669
+      },
+      {
+        "game": "tower",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764434182.6554954
+      },
+      {
+        "game": "tower",
+        "bet": 50000000.0,
+        "result": "lose",
+        "earned": -50000000.0,
+        "timestamp": 1764434200.5669775
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764434221.4072063
+      },
+      {
+        "game": "coinflip",
+        "bet": 3000000.0,
+        "result": "win",
+        "earned": 3000000.0,
+        "timestamp": 1764434261.468674
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764434381.268542
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764434407.1662154
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764792671.2018383
+      },
+      {
+        "game": "tower",
+        "bet": 5000000.0,
+        "result": "lose",
+        "earned": -5000000.0,
+        "timestamp": 1764792725.5728698
+      },
+      {
+        "game": "tower",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764792737.4146683
+      },
+      {
+        "game": "tower",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764792751.5746865
+      },
+      {
+        "game": "tower",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764792759.6018822
+      },
+      {
+        "game": "tower",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764792767.194816
+      },
+      {
+        "game": "tower",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764792777.2399414
+      },
+      {
+        "game": "blackjack",
+        "bet": 10000000.0,
+        "result": "push",
+        "earned": 0,
+        "timestamp": 1764792844.2685118
+      },
+      {
+        "game": "blackjack",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764792859.8416784
+      },
+      {
+        "game": "blackjack",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764792868.8500607
+      },
+      {
+        "game": "blackjack",
+        "bet": 10000000.0,
+        "result": "win",
+        "earned": 7000000,
+        "timestamp": 1764792880.4190612
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "cashout",
+        "earned": 6228530.457108762,
+        "timestamp": 1764792916.1065543
+      },
+      {
+        "game": "chest_legendary",
+        "bet": 250000000,
+        "result": "open_1",
+        "earned": -50000000,
+        "timestamp": 1764792975.981537
+      },
+      {
+        "game": "blackjack",
+        "bet": 50000000.0,
+        "result": "lose",
+        "earned": -50000000.0,
+        "timestamp": 1764793005.9365323
+      },
+      {
+        "game": "chest_epic",
+        "bet": 100000000,
+        "result": "open_1",
+        "earned": 0,
+        "timestamp": 1764793022.7139084
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764793111.3401356
+      },
+      {
+        "game": "coinflip",
+        "bet": 56987616.457108766,
+        "result": "win",
+        "earned": 56987616.457108766,
+        "timestamp": 1764793127.5122864
+      },
+      {
+        "game": "coinflip",
+        "bet": 113975232.91421753,
+        "result": "win",
+        "earned": 113975232.91421753,
+        "timestamp": 1764793142.3954806
+      },
+      {
+        "game": "coinflip",
+        "bet": 1.0,
+        "result": "lose",
+        "earned": -1.0,
+        "timestamp": 1764793154.5403678
+      },
+      {
+        "game": "coinflip",
+        "bet": 1.0,
+        "result": "lose",
+        "earned": -1.0,
+        "timestamp": 1764793167.7093697
+      },
+      {
+        "game": "coinflip",
+        "bet": 1.0,
+        "result": "lose",
+        "earned": -1.0,
+        "timestamp": 1764793179.4234776
+      },
+      {
+        "game": "coinflip",
+        "bet": 1.0,
+        "result": "lose",
+        "earned": -1.0,
+        "timestamp": 1764793220.0883079
+      },
+      {
+        "game": "coinflip",
+        "bet": 10000000.0,
+        "result": "win",
+        "earned": 10000000.0,
+        "timestamp": 1764793235.1863058
+      },
+      {
+        "game": "coinflip",
+        "bet": 1.0,
+        "result": "lose",
+        "earned": -1.0,
+        "timestamp": 1764793250.5806942
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764793283.89285
+      },
+      {
+        "game": "coinflip",
+        "bet": 137950460.82843506,
+        "result": "win",
+        "earned": 137950460.82843506,
+        "timestamp": 1764793308.6712844
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764793318.3655074
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764793376.6352825
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764793460.3210542
+      },
+      {
+        "game": "coinflip",
+        "bet": 75900921.65687013,
+        "result": "lose",
+        "earned": -75900921.65687013,
+        "timestamp": 1764793482.329504
+      },
+      {
+        "game": "gift_received",
+        "bet": 50000000.0,
+        "result": "gift_from_946728294835974165",
+        "earned": 50000000.0,
+        "timestamp": 1764793504.5172124
+      },
+      {
+        "game": "coinflip",
+        "bet": 50000000.0,
+        "result": "win",
+        "earned": 50000000.0,
+        "timestamp": 1764840168.6051843
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764840181.884304
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1392865053807480883": {
+    "gems": 0.0,
+    "last_daily": 1764575557.2438333,
+    "last_work": 1764575553.5535526,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764431768.4861095
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11311122,
+        "timestamp": 1764431828.7102065
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 100000000.0,
+        "timestamp": 1764432371.8703964
+      },
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 250000000.0,
+        "timestamp": 1764433676.4388168
+      },
+      {
+        "game": "tower",
+        "bet": 40000000.0,
+        "result": "cashout",
+        "earned": 139361337.50000006,
+        "timestamp": 1764498214.4563577
+      },
+      {
+        "game": "tower",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764498320.748854
+      },
+      {
+        "game": "tower",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764520176.4166777
+      },
+      {
+        "game": "tower",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764520194.5139656
+      },
+      {
+        "game": "tower",
+        "bet": 40000000.0,
+        "result": "lose",
+        "earned": -40000000.0,
+        "timestamp": 1764520204.7255988
+      },
+      {
+        "game": "coinflip",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764520271.4397964
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764520283.2784257
+      },
+      {
+        "game": "coinflip",
+        "bet": 120672484.50000006,
+        "result": "win",
+        "earned": 120672484.50000006,
+        "timestamp": 1764520299.0383134
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764520332.7438233
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764520343.4239464
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764520357.2850862
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764520362.3905332
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764520368.795907
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764520374.6427772
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764520379.8809626
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764520397.277471
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764520403.371927
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764520410.0466702
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764520414.802889
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764520427.95347
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764520435.4055169
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764520449.9432523
+      },
+      {
+        "game": "coinflip",
+        "bet": 141344969.00000012,
+        "result": "lose",
+        "earned": -141344969.00000012,
+        "timestamp": 1764520456.6515596
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11378237,
+        "timestamp": 1764575553.5535526
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764575557.2438333
+      },
+      {
+        "game": "coinflip",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764575563.5244477
+      },
+      {
+        "game": "coinflip",
+        "bet": 16378237.0,
+        "result": "lose",
+        "earned": -16378237.0,
+        "timestamp": 1764575575.834033
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1046133213359255562": {
+    "gems": 433578467.0,
+    "last_daily": 1764431839.1447191,
+    "last_work": 1764431846.7346742,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764431839.1447191
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 8578442,
+        "timestamp": 1764431846.7346742
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1423620048521793607": {
+    "gems": 0.0,
+    "last_daily": 1764455457.9406762,
+    "last_work": 1764455459.852654,
+    "history": [
+      {
+        "game": "admin_give",
+        "bet": 0,
+        "result": "admin_give_1317419437854560288",
+        "earned": 10000000.0,
+        "timestamp": 1764433366.4687521
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764455457.9406762
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 8434358,
+        "timestamp": 1764455459.852654
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "cashout",
+        "earned": 3858587.0062499978,
+        "timestamp": 1764455472.5154254
+      },
+      {
+        "game": "mines",
+        "bet": 10.0,
+        "result": "cashout",
+        "earned": 0.0,
+        "timestamp": 1764455482.123991
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "cashout",
+        "earned": 3858587.0062499978,
+        "timestamp": 1764455492.6946251
+      },
+      {
+        "game": "mines",
+        "bet": 25000000.0,
+        "result": "cashout",
+        "earned": 9646467.515624993,
+        "timestamp": 1764455509.6906369
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764455516.4288294
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "cashout",
+        "earned": 6314675.088432653,
+        "timestamp": 1764455868.035969
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764455876.028225
+      },
+      {
+        "game": "blackjack",
+        "bet": 10000000.0,
+        "result": "push",
+        "earned": 0,
+        "timestamp": 1764455893.5761452
+      },
+      {
+        "game": "blackjack",
+        "bet": 10000000.0,
+        "result": "win",
+        "earned": 7000000,
+        "timestamp": 1764455903.420203
+      },
+      {
+        "game": "blackjack",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764455915.086168
+      },
+      {
+        "game": "slots",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764455939.7211072
+      },
+      {
+        "game": "slots",
+        "bet": 14000000.0,
+        "result": "win",
+        "earned": 14000000.0,
+        "timestamp": 1764455947.7526574
+      },
+      {
+        "game": "mines",
+        "bet": 8000000.0,
+        "result": "lose",
+        "earned": -8000000.0,
+        "timestamp": 1764455958.904752
+      },
+      {
+        "game": "mines",
+        "bet": 20000000.0,
+        "result": "cashout",
+        "earned": 7717174.0124999955,
+        "timestamp": 1764455972.4973137
+      },
+      {
+        "game": "slots",
+        "bet": 7000000.0,
+        "result": "lose",
+        "earned": -7000000.0,
+        "timestamp": 1764455978.106859
+      },
+      {
+        "game": "slots",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764455983.2107983
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764455999.910494
+      },
+      {
+        "game": "mines",
+        "bet": 10829873.62905763,
+        "result": "lose",
+        "earned": -10829873.62905763,
+        "timestamp": 1764456009.2035842
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1114452091621093376": {
+    "gems": 1494507.0,
+    "last_daily": 1764598367.6358943,
+    "last_work": 1764598362.8404377,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 8704003,
+        "timestamp": 1764445085.340472
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764445087.7718787
+      },
+      {
+        "game": "coinflip",
+        "bet": 33000000.0,
+        "result": "win",
+        "earned": 33000000.0,
+        "timestamp": 1764445107.6823585
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 9790479,
+        "timestamp": 1764598362.8404377
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764598367.6358943
+      },
+      {
+        "game": "coinflip",
+        "bet": 100000000.0,
+        "result": "win",
+        "earned": 100000000.0,
+        "timestamp": 1764598399.7847044
+      },
+      {
+        "game": "coinflip",
+        "bet": 10000000.0,
+        "result": "win",
+        "earned": 10000000.0,
+        "timestamp": 1764607506.7248683
+      },
+      {
+        "game": "coinflip",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764607515.778222
+      },
+      {
+        "game": "coinflip",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764607527.73896
+      },
+      {
+        "game": "coinflip",
+        "bet": 40000000.0,
+        "result": "lose",
+        "earned": -40000000.0,
+        "timestamp": 1764607536.1543014
+      },
+      {
+        "game": "coinflip",
+        "bet": 80000000.0,
+        "result": "lose",
+        "earned": -80000000.0,
+        "timestamp": 1764607549.769086
+      },
+      {
+        "game": "coinflip",
+        "bet": 60000000.0,
+        "result": "lose",
+        "earned": -60000000.0,
+        "timestamp": 1764607563.7061443
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1196216095321890933": {
+    "gems": 35726505.0,
+    "last_daily": 1764459231.2688913,
+    "last_work": 1764469243.1085033,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 13998616,
+        "timestamp": 1764459228.975445
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764459231.2688913
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 12886477,
+        "timestamp": 1764464233.532075
+      },
+      {
+        "game": "coinflip",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764464238.164944
+      },
+      {
+        "game": "coinflip",
+        "bet": 20000000.0,
+        "result": "lose",
+        "earned": -20000000.0,
+        "timestamp": 1764464241.6968634
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 13841387,
+        "timestamp": 1764469243.1085033
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1419593039529250898": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1345545618533388388": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1444617019592016090": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1444618551079075951": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1444625544825274391": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1342438511944667138": {
+    "gems": 0.0,
+    "last_daily": 1764502409.0608978,
+    "last_work": 0.0,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764502409.0608978
+      },
+      {
+        "game": "coinflip",
+        "bet": 25000025.0,
+        "result": "lose",
+        "earned": -25000025.0,
+        "timestamp": 1764502422.5305345
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1043102062763835443": {
+    "gems": 28529178.209999997,
+    "last_daily": 1764507693.2725368,
+    "last_work": 0.0,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764507693.2725368
+      },
+      {
+        "game": "mines",
+        "bet": 1.0,
+        "result": "cashout",
+        "earned": 0.08499999999999996,
+        "timestamp": 1764507709.930417
+      },
+      {
+        "game": "mines",
+        "bet": 25000000.0,
+        "result": "cashout",
+        "earned": 3529153.1249999963,
+        "timestamp": 1764507736.806422
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1382371526480756828": {
+    "gems": 35538193.0,
+    "last_daily": 1764530175.5422592,
+    "last_work": 1764530170.3044844,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 10538168,
+        "timestamp": 1764530170.3044844
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764530175.5422592
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1356719248751202538": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "844617193160704001": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1062760539232673912": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1217344112722968588": {
+    "gems": 365953.0013974309,
+    "last_daily": 1764557105.8519766,
+    "last_work": 1764557100.8910942,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 14186011,
+        "timestamp": 1764557100.8910942
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764557105.8519766
+      },
+      {
+        "game": "mines",
+        "bet": 5000000.0,
+        "result": "lose",
+        "earned": -5000000.0,
+        "timestamp": 1764558285.5568533
+      },
+      {
+        "game": "mines",
+        "bet": 25000000.0,
+        "result": "cashout",
+        "earned": 19253556.177373573,
+        "timestamp": 1764558313.1027234
+      },
+      {
+        "game": "blackjack",
+        "bet": 5000000.0,
+        "result": "lose",
+        "earned": -5000000.0,
+        "timestamp": 1764558344.1345394
+      },
+      {
+        "game": "mines",
+        "bet": 20000000.0,
+        "result": "cashout",
+        "earned": 12629350.176865306,
+        "timestamp": 1764558368.0081258
+      },
+      {
+        "game": "mines",
+        "bet": 30000000.0,
+        "result": "cashout",
+        "earned": 11575761.018749997,
+        "timestamp": 1764558384.4598954
+      },
+      {
+        "game": "mines",
+        "bet": 50000000.0,
+        "result": "cashout",
+        "earned": 31573375.44216326,
+        "timestamp": 1764558430.905905
+      },
+      {
+        "game": "mines",
+        "bet": 20000000.0,
+        "result": "cashout",
+        "earned": 12629350.176865306,
+        "timestamp": 1764558480.9880686
+      },
+      {
+        "game": "mines",
+        "bet": 50000000.0,
+        "result": "cashout",
+        "earned": 31573375.44216326,
+        "timestamp": 1764558504.503598
+      },
+      {
+        "game": "mines",
+        "bet": 48000000.0,
+        "result": "cashout",
+        "earned": 36966827.86055726,
+        "timestamp": 1764558550.1087394
+      },
+      {
+        "game": "mines",
+        "bet": 85000000.0,
+        "result": "cashout",
+        "earned": 32797989.55312498,
+        "timestamp": 1764558575.3903742
+      },
+      {
+        "game": "mines",
+        "bet": 18000000.0,
+        "result": "lose",
+        "earned": -18000000.0,
+        "timestamp": 1764558625.2520998
+      },
+      {
+        "game": "mines",
+        "bet": 50000000.0,
+        "result": "cashout",
+        "earned": 38507112.35474715,
+        "timestamp": 1764558693.2598903
+      },
+      {
+        "game": "mines",
+        "bet": 30000000.0,
+        "result": "cashout",
+        "earned": 23104267.412848286,
+        "timestamp": 1764558789.7502413
+      },
+      {
+        "game": "mines",
+        "bet": 50000000.0,
+        "result": "lose",
+        "earned": -50000000.0,
+        "timestamp": 1764558824.6570032
+      },
+      {
+        "game": "blackjack",
+        "bet": 30000000.0,
+        "result": "lose",
+        "earned": -30000000.0,
+        "timestamp": 1764558852.4034464
+      },
+      {
+        "game": "mines",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764558927.6916754
+      },
+      {
+        "game": "mines",
+        "bet": 81000000.0,
+        "result": "cashout",
+        "earned": 74568951.38593903,
+        "timestamp": 1764558989.2665658
+      },
+      {
+        "game": "mines",
+        "bet": 100000000.0,
+        "result": "lose",
+        "earned": -100000000.0,
+        "timestamp": 1764559079.9421835
+      },
+      {
+        "game": "mines",
+        "bet": 56000000.0,
+        "result": "lose",
+        "earned": -56000000.0,
+        "timestamp": 1764559178.929432
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1444944277489848434": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "890552011496501308": {
+    "gems": 133389981.49500002,
+    "last_daily": 1764584590.954098,
+    "last_work": 1764584605.8276103,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764584590.954098
+      },
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 11595306,
+        "timestamp": 1764584605.8276103
+      },
+      {
+        "game": "coinflip",
+        "bet": 36595331.0,
+        "result": "win",
+        "earned": 36595331.0,
+        "timestamp": 1764584623.6386018
+      },
+      {
+        "game": "tower",
+        "bet": 73190662.0,
+        "result": "cashout",
+        "earned": 60199319.49500002,
+        "timestamp": 1764584642.9590387
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "946728294835974165": {
+    "gems": 1132034824.9017813,
+    "last_daily": 1764600098.4791381,
+    "last_work": 1764600048.2771945,
+    "history": [
+      {
+        "game": "work",
+        "bet": 0,
+        "result": "work",
+        "earned": 9249104,
+        "timestamp": 1764600048.2771945
+      },
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764600098.4791381
+      },
+      {
+        "game": "coinflip",
+        "bet": 34249129.0,
+        "result": "win",
+        "earned": 34249129.0,
+        "timestamp": 1764600113.858816
+      },
+      {
+        "game": "coinflip",
+        "bet": 30000000.0,
+        "result": "win",
+        "earned": 30000000.0,
+        "timestamp": 1764792141.1304555
+      },
+      {
+        "game": "coinflip",
+        "bet": 98000000.0,
+        "result": "win",
+        "earned": 98000000.0,
+        "timestamp": 1764792173.902576
+      },
+      {
+        "game": "coinflip",
+        "bet": 196000000.0,
+        "result": "win",
+        "earned": 196000000.0,
+        "timestamp": 1764792196.5608268
+      },
+      {
+        "game": "chest_legendary",
+        "bet": 250000000,
+        "result": "open_1",
+        "earned": 0,
+        "timestamp": 1764792999.373731
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764793076.1123652
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764793132.6495867
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764793297.9141366
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764793356.7312799
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764793433.7963269
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764793441.3747365
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "lose",
+        "earned": -200000000.0,
+        "timestamp": 1764793474.9125967
+      },
+      {
+        "game": "gift",
+        "bet": 50000000.0,
+        "result": "gift_to_1257694429444313191",
+        "earned": -50000000.0,
+        "timestamp": 1764793504.5172124
+      },
+      {
+        "game": "coinflip",
+        "bet": 200000000.0,
+        "result": "win",
+        "earned": 200000000.0,
+        "timestamp": 1764793572.023983
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764793589.6447835
+      },
+      {
+        "game": "mines",
+        "bet": 5000000.0,
+        "result": "lose",
+        "earned": -5000000.0,
+        "timestamp": 1764793597.9703472
+      },
+      {
+        "game": "mines",
+        "bet": 500000.0,
+        "result": "lose",
+        "earned": -500000.0,
+        "timestamp": 1764793621.2332087
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "cashout",
+        "earned": 5036566.901781248,
+        "timestamp": 1764793644.308176
+      },
+      {
+        "game": "blackjack",
+        "bet": 20000000.0,
+        "result": "push",
+        "earned": 0,
+        "timestamp": 1764793720.1414483
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1445080287288627212": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1445089046672969730": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1313991123525570601": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1430779670613200926": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1443952508996419688": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1416746160156049520": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "1220017060948742156": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "quests": {
+    "1220017060948742156": {
+      "earn": 0,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 0,
+      "wager_goal": 100000000,
+      "completed": false
     },
-    "1395891121862869012": {
-        "gems": 44.65,
-        "daily_claimed": false,
-        "history": [
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -2.35,
-                "timestamp": 1763319777.3933656
-            }
-        ]
-    },
-    "1268889902125158567": {
-        "gems": 47.5,
-        "daily_claimed": false,
-        "history": [
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -2.5,
-                "timestamp": 1763319777.4047918
-            }
-        ]
-    },
-    "1431956941315510437": {
-        "gems": 18.05,
-        "last_daily": 1761943737.1461275,
-        "history": [
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.95,
-                "timestamp": 1763319777.4074426
-            }
-        ]
-    },
-    "1190914360835588096": {
-        "gems": 28.5,
-        "last_daily": 0,
-        "history": [
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -1.5,
-                "timestamp": 1763319777.4100654
-            }
-        ]
-    },
-    "1325745498833027073": {
-        "gems": 165.69,
-        "last_daily": 1761981500.8280544,
-        "history": [
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -8.72,
-                "timestamp": 1763319777.4122877
-            }
-        ]
-    },
-    "614531590240075826": {
-        "gems": 42.75,
-        "last_daily": 0,
-        "history": [
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -2.25,
-                "timestamp": 1763319777.416436
-            }
-        ]
-    },
-    "994686943780667443": {
-        "gems": 47.5,
-        "last_daily": 0,
-        "history": [
-            {
-                "game": "daily",
-                "bet": 0,
-                "result": "claim",
-                "earned": 25,
-                "timestamp": 1762025910.0704994
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -2.5,
-                "timestamp": 1763319777.4190295
-            }
-        ]
-    },
-    "1333018132842938502": {
-        "gems": 700.00328125,
-        "last_daily": 1763308039.4814515,
-        "history": [
-            {
-                "game": "tower",
-                "bet": 47.65,
-                "result": "lose",
-                "earned": -47.65,
-                "timestamp": 1763318250.1979723
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763318288.0500786
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -34.5,
-                "timestamp": 1763319777.4213574
-            },
-            {
-                "game": "tower",
-                "bet": 55.5,
-                "result": "lose",
-                "earned": -55.5,
-                "timestamp": 1763320816.569633
-            },
-            {
-                "game": "tower",
-                "bet": 100.0,
-                "result": "cashout",
-                "earned": 56.25,
-                "timestamp": 1763320845.338779
-            },
-            {
-                "game": "tower",
-                "bet": 56.25,
-                "result": "cashout",
-                "earned": 53.61328125,
-                "timestamp": 1763320890.0464888
-            },
-            {
-                "game": "tower",
-                "bet": 9.86,
-                "result": "lose",
-                "earned": -9.86,
-                "timestamp": 1763320956.5316303
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763321052.2291856
-            },
-            {
-                "game": "coinflip",
-                "bet": 10.0,
-                "result": "win",
-                "earned": 10.0,
-                "timestamp": 1763321083.7455027
-            },
-            {
-                "game": "coinflip",
-                "bet": 9.0,
-                "result": "lose",
-                "earned": -9.0,
-                "timestamp": 1763321102.4128346
-            }
-        ]
-    },
-    "823589516430016533": {
-        "gems": 0.3,
-        "last_daily": 1763307443.126869,
-        "history": [
-            {
-                "game": "mines",
-                "bet": 1000.0,
-                "result": "cashout",
-                "earned": 1045.0,
-                "timestamp": 1763309024.4080997
-            },
-            {
-                "game": "mines",
-                "bet": 1000.0,
-                "result": "cashout",
-                "earned": 1045.0,
-                "timestamp": 1763309036.2339306
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "cashout",
-                "earned": 1.065,
-                "timestamp": 1763310174.1322596
-            },
-            {
-                "game": "mines",
-                "bet": 1000.0,
-                "result": "cashout",
-                "earned": 1085.0,
-                "timestamp": 1763310215.6195393
-            },
-            {
-                "game": "mines",
-                "bet": 1000.0,
-                "result": "cashout",
-                "earned": 1085.0,
-                "timestamp": 1763310330.5962794
-            },
-            {
-                "game": "mines",
-                "bet": 4900.0,
-                "result": "cashout",
-                "earned": 5350.922499999999,
-                "timestamp": 1763310604.90364
-            },
-            {
-                "game": "mines",
-                "bet": 5422.31,
-                "result": "cashout",
-                "earned": 5666.31395,
-                "timestamp": 1763310631.228676
-            },
-            {
-                "game": "tower",
-                "bet": 5000.0,
-                "result": "lose",
-                "earned": -5000.0,
-                "timestamp": 1763310668.6776807
-            },
-            {
-                "game": "mines",
-                "bet": 666.0,
-                "result": "lose",
-                "earned": -666.0,
-                "timestamp": 1763310695.1062033
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.02,
-                "timestamp": 1763319777.4238267
-            }
-        ]
+    "946728294835974165": {
+      "earn": 1529036566,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 1969500000,
+      "wager_goal": 100000000,
+      "completed": false
     },
     "1257694429444313191": {
-        "gems": 60.21,
-        "last_daily": 1763308412.7004948,
-        "history": [
-            {
-                "game": "mines",
-                "bet": 5.0,
-                "result": "lose",
-                "earned": -5.0,
-                "timestamp": 1763308541.2863417
-            },
-            {
-                "game": "mines",
-                "bet": 20.0,
-                "result": "cashout",
-                "earned": 24.923638753062495,
-                "timestamp": 1763308575.920776
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763308665.4521
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763308691.7036936
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763308717.0324416
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763308732.9857798
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763308753.6136346
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763308767.7748039
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "cashout",
-                "earned": 16.228530457108764,
-                "timestamp": 1763308792.0065222
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -3.17,
-                "timestamp": 1763319777.4280596
-            }
-        ]
+      "earn": 657141838,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 1509814234,
+      "wager_goal": 100000000,
+      "completed": false
+    },
+    "1333018132842938502": {
+      "earn": 25000000,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 25000000,
+      "wager_goal": 100000000,
+      "completed": false
+    },
+    "1333808875488411703": {
+      "earn": 25000000,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 0,
+      "wager_goal": 100000000,
+      "completed": false
+    },
+    "718557830365315152": {
+      "earn": 25000000,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 25000000,
+      "wager_goal": 100000000,
+      "completed": false
+    },
+    "1317419437854560288": {
+      "earn": 25000000,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 0,
+      "wager_goal": 100000000,
+      "completed": false
     },
     "1371208823422845139": {
-        "gems": 0.46,
-        "last_daily": 1763307229.979969,
-        "history": [
-            {
-                "game": "daily",
-                "bet": 0,
-                "result": "claim",
-                "earned": 25,
-                "timestamp": 1763307229.979969
-            },
-            {
-                "game": "mines",
-                "bet": 30.0,
-                "result": "lose",
-                "earned": -30.0,
-                "timestamp": 1763307274.2901213
-            },
-            {
-                "game": "mines",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763307345.6759293
-            },
-            {
-                "game": "gift_received",
-                "bet": 4.0,
-                "result": "gift_from_1342438511944667138",
-                "earned": 4.0,
-                "timestamp": 1763310321.5669255
-            },
-            {
-                "game": "mines",
-                "bet": 4.0,
-                "result": "cashout",
-                "earned": 5.480346653662498,
-                "timestamp": 1763310391.6649578
-            },
-            {
-                "game": "mines",
-                "bet": 5.0,
-                "result": "lose",
-                "earned": -5.0,
-                "timestamp": 1763310474.51347
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.02,
-                "timestamp": 1763319777.4303253
-            }
-        ]
+      "earn": 97172366,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 243000000,
+      "wager_goal": 100000000,
+      "completed": false
     },
-    "1229413092568600688": {
-        "gems": 0.53,
-        "last_daily": 1763307235.1935391,
-        "history": [
-            {
-                "game": "daily",
-                "bet": 0,
-                "result": "claim",
-                "earned": 25,
-                "timestamp": 1763307235.1935391
-            },
-            {
-                "game": "mines",
-                "bet": 2.0,
-                "result": "cashout",
-                "earned": 2.5545782499999996,
-                "timestamp": 1763307294.1127243
-            },
-            {
-                "game": "coinflip",
-                "bet": 4.0,
-                "result": "lose",
-                "earned": -4.0,
-                "timestamp": 1763307440.2550704
-            },
-            {
-                "game": "coinflip",
-                "bet": 20.0,
-                "result": "win",
-                "earned": 20.0,
-                "timestamp": 1763307467.362303
-            },
-            {
-                "game": "coinflip",
-                "bet": 10.0,
-                "result": "win",
-                "earned": 10.0,
-                "timestamp": 1763308101.1527576
-            },
-            {
-                "game": "coinflip",
-                "bet": 75.0,
-                "result": "win",
-                "earned": 75.0,
-                "timestamp": 1763308219.7048295
-            },
-            {
-                "game": "coinflip",
-                "bet": 100.0,
-                "result": "win",
-                "earned": 100.0,
-                "timestamp": 1763308280.6682456
-            },
-            {
-                "game": "coinflip",
-                "bet": 250.0,
-                "result": "lose",
-                "earned": -250.0,
-                "timestamp": 1763308429.7218378
-            },
-            {
-                "game": "tower",
-                "bet": 3.0,
-                "result": "lose",
-                "earned": -3.0,
-                "timestamp": 1763308531.8048928
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.03,
-                "timestamp": 1763319777.4329422
-            }
-        ]
+    "1010838288413765693": {
+      "earn": 25000000,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 25000000,
+      "wager_goal": 100000000,
+      "completed": false
     },
-    "767792006982008883": {
-        "gems": 0.28,
-        "last_daily": 1763307434.9243672,
-        "history": [
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "cashout",
-                "earned": 1.6228530457108763,
-                "timestamp": 1763307550.6527596
-            },
-            {
-                "game": "mines",
-                "bet": 3.0,
-                "result": "lose",
-                "earned": -3.0,
-                "timestamp": 1763307580.9441137
-            },
-            {
-                "game": "mines",
-                "bet": 5.0,
-                "result": "cashout",
-                "earned": 8.860980486212096,
-                "timestamp": 1763307675.309524
-            },
-            {
-                "game": "mines",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763307752.8972948
-            },
-            {
-                "game": "mines",
-                "bet": 36.0,
-                "result": "lose",
-                "earned": -36.0,
-                "timestamp": 1763307781.727728
-            },
-            {
-                "game": "mines",
-                "bet": 0.1,
-                "result": "lose",
-                "earned": -0.1,
-                "timestamp": 1763310220.2602232
-            },
-            {
-                "game": "mines",
-                "bet": 0.3,
-                "result": "lose",
-                "earned": -0.3,
-                "timestamp": 1763317886.4372904
-            },
-            {
-                "game": "mines",
-                "bet": 0.08,
-                "result": "cashout",
-                "earned": 0.08838815618398692,
-                "timestamp": 1763317939.397011
-            },
-            {
-                "game": "mines",
-                "bet": 0.1,
-                "result": "cashout",
-                "earned": 0.12521915889608248,
-                "timestamp": 1763317991.7331867
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.01,
-                "timestamp": 1763319777.43534
-            }
-        ]
-    },
-    "759255609434046524": {
-        "gems": 46.94,
-        "last_daily": 1763307704.5974624,
-        "history": [
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "cashout",
-                "earned": 2.411714024837406,
-                "timestamp": 1763307620.839488
-            },
-            {
-                "game": "daily",
-                "bet": 0,
-                "result": "claim",
-                "earned": 25,
-                "timestamp": 1763307704.5974624
-            },
-            {
-                "game": "tower",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763307770.4077935
-            },
-            {
-                "game": "tower",
-                "bet": 2.0,
-                "result": "lose",
-                "earned": -2.0,
-                "timestamp": 1763307824.03081
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -2.47,
-                "timestamp": 1763319777.4400816
-            }
-        ]
-    },
-    "1431243993295097937": {
-        "gems": 0.0,
-        "last_daily": 1763307558.7702365,
-        "history": [
-            {
-                "game": "tower",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763308528.3462658
-            },
-            {
-                "game": "tower",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763308536.980044
-            },
-            {
-                "game": "tower",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763308542.226433
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763308576.8233907
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763308765.7452817
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763310239.5051997
-            },
-            {
-                "game": "mines",
-                "bet": 0.4,
-                "result": "lose",
-                "earned": -0.4,
-                "timestamp": 1763318083.0757282
-            },
-            {
-                "game": "mines",
-                "bet": 0.04,
-                "result": "lose",
-                "earned": -0.04,
-                "timestamp": 1763318123.1149826
-            },
-            {
-                "game": "mines",
-                "bet": 0.01,
-                "result": "lose",
-                "earned": -0.01,
-                "timestamp": 1763318180.8828728
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.0,
-                "timestamp": 1763319777.4420772
-            }
-        ]
-    },
-    "1392865053807480883": {
-        "gems": 0.75,
-        "last_daily": 1763308526.0275402,
-        "history": [
-            {
-                "game": "tower",
-                "bet": 30.0,
-                "result": "lose",
-                "earned": -30.0,
-                "timestamp": 1763310460.211421
-            },
-            {
-                "game": "tower",
-                "bet": 27.0,
-                "result": "cashout",
-                "earned": 66.43012500000002,
-                "timestamp": 1763310487.6206558
-            },
-            {
-                "game": "tower",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763310515.6483207
-            },
-            {
-                "game": "tower",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763310525.2738008
-            },
-            {
-                "game": "tower",
-                "bet": 30.0,
-                "result": "lose",
-                "earned": -30.0,
-                "timestamp": 1763310536.7623832
-            },
-            {
-                "game": "tower",
-                "bet": 6.0,
-                "result": "cashout",
-                "earned": 36.320670843750015,
-                "timestamp": 1763310557.2208405
-            },
-            {
-                "game": "tower",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763310582.6622052
-            },
-            {
-                "game": "tower",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763310595.6825192
-            },
-            {
-                "game": "tower",
-                "bet": 6.0,
-                "result": "lose",
-                "earned": -6.0,
-                "timestamp": 1763310608.2662754
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.04,
-                "timestamp": 1763319777.4797075
-            }
-        ]
-    },
-    "1342438511944667138": {
-        "gems": 11.97,
-        "last_daily": 1763308018.505274,
-        "history": [
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763310180.9697838
-            },
-            {
-                "game": "mines",
-                "bet": 4.0,
-                "result": "cashout",
-                "earned": 5.0625,
-                "timestamp": 1763310265.033569
-            },
-            {
-                "game": "gift",
-                "bet": 4.0,
-                "result": "gift_to_1371208823422845139",
-                "earned": -4.0,
-                "timestamp": 1763310321.4421175
-            },
-            {
-                "game": "tower",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763310597.7056353
-            },
-            {
-                "game": "tower",
-                "bet": 0.6,
-                "result": "lose",
-                "earned": -0.6,
-                "timestamp": 1763310687.6564653
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "cashout",
-                "earned": 3.6763100000000026,
-                "timestamp": 1763313281.930941
-            },
-            {
-                "game": "mines",
-                "bet": 13.0,
-                "result": "lose",
-                "earned": -13.0,
-                "timestamp": 1763313458.7170231
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "cashout",
-                "earned": 6.850581551000008,
-                "timestamp": 1763313483.266341
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763313591.8776143
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.63,
-                "timestamp": 1763319777.4827292
-            }
-        ]
-    },
-    "1418529312495370361": {
-        "gems": 23.75,
-        "last_daily": 0,
-        "history": [
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -1.25,
-                "timestamp": 1763319777.4886217
-            }
-        ]
-    },
-    "1391123226192646276": {
-        "gems": 0.22,
-        "last_daily": 1763318214.614975,
-        "history": [
-            {
-                "game": "tower",
-                "bet": 20.0,
-                "result": "cashout",
-                "earned": 5.0,
-                "timestamp": 1763318919.3523393
-            },
-            {
-                "game": "tower",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763318934.061536
-            },
-            {
-                "game": "tower",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763318947.9362092
-            },
-            {
-                "game": "tower",
-                "bet": 26.0,
-                "result": "cashout",
-                "earned": 6.5,
-                "timestamp": 1763318980.672106
-            },
-            {
-                "game": "tower",
-                "bet": 26.0,
-                "result": "cashout",
-                "earned": 6.5,
-                "timestamp": 1763318989.709696
-            },
-            {
-                "game": "tower",
-                "bet": 26.0,
-                "result": "lose",
-                "earned": -26.0,
-                "timestamp": 1763318995.1325705
-            },
-            {
-                "game": "tower",
-                "bet": 13.0,
-                "result": "lose",
-                "earned": -13.0,
-                "timestamp": 1763319018.2447176
-            },
-            {
-                "game": "admin_give",
-                "bet": 0,
-                "result": "give_by_1317419437854560288",
-                "earned": 100.0,
-                "timestamp": 1763319227.2682567
-            },
-            {
-                "game": "admin_remove",
-                "bet": 0,
-                "result": "remove_by_1317419437854560288",
-                "earned": -100.0,
-                "timestamp": 1763319230.4184377
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.01,
-                "timestamp": 1763319777.4916747
-            }
-        ]
-    },
-    "1117690525911359508": {
-        "gems": 37.9,
-        "last_daily": 1763317674.7901838,
-        "history": [
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763317819.9133637
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "cashout",
-                "earned": 0.2321000000000002,
-                "timestamp": 1763317855.0695677
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "cashout",
-                "earned": 10.761601528987114,
-                "timestamp": 1763317892.7081387
-            },
-            {
-                "game": "mines",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763317942.0336215
-            },
-            {
-                "game": "coinflip",
-                "bet": 10.0,
-                "result": "win",
-                "earned": 10.0,
-                "timestamp": 1763317997.9911087
-            },
-            {
-                "game": "coinflip",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763318015.7745743
-            },
-            {
-                "game": "tower",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763318106.7413404
-            },
-            {
-                "game": "tower",
-                "bet": 1.0,
-                "result": "lose",
-                "earned": -1.0,
-                "timestamp": 1763318161.2373374
-            },
-            {
-                "game": "tower",
-                "bet": 2.0,
-                "result": "cashout",
-                "earned": 1.90625,
-                "timestamp": 1763318192.8400314
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -1.99,
-                "timestamp": 1763319777.495251
-            }
-        ]
-    },
-    "1350952070194135061": {
-        "gems": 8.87,
-        "last_daily": 1763318217.3967268,
-        "history": [
-            {
-                "game": "coinflip",
-                "bet": 10.0,
-                "result": "win",
-                "earned": 10.0,
-                "timestamp": 1763318037.151345
-            },
-            {
-                "game": "mines",
-                "bet": 15.0,
-                "result": "lose",
-                "earned": -15.0,
-                "timestamp": 1763318075.9894118
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763318101.6031852
-            },
-            {
-                "game": "mines",
-                "bet": 5.0,
-                "result": "cashout",
-                "earned": 4.3520727608050045,
-                "timestamp": 1763318139.5588388
-            },
-            {
-                "game": "mines",
-                "bet": 10.0,
-                "result": "cashout",
-                "earned": 24.984505969356377,
-                "timestamp": 1763318200.467233
-            },
-            {
-                "game": "daily",
-                "bet": 0,
-                "result": "claim",
-                "earned": 25,
-                "timestamp": 1763318217.3967268
-            },
-            {
-                "game": "mines",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763318229.8398457
-            },
-            {
-                "game": "mines",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763318250.9634197
-            },
-            {
-                "game": "mines",
-                "bet": 15.0,
-                "result": "lose",
-                "earned": -15.0,
-                "timestamp": 1763318270.8933656
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -0.47,
-                "timestamp": 1763319777.498799
-            }
-        ]
-    },
-    "1439642930536124426": {
-        "gems": 35.03,
-        "last_daily": 1763318681.0275757,
-        "history": [
-            {
-                "game": "daily",
-                "bet": 0,
-                "result": "claim",
-                "earned": 25,
-                "timestamp": 1763318681.0275757
-            },
-            {
-                "game": "tower",
-                "bet": 10.0,
-                "result": "cashout",
-                "earned": 5.625,
-                "timestamp": 1763318812.4752119
-            },
-            {
-                "game": "tower",
-                "bet": 10.0,
-                "result": "lose",
-                "earned": -10.0,
-                "timestamp": 1763318821.325298
-            },
-            {
-                "game": "tower",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763318833.4134822
-            },
-            {
-                "game": "tower",
-                "bet": 20.0,
-                "result": "cashout",
-                "earned": 11.25,
-                "timestamp": 1763318845.6583166
-            },
-            {
-                "game": "tower",
-                "bet": 20.0,
-                "result": "lose",
-                "earned": -20.0,
-                "timestamp": 1763319034.5967956
-            },
-            {
-                "game": "admin_give",
-                "bet": 0,
-                "result": "give_by_1317419437854560288",
-                "earned": 20.0,
-                "timestamp": 1763319654.6063244
-            },
-            {
-                "game": "tax",
-                "bet": 0,
-                "result": "5_percent_global_tax",
-                "earned": -1.84,
-                "timestamp": 1763319777.5042074
-            }
-        ]
-    },
-    "1267483217305534608": {
-        "gems": 325.0,
-        "last_daily": 0,
-        "history": [
-            {
-                "game": "admin_give",
-                "bet": 0,
-                "result": "give_by_1317419437854560288",
-                "earned": 300.0,
-                "timestamp": 1763321325.3852987
-            }
-        ]
+    "1440717011666604225": {
+      "earn": 7982467777,
+      "earn_goal": 50000000,
+      "deposit": 0,
+      "deposit_goal": 50000000,
+      "wager": 13890300007,
+      "wager_goal": 100000000,
+      "completed": false
     }
+  },
+  "quest_last_reset": 1764791322.749497,
+  "815315680097599518": {
+    "gems": 25.0,
+    "last_daily": 0.0,
+    "last_work": 0.0,
+    "history": [],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "718557830365315152": {
+    "gems": 25.0,
+    "last_daily": 1764822414.5600283,
+    "last_work": 0.0,
+    "history": [
+      {
+        "game": "daily",
+        "bet": 0,
+        "result": "claim",
+        "earned": 25000000,
+        "timestamp": 1764822414.5600283
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764822424.402643
+      },
+      {
+        "game": "mines",
+        "bet": 10000000.0,
+        "result": "lose",
+        "earned": -10000000.0,
+        "timestamp": 1764822446.7624805
+      },
+      {
+        "game": "mines",
+        "bet": 5000000.0,
+        "result": "lose",
+        "earned": -5000000.0,
+        "timestamp": 1764838214.0686953
+      }
+    ],
+    "bless_infinite": false,
+    "curse_infinite": false,
+    "bless_charges": 0,
+    "curse_charges": 0
+  },
+  "withdrawals": [
+    {
+      "id": 1,
+      "user_id": 1317419437854560288,
+      "currency": "gems",
+      "amount": 100000000,
+      "cost": 120000000,
+      "roblox_username": "eren460540",
+      "roblox_user_id": 8834300993,
+      "avatar_url": "https://www.roblox.com/headshot-thumbnail/image?userId=8834300993&width=420&height=420&format=png",
+      "created_at": 1764868685.2755394,
+      "status": "denied",
+      "reason": null
+    },
+    {
+      "id": 2,
+      "user_id": 1371208823422845139,
+      "currency": "gems",
+      "amount": 180000000,
+      "cost": 216000000,
+      "roblox_username": "xxxysuif2",
+      "roblox_user_id": 8691569979,
+      "avatar_url": "https://www.roblox.com/headshot-thumbnail/image?userId=8691569979&width=420&height=420&format=png",
+      "created_at": 1764869068.0757933,
+      "status": "pending",
+      "reason": null
+    }
+  ],
+  "deposits": [
+    {
+      "id": 1,
+      "user_id": 1440717011666604225,
+      "currency": "gems",
+      "amount": 750000000,
+      "roblox_username": "Dome124057",
+      "roblox_user_id": 8777465853,
+      "avatar_url": "https://www.roblox.com/headshot-thumbnail/image?userId=8777465853&width=420&height=420&format=png",
+      "created_at": 1764869145.5747945,
+      "status": "pending",
+      "reason": null
+    },
+    {
+      "id": 2,
+      "user_id": 1440717011666604225,
+      "currency": "gems",
+      "amount": 375000000,
+      "roblox_username": "Dome124057",
+      "roblox_user_id": 8777465853,
+      "avatar_url": "https://www.roblox.com/headshot-thumbnail/image?userId=8777465853&width=420&height=420&format=png",
+      "created_at": 1764871703.368569,
+      "status": "pending",
+      "reason": null
+    }
+  ],
+  "withdraw_last_time": {
+    "1317419437854560288": 1764868685.2792523,
+    "1371208823422845139": 1764869068.0791872
+  },
+  "next_withdraw_id": 3,
+  "withdraw_history": {
+    "1317419437854560288": [
+      {
+        "ts": 1764868685.2792554,
+        "kind": "gems",
+        "amount": 100000000
+      }
+    ],
+    "1371208823422845139": [
+      {
+        "ts": 1764869068.07919,
+        "kind": "gems",
+        "amount": 180000000
+      }
+    ]
+  },
+  "next_deposit_id": 3
 }
