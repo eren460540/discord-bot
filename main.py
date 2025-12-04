@@ -789,474 +789,307 @@ async def questclaim(ctx):
 
 
 
-
-# ==============================================================
-#         ADVANCED WITHDRAW + DEPOSIT QUEUE SYSTEM + WHEEL
-# ==============================================================
-
-import random
-import time
-import discord
-from discord.ext import commands
-
 # --------------------------------------------------------------
-# DATA STORAGE INIT
+#                🔧 GLOBAL LISTS (IMPORTANT!)
 # --------------------------------------------------------------
-data.setdefault("withdrawals", [])
-data.setdefault("deposits", [])
-data.setdefault("next_withdraw_id", 1)
-data.setdefault("next_deposit_id", 1)
-data.setdefault("deposit_bonuses", {})
-data.setdefault("wheel_last_spin", {})
+# Prevents KeyError: 'withdrawals' / 'deposits'
+def ensure_global_lists():
+    if "withdrawals" not in data:
+        data["withdrawals"] = []
+    if "deposits" not in data:
+        data["deposits"] = []
+    save_data(data)
 
-save_data(data)
-
-
+ensure_global_lists()  # run at startup
 
 
 # --------------------------------------------------------------
-# CURRENCY NORMALIZER
+#                🏦 WITHDRAW REQUEST (PLAYER)
 # --------------------------------------------------------------
-def normalize_currency(method: str):
-    m = method.lower()
-    if "gem" in m:
-        return "gems"
-    if "exp" in m:
-        return "exp"
-    return None
-
-
-# ==============================================================
-#                    WITHDRAW SYSTEM
-# ==============================================================
-
-WITHDRAW_COOLDOWN = 3600  # 1 hour
-
-
 @bot.command()
-@commands.cooldown(1, WITHDRAW_COOLDOWN, commands.BucketType.user)
-async def withdraw(ctx, username: str, amount: str, payment_method: str):
-    """
-    !withdraw "username text" "amount" "Gems/EXP"
-    """
-
+async def withdraw(ctx, amount: str):
+    user_id = str(ctx.author.id)
     ensure_user(ctx.author.id)
-    uid = str(ctx.author.id)
 
-    currency_key = normalize_currency(payment_method)
-    if currency_key is None:
-        return await ctx.send("❌ Payment method must be **Gems** or **EXP**.")
-
-    bal = data[uid].get(currency_key, 0)
-
-    val = parse_amount(amount, bal, allow_all=False)
-    if val is None or val <= 0:
+    parsed = parse_amount(amount, ctx.author)
+    if parsed is None or parsed <= 0:
         return await ctx.send("❌ Invalid amount.")
 
-    if val > bal:
-        return await ctx.send("❌ You don't have enough balance.")
+    if data[user_id]["gems"] < parsed:
+        return await ctx.send("❌ You don't have that much.")
 
-    # Deduct immediately
-    data[uid][currency_key] = bal - val
-    save_data(data)
+    # Freeze funds
+    data[user_id]["gems"] -= parsed
 
-    wid = data["next_withdraw_id"]
-    data["next_withdraw_id"] += 1
-
-    req = {
+    # Create entry
+    wid = len(data["withdrawals"]) + 1
+    data["withdrawals"].append({
         "id": wid,
-        "user_id": ctx.author.id,
-        "username": username,
-        "amount": val,
-        "currency": currency_key.upper(),
-        "status": "pending",
-        "created_at": time.time()
-    }
-    data["withdrawals"].append(req)
+        "user": ctx.author.id,
+        "amount": parsed,
+        "status": "pending"
+    })
+
     save_data(data)
 
-    # DM user
-    try:
-        embed = discord.Embed(
-            title="📤 Withdrawal Created",
-            description=(
-                f"ID: `#{wid}`\n"
-                f"Username: `{username}`\n"
-                f"Amount: **{fmt(val)} {req['currency']}**\n"
-                "Awaiting admin review."
-            ),
-            color=discord.Color.orange()
-        )
-        await ctx.author.send(embed=embed)
-    except:
-        pass
+    embed = discord.Embed(
+        title="🏦 Withdrawal Requested",
+        description=(
+            f"💳 Amount: **{fmt(parsed)}**\n"
+            f"🆔 Request ID: `{wid}`\n\n"
+            "An admin will review your request soon."
+        ),
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
 
-    # Notify owner
-    owner = bot.get_user(OWNER_ID)
-    if owner:
-        try:
-            embed2 = discord.Embed(
-                title="📤 New Withdrawal",
-                description=(
-                    f"User: {ctx.author.mention}\n"
-                    f"ID: `#{wid}`\n"
-                    f"Amount: **{fmt(val)} {req['currency']}**\n"
-                    f"`!claimwithdraw {wid}`\n"
-                    f"`!denywithdraw {wid}`"
-                ),
-                color=discord.Color.red()
-            )
-            await owner.send(embed=embed2)
-        except:
-            pass
-
-    await ctx.send(f"✅ Withdrawal request **#{wid}** added.")
-
-
-# Error (cooldown)
-@withdraw.error
-async def withdraw_error(ctx, error):
-    if isinstance(error, commands.CommandOnCooldown):
-        remaining = int(error.retry_after)
-        m, s = divmod(remaining, 60)
-        return await ctx.send(
-            f"⏳ You can withdraw again in **{m}m {s}s**."
-        )
-    raise error
 
 
 # --------------------------------------------------------------
-# LIST WITHDRAWALS
+#                📜 WITHDRAW LIST (ADMIN)
 # --------------------------------------------------------------
-@bot.command(name="withdrawlist")
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
 async def withdrawlist(ctx):
+
+    ensure_global_lists()
+
     pending = [w for w in data["withdrawals"] if w["status"] == "pending"]
+
     if not pending:
         return await ctx.send("📭 No pending withdrawals.")
 
-    pending.sort(key=lambda x: x["id"])
-    lines = [
-        f"`#{w['id']:03}` • <@{w['user_id']}> • **{fmt(w['amount'])} {w['currency']}** • `{w['username']}`"
-        for w in pending
-    ]
-
     embed = discord.Embed(
-        title="📤 Pending Withdrawals",
-        description="\n".join(lines),
-        color=discord.Color.orange()
+        title="🏦 Pending Withdrawals",
+        color=galaxy_color()
     )
+
+    for w in pending:
+        user = ctx.guild.get_member(w["user"])
+        embed.add_field(
+            name=f"ID {w['id']}",
+            value=(
+                f"👤 User: {user.mention if user else w['user']}\n"
+                f"💰 Amount: **{fmt(w['amount'])}**"
+            ),
+            inline=False
+        )
+
     await ctx.send(embed=embed)
 
 
+
 # --------------------------------------------------------------
-# CLAIM WITHDRAW
+#                ✅ CLAIM WITHDRAW (ADMIN)
 # --------------------------------------------------------------
-@bot.command(name="claimwithdraw")
+@bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def claimwithdraw(ctx, wid: int):
+
+    ensure_global_lists()
+
     for w in data["withdrawals"]:
         if w["id"] == wid:
+
             if w["status"] != "pending":
-                return await ctx.send("⚠️ Already processed.")
+                return await ctx.send("❌ Already processed.")
 
             w["status"] = "claimed"
-            w["claimed_by"] = ctx.author.id
-            w["claimed_at"] = time.time()
             save_data(data)
 
-            user = bot.get_user(w["user_id"])
-            if user:
-                try:
-                    embed = discord.Embed(
-                        title="🎉 Withdrawal Completed",
-                        description=(
-                            f"ID: `#{wid}`\n"
-                            f"Amount: **{fmt(w['amount'])} {w['currency']}**\n"
-                            "Your withdrawal has been processed."
-                        ),
-                        color=discord.Color.green()
-                    )
-                    await user.send(embed=embed)
-                except:
-                    pass
-
-            return await ctx.send(f"✅ Withdrawal **#{wid}** claimed.")
-
-    await ctx.send("❌ Withdrawal ID not found.")
-
-
-# --------------------------------------------------------------
-# DENY WITHDRAW
-# --------------------------------------------------------------
-@bot.command(name="denywithdraw")
-@commands.has_guild_permissions(manage_guild=True)
-async def denywithdraw(ctx, wid: int, *, reason="No reason provided"):
-    for w in data["withdrawals"]:
-        if w["id"] == wid:
-            if w["status"] != "pending":
-                return await ctx.send("⚠️ Already processed.")
-
-            uid = str(w["user_id"])
-            ensure_user(uid)
-
-            currency = w["currency"].lower()
-            data[uid][currency] = data[uid].get(currency, 0) + w["amount"]
-
-            w["status"] = "denied"
-            w["denied_by"] = ctx.author.id
-            w["denied_at"] = time.time()
-            w["deny_reason"] = reason
-            save_data(data)
-
-            user = bot.get_user(w["user_id"])
-            if user:
-                try:
-                    embed = discord.Embed(
-                        title="❌ Withdrawal Denied",
-                        description=(
-                            f"ID: `#{wid}`\n"
-                            f"Amount refunded: **{fmt(w['amount'])} {w['currency']}**\n"
-                            f"Reason: `{reason}`"
-                        ),
-                        color=discord.Color.red()
-                    )
-                    await user.send(embed=embed)
-                except:
-                    pass
-
-            return await ctx.send(f"🚫 Withdrawal **#{wid}** denied & refunded.")
-
-    await ctx.send("❌ Withdrawal ID not found.")
-
-
-# ==============================================================
-#                   DEPOSIT SYSTEM
-# ==============================================================
-
-@bot.command()
-async def deposit(ctx, username: str, amount: str, payment_method: str):
-
-    ensure_user(ctx.author.id)
-    uid = str(ctx.author.id)
-
-    currency_key = normalize_currency(payment_method)
-    if currency_key is None:
-        return await ctx.send("❌ Method must be **Gems** or **EXP**.")
-
-    val = parse_amount(amount, None)
-    if val is None or val <= 0:
-        return await ctx.send("❌ Invalid amount.")
-
-    did = data["next_deposit_id"]
-    data["next_deposit_id"] += 1
-
-    entry = {
-        "id": did,
-        "user_id": ctx.author.id,
-        "username": username,
-        "amount": val,
-        "currency": currency_key.upper(),
-        "status": "pending",
-        "created_at": time.time()
-    }
-    data["deposits"].append(entry)
-    save_data(data)
-
-    # DM user
-    try:
-        embed = discord.Embed(
-            title="📥 Deposit Request Created",
-            description=(
-                f"ID: `#{did}`\n"
-                f"Amount: **{fmt(val)} {entry['currency']}**\n"
-                "Waiting for admin approval."
-            ),
-            color=discord.Color.blue()
-        )
-        await ctx.author.send(embed=embed)
-    except:
-        pass
-
-    # Notify owner
-    owner = bot.get_user(OWNER_ID)
-    if owner:
-        try:
-            embed2 = discord.Embed(
-                title="📥 New Deposit",
-                description=(
-                    f"User: {ctx.author.mention}\n"
-                    f"ID: `#{did}`\n"
-                    f"Amount: **{fmt(val)} {entry['currency']}**\n"
-                    f"`!claimdeposit {did}`\n"
-                    f"`!denydeposit {did}`"
-                ),
-                color=discord.Color.blue()
-            )
-            await owner.send(embed=embed2)
-        except:
-            pass
-
-    await ctx.send(f"✅ Deposit request **#{did}** created.")
-
-
-# --------------------------------------------------------------
-#                     DEPOSIT LIST
-# --------------------------------------------------------------
-
-@bot.command(name="depositlist")
-async def depositlist(ctx):
-    pending = [d for d in data["deposits"] if d["status"] == "pending"]
-    if not pending:
-        return await ctx.send("📭 No pending deposits.")
-
-    pending.sort(key=lambda x: x["id"])
-    bonus_map = data["deposit_bonuses"]
-
-    lines = []
-    for d in pending:
-        uid = str(d["user_id"])
-        percent = bonus_map.get(uid, 0)
-        extra = f" • +{percent}% BONUS" if percent > 0 else ""
-        lines.append(
-            f"`#{d['id']:03}` • <@{d['user_id']}> • "
-            f"**{fmt(d['amount'])} {d['currency']}** • `{d['username']}`{extra}"
-        )
-
-    embed = discord.Embed(
-        title="📥 Pending Deposits",
-        description="\n".join(lines),
-        color=discord.Color.blue()
-    )
-    await ctx.send(embed=embed)
-
-
-# --------------------------------------------------------------
-#                        CLAIM DEPOSIT
-# --------------------------------------------------------------
-
-@bot.command(name="claimdeposit")
-@commands.has_guild_permissions(manage_guild=True)
-async def claimdeposit(ctx, did: int):
-
-    for d in data["deposits"]:
-        if d["id"] != did:
-            continue
-
-        if d["status"] != "pending":
-            return await ctx.send("⚠️ Already processed.")
-
-        uid = str(d["user_id"])
-        ensure_user(uid)
-
-        # ensure keys exist
-        data[uid].setdefault("gems", 0)
-        data[uid].setdefault("exp", 0)
-
-        currency = d["currency"].lower()   # "gems" or "exp"
-        base = int(d["amount"])
-
-        # bonus
-        bonus_map = data["deposit_bonuses"]
-        percent = int(bonus_map.get(uid, 0))
-
-        bonus_amt = (base * percent) // 100 if percent > 0 else 0
-        total = base + bonus_amt
-
-        # credit user
-        data[uid][currency] += total
-
-        # quest progress
-        try:
-            _quest_add_deposit(uid, base)
-        except:
-            pass
-
-        # history entry
-        add_history(uid, {
-            "game": "deposit",
-            "bet": 0,
-            "result": "deposit_claimed",
-            "earned": total,
-            "timestamp": time.time()
-        })
-
-        # consume bonus
-        bonus_map[uid] = 0
-
-        # update deposit entry
-        d["status"] = "claimed"
-        d["claimed_by"] = ctx.author.id
-        d["claimed_at"] = time.time()
-        d["bonus_used"] = percent
-        d["bonus_amount"] = bonus_amt
-
-        save_data(data)
-
-        # DM user
-        user = bot.get_user(d["user_id"])
-        if user:
+            user = ctx.guild.get_member(w["user"])
             try:
-                embed = discord.Embed(
-                    title="🎉 Deposit Claimed",
-                    description=(
-                        f"ID: #{did}\n"
-                        f"Base: {fmt(base)} {d['currency']}\n"
-                        f"Bonus: +{percent}% = {fmt(bonus_amt)}\n"
-                        f"Total credited: {fmt(total)} {d['currency']}"
-                    ),
-                    color=discord.Color.green()
+                await user.send(
+                    f"🏦 Your withdrawal **{fmt(w['amount'])}** was **approved**!"
                 )
-                await user.send(embed=embed)
             except:
                 pass
 
-        return await ctx.send(
-            f"✅ Deposit #{did} claimed — credited {fmt(total)} {d['currency']}"
+            return await ctx.send(
+                f"✅ Withdrawal **ID {wid}** has been **claimed**."
+            )
+
+    await ctx.send("❌ Invalid ID.")
+
+
+
+# --------------------------------------------------------------
+#                ❌ DENY WITHDRAW (ADMIN)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def denywithdraw(ctx, wid: int, *, reason: str = "No reason provided"):
+
+    ensure_global_lists()
+
+    for w in data["withdrawals"]:
+        if w["id"] == wid:
+
+            if w["status"] != "pending":
+                return await ctx.send("❌ Already processed.")
+
+            # Refund frozen gems
+            ensure_user(w["user"])
+            data[str(w["user"])]["gems"] += w["amount"]
+            w["status"] = "denied"
+            save_data(data)
+
+            user = ctx.guild.get_member(w["user"])
+            try:
+                await user.send(
+                    f"❌ Your withdrawal was **denied**.\n📝 Reason: {reason}"
+                )
+            except:
+                pass
+
+            return await ctx.send(
+                f"❌ Withdrawal **ID {wid}** has been **denied** and refunded."
+            )
+
+    await ctx.send("❌ Invalid ID.")
+
+
+
+# --------------------------------------------------------------
+#                💳 DEPOSIT REQUEST (PLAYER)
+# --------------------------------------------------------------
+@bot.command()
+async def deposit(ctx, amount: str):
+
+    parsed = parse_amount(amount, ctx.author)
+    if parsed is None or parsed <= 0:
+        return await ctx.send("❌ Invalid amount.")
+
+    did = len(data["deposits"]) + 1
+    data["deposits"].append({
+        "id": did,
+        "user": ctx.author.id,
+        "amount": parsed,
+        "status": "pending"
+    })
+
+    save_data(data)
+
+    embed = discord.Embed(
+        title="💳 Deposit Requested",
+        description=(
+            f"💰 Amount: **{fmt(parsed)}**\n"
+            f"🆔 Deposit ID: `{did}`\n\n"
+            "Send proof to an admin."
+        ),
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed)
+
+
+
+# --------------------------------------------------------------
+#                📜 DEPOSIT LIST (ADMIN)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def depositlist(ctx):
+
+    ensure_global_lists()
+
+    pending = [d for d in data["deposits"] if d["status"] == "pending"]
+
+    if not pending:
+        return await ctx.send("📭 No pending deposits.")
+
+    embed = discord.Embed(
+        title="💳 Pending Deposits",
+        color=galaxy_color()
+    )
+
+    for d in pending:
+        user = ctx.guild.get_member(d["user"])
+        embed.add_field(
+            name=f"ID {d['id']}",
+            value=(
+                f"👤 User: {user.mention if user else d['user']}\n"
+                f"💰 Amount: **{fmt(d['amount'])}**"
+            ),
+            inline=False
         )
 
-    await ctx.send("❌ Deposit ID not found.")
+    await ctx.send(embed=embed)
 
 
 
 # --------------------------------------------------------------
-#                     DENY DEPOSIT
+#                ✅ CLAIM DEPOSIT (ADMIN)
 # --------------------------------------------------------------
-
-@bot.command(name="denydeposit")
+@bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def denydeposit(ctx, did: int, *, reason="No reason provided"):
+async def claimdeposit(ctx, did: int):
+
+    ensure_global_lists()
 
     for d in data["deposits"]:
         if d["id"] == did:
 
             if d["status"] != "pending":
-                return await ctx.send("⚠️ Already processed.")
+                return await ctx.send("❌ Already processed.")
 
-            d["status"] = "denied"
-            d["denied_by"] = ctx.author.id
-            d["denied_at"] = time.time()
-            d["deny_reason"] = reason
+            user_id = str(d["user"])
+
+            # Give gems
+            ensure_user(d["user"])
+            data[user_id]["gems"] += d["amount"]
+
+            d["status"] = "claimed"
             save_data(data)
 
-            # DM user
-            user = bot.get_user(d["user_id"])
-            if user:
-                try:
-                    embed = discord.Embed(
-                        title="❌ Deposit Denied",
-                        description=(
-                            f"ID: `#{did}`\n"
-                            f"Reason: `{reason}`"
-                        ),
-                        color=discord.Color.red()
-                    )
-                    await user.send(embed=embed)
-                except:
-                    pass
+            user = ctx.guild.get_member(d["user"])
+            try:
+                await user.send(
+                    f"💳 Your deposit of **{fmt(d['amount'])}** has been **approved**!"
+                )
+            except:
+                pass
 
-            return await ctx.send(f"🚫 Deposit **#{did}** denied.")
+            return await ctx.send(
+                f"✅ Deposit **ID {did}** has been **claimed**."
+            )
 
-    await ctx.send("❌ Deposit ID not found.")
+    await ctx.send("❌ Invalid ID.")
+
+
+
+# --------------------------------------------------------------
+#                ❌ DENY DEPOSIT (ADMIN)
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def denydeposit(ctx, did: int, *, reason: str = "No reason provided"):
+
+    ensure_global_lists()
+
+    for d in data["deposits"]:
+        if d["id"] == did:
+
+            if d["status"] != "pending":
+                return await ctx.send("❌ Already processed.")
+
+            d["status"] = "denied"
+            save_data(data)
+
+            user = ctx.guild.get_member(d["user"])
+            try:
+                await user.send(
+                    f"❌ Your deposit was **denied**.\n📝 Reason: {reason}"
+                )
+            except:
+                pass
+
+            return await ctx.send(
+                f"❌ Deposit **ID {did}** has been **denied**."
+            )
+
+    await ctx.send("❌ Invalid ID.")
+
+
 
 
 
