@@ -98,6 +98,12 @@ data.setdefault("wheel_extra_spins", {})
 data.setdefault("deposit_bonuses", {})
 save_data(data)
 
+data.setdefault("withdrawals", {})
+data.setdefault("deposits", {})
+data.setdefault("next_withdraw_id", 1)
+data.setdefault("next_deposit_id", 1)
+save_data(data)
+
 
 # -------------------------------------------
 
@@ -619,6 +625,15 @@ def parse_market_number(value: str) -> int:
 
 
 
+from discord.ui import Button, View  # you already have this
+# Modals & Select are used via discord.ui.Modal / discord.ui.TextInput / discord.ui.Select
+# so you DON'T need to change this line unless you want: Modal, TextInput, Select
+
+
+
+
+
+
 # ==============================================================
 #                     DAILY QUEST SYSTEM
 # ==============================================================
@@ -685,7 +700,7 @@ def _quest_add_wager(uid, amount):
     save_data(data)
 
 
-# --------------------------------------------------------------
+ # --------------------------------------------------------------
 #                       !quest COMMAND
 # --------------------------------------------------------------
 @bot.command()
@@ -789,305 +804,554 @@ async def questclaim(ctx):
 
 
 
-# --------------------------------------------------------------
-#                🔧 GLOBAL LISTS (IMPORTANT!)
-# --------------------------------------------------------------
-# Prevents KeyError: 'withdrawals' / 'deposits'
-def ensure_global_lists():
-    if "withdrawals" not in data:
-        data["withdrawals"] = []
-    if "deposits" not in data:
-        data["deposits"] = []
-    save_data(data)
+# ==============================================================
+#                 NEW WITHDRAW & DEPOSIT SYSTEM
+#             Buttons + Modals + Admin Select Panels
+# ==============================================================
 
-ensure_global_lists()  # run at startup
+# Make sure these defaults exist somewhere near your other defaults:
+data.setdefault("withdrawals", {})
+data.setdefault("deposits", {})
+data.setdefault("next_withdraw_id", 1)
+data.setdefault("next_deposit_id", 1)
+save_data(data)
+
+WITHDRAW_GEMS_LIMIT = 350_000_000   # 350m
+WITHDRAW_EXP_LIMIT  = 500_000_000   # 500m
+WITHDRAW_COOLDOWN   = 2 * 24 * 60 * 60  # 2 days in seconds
+
+
+def norm_currency(s: str):
+    s = s.lower()
+    if s.startswith("g"):
+        return "gems"
+    if s.startswith("e"):
+        return "exp"
+    return None
 
 
 # --------------------------------------------------------------
-#                🏦 WITHDRAW REQUEST (PLAYER)
+#                      WITHDRAW PANEL (USER)
 # --------------------------------------------------------------
 @bot.command()
-async def withdraw(ctx, amount: str):
-    user_id = str(ctx.author.id)
-    ensure_user(ctx.author.id)
-
-    parsed = parse_amount(amount, ctx.author)
-    if parsed is None or parsed <= 0:
-        return await ctx.send("❌ Invalid amount.")
-
-    if data[user_id]["gems"] < parsed:
-        return await ctx.send("❌ You don't have that much.")
-
-    # Freeze funds
-    data[user_id]["gems"] -= parsed
-
-    # Create entry
-    wid = len(data["withdrawals"]) + 1
-    data["withdrawals"].append({
-        "id": wid,
-        "user": ctx.author.id,
-        "amount": parsed,
-        "status": "pending"
-    })
-
-    save_data(data)
+async def withdrawpanel(ctx):
+    """
+    Open withdraw panel.
+    User chooses Gems or EXP via buttons, then fills out a Modal form.
+    """
 
     embed = discord.Embed(
-        title="🏦 Withdrawal Requested",
+        title="🏦 Withdraw Panel",
         description=(
-            f"💳 Amount: **{fmt(parsed)}**\n"
-            f"🆔 Request ID: `{wid}`\n\n"
-            "An admin will review your request soon."
+            "Use the buttons below to create a **withdraw request**.\n\n"
+            "• Select **Gems** or **EXP**\n"
+            "• Fill in **username** + **amount** in the form\n"
+            "• Your balance is reduced immediately with the fee:\n"
+            "   - Gems: **1.2x** removed (20% fee)\n"
+            "   - EXP: **1.9x** removed (90% fee)\n\n"
+            f"Limits per withdraw:\n"
+            f"• Gems: max **{fmt(WITHDRAW_GEMS_LIMIT)}**\n"
+            f"• EXP:  max **{fmt(WITHDRAW_EXP_LIMIT)}**\n"
+            "Cooldown: **1 withdraw every 2 days**."
         ),
         color=galaxy_color()
     )
-    await ctx.send(embed=embed)
 
+    class WithdrawModal(discord.ui.Modal):
+        def __init__(self, currency: str):
+            title = "Withdraw Gems" if currency == "gems" else "Withdraw EXP"
+            super().__init__(title=title, timeout=300)
+            self.currency = currency
 
-
-# --------------------------------------------------------------
-#                📜 WITHDRAW LIST (ADMIN)
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def withdrawlist(ctx):
-
-    ensure_global_lists()
-
-    pending = [w for w in data["withdrawals"] if w["status"] == "pending"]
-
-    if not pending:
-        return await ctx.send("📭 No pending withdrawals.")
-
-    embed = discord.Embed(
-        title="🏦 Pending Withdrawals",
-        color=galaxy_color()
-    )
-
-    for w in pending:
-        user = ctx.guild.get_member(w["user"])
-        embed.add_field(
-            name=f"ID {w['id']}",
-            value=(
-                f"👤 User: {user.mention if user else w['user']}\n"
-                f"💰 Amount: **{fmt(w['amount'])}**"
-            ),
-            inline=False
-        )
-
-    await ctx.send(embed=embed)
-
-
-
-# --------------------------------------------------------------
-#                ✅ CLAIM WITHDRAW (ADMIN)
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def claimwithdraw(ctx, wid: int):
-
-    ensure_global_lists()
-
-    for w in data["withdrawals"]:
-        if w["id"] == wid:
-
-            if w["status"] != "pending":
-                return await ctx.send("❌ Already processed.")
-
-            w["status"] = "claimed"
-            save_data(data)
-
-            user = ctx.guild.get_member(w["user"])
-            try:
-                await user.send(
-                    f"🏦 Your withdrawal **{fmt(w['amount'])}** was **approved**!"
-                )
-            except:
-                pass
-
-            return await ctx.send(
-                f"✅ Withdrawal **ID {wid}** has been **claimed**."
+            self.username = discord.ui.TextInput(
+                label="Account Username",
+                placeholder="Your in-game or account username (NOT Discord)",
+                required=True,
+                max_length=50
+            )
+            self.amount = discord.ui.TextInput(
+                label="Amount",
+                placeholder="e.g. 100m, 250m, 1b",
+                required=True,
+                max_length=20
             )
 
-    await ctx.send("❌ Invalid ID.")
+            self.add_item(self.username)
+            self.add_item(self.amount)
 
+        async def on_submit(self, interaction: discord.Interaction):
+            user_id = interaction.user.id
+            ensure_user(user_id)
+            u = data[str(user_id)]
+            u.setdefault("gems", 0)
+            u.setdefault("exp", 0)
 
+            now = time.time()
+            last = u.get("last_withdraw", 0)
 
-# --------------------------------------------------------------
-#                ❌ DENY WITHDRAW (ADMIN)
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def denywithdraw(ctx, wid: int, *, reason: str = "No reason provided"):
+            # ---- COOLDOWN CHECK (2 days) ----
+            if now - last < WITHDRAW_COOLDOWN:
+                remaining = int(WITHDRAW_COOLDOWN - (now - last))
+                hours, rem = divmod(remaining, 3600)
+                mins, secs = divmod(rem, 60)
+                return await interaction.response.send_message(
+                    f"⏳ You can only withdraw once every **2 days**.\n"
+                    f"Time remaining: **{hours}h {mins}m {secs}s**.",
+                    ephemeral=True
+                )
 
-    ensure_global_lists()
+            # ---- PARSE AMOUNT ----
+            amt = parse_amount(self.amount.value, None, allow_all=False)
+            if amt is None or amt <= 0:
+                return await interaction.response.send_message(
+                    "❌ Invalid amount. Use something like `100m`, `250m`, `1b`.",
+                    ephemeral=True
+                )
 
-    for w in data["withdrawals"]:
-        if w["id"] == wid:
+            # ---- LIMITS ----
+            if self.currency == "gems":
+                if amt > WITHDRAW_GEMS_LIMIT:
+                    return await interaction.response.send_message(
+                        f"❌ Max gems per withdraw is **{fmt(WITHDRAW_GEMS_LIMIT)}**.",
+                        ephemeral=True
+                    )
+                multiplier = 1.2
+            else:  # exp
+                if amt > WITHDRAW_EXP_LIMIT:
+                    return await interaction.response.send_message(
+                        f"❌ Max EXP per withdraw is **{fmt(WITHDRAW_EXP_LIMIT)}**.",
+                        ephemeral=True
+                    )
+                multiplier = 1.9
 
-            if w["status"] != "pending":
-                return await ctx.send("❌ Already processed.")
+            removed = int(amt * multiplier)
+            balance_key = self.currency
 
-            # Refund frozen gems
-            ensure_user(w["user"])
-            data[str(w["user"])]["gems"] += w["amount"]
-            w["status"] = "denied"
+            if u.get(balance_key, 0) < removed:
+                return await interaction.response.send_message(
+                    f"❌ You need **{fmt(removed)} {balance_key}** to withdraw **{fmt(amt)}**.",
+                    ephemeral=True
+                )
+
+            # ---- APPLY DEDUCTION + COOLDOWN ----
+            u[balance_key] -= removed
+            u["last_withdraw"] = now
+
+            # ---- CREATE QUEUE ENTRY ----
+            wid = data.get("next_withdraw_id", 1)
+            data["next_withdraw_id"] = wid + 1
+
+            data["withdrawals"][str(wid)] = {
+                "id": wid,
+                "user_id": user_id,
+                "username": str(self.username),
+                "amount": int(amt),
+                "currency": balance_key,
+                "removed": removed,
+                "timestamp": now,
+            }
+
             save_data(data)
 
-            user = ctx.guild.get_member(w["user"])
-            try:
-                await user.send(
-                    f"❌ Your withdrawal was **denied**.\n📝 Reason: {reason}"
-                )
-            except:
-                pass
-
-            return await ctx.send(
-                f"❌ Withdrawal **ID {wid}** has been **denied** and refunded."
+            await interaction.response.send_message(
+                content=(
+                    "✅ Withdraw request created!\n\n"
+                    f"🆔 ID: `{wid}`\n"
+                    f"🔑 Username: **{self.username}**\n"
+                    f"💰 Requested: **{fmt(amt)} {balance_key}**\n"
+                    f"❌ Removed from balance: **{fmt(removed)}**\n\n"
+                    "Admins will process it soon."
+                ),
+                ephemeral=True
             )
 
-    await ctx.send("❌ Invalid ID.")
+    class WithdrawPanelView(View):
+        def __init__(self):
+            super().__init__(timeout=None)
 
+        @discord.ui.button(label="Withdraw Gems", style=discord.ButtonStyle.green, emoji="💎")
+        async def withdraw_gems(self, interaction: discord.Interaction, button: discord.ui.Button):
+            modal = WithdrawModal(currency="gems")
+            await interaction.response.send_modal(modal)
+
+        @discord.ui.button(label="Withdraw EXP", style=discord.ButtonStyle.blurple, emoji="📈")
+        async def withdraw_exp(self, interaction: discord.Interaction, button: discord.ui.Button):
+            modal = WithdrawModal(currency="exp")
+            await interaction.response.send_modal(modal)
+
+    await ctx.send(embed=embed, view=WithdrawPanelView())
 
 
 # --------------------------------------------------------------
-#                💳 DEPOSIT REQUEST (PLAYER)
+#                      DEPOSIT PANEL (USER)
 # --------------------------------------------------------------
 @bot.command()
-async def deposit(ctx, amount: str):
-
-    parsed = parse_amount(amount, ctx.author)
-    if parsed is None or parsed <= 0:
-        return await ctx.send("❌ Invalid amount.")
-
-    did = len(data["deposits"]) + 1
-    data["deposits"].append({
-        "id": did,
-        "user": ctx.author.id,
-        "amount": parsed,
-        "status": "pending"
-    })
-
-    save_data(data)
+async def depositpanel(ctx):
+    """
+    Open deposit panel.
+    User chooses Gems / EXP via buttons and submits a form.
+    This does NOT change balance — only creates a request.
+    """
 
     embed = discord.Embed(
-        title="💳 Deposit Requested",
+        title="💳 Deposit Panel",
         description=(
-            f"💰 Amount: **{fmt(parsed)}**\n"
-            f"🆔 Deposit ID: `{did}`\n\n"
-            "Send proof to an admin."
+            "Use the buttons below to create a **deposit request**.\n\n"
+            "• Select **Gems** or **EXP**\n"
+            "• Fill in **username** + **amount** in the form\n"
+            "• Balance does **NOT** change automatically.\n\n"
+            "Admins will manually confirm deposits and add balance."
         ),
         color=galaxy_color()
     )
-    await ctx.send(embed=embed)
+
+    class DepositModal(discord.ui.Modal):
+        def __init__(self, currency: str):
+            title = "Deposit Gems" if currency == "gems" else "Deposit EXP"
+            super().__init__(title=title, timeout=300)
+            self.currency = currency
+
+            self.username = discord.ui.TextInput(
+                label="Account Username",
+                placeholder="Your in-game or account username (NOT Discord)",
+                required=True,
+                max_length=50
+            )
+            self.amount = discord.ui.TextInput(
+                label="Amount",
+                placeholder="e.g. 100m, 250m, 1b",
+                required=True,
+                max_length=20
+            )
+
+            self.add_item(self.username)
+            self.add_item(self.amount)
+
+        async def on_submit(self, interaction: discord.Interaction):
+            user_id = interaction.user.id
+            ensure_user(user_id)
+
+            amt = parse_amount(self.amount.value, None, allow_all=False)
+            if amt is None or amt <= 0:
+                return await interaction.response.send_message(
+                    "❌ Invalid amount. Use something like `100m`, `250m`, `1b`.",
+                    ephemeral=True
+                )
+
+            did = data.get("next_deposit_id", 1)
+            data["next_deposit_id"] = did + 1
+
+            data["deposits"][str(did)] = {
+                "id": did,
+                "user_id": user_id,
+                "username": str(self.username),
+                "amount": int(amt),
+                "currency": self.currency,
+                "timestamp": time.time(),
+            }
+            save_data(data)
+
+            await interaction.response.send_message(
+                content=(
+                    "✅ Deposit request created!\n\n"
+                    f"🆔 ID: `{did}`\n"
+                    f"🔑 Username: **{self.username}**\n"
+                    f"💰 Amount: **{fmt(amt)} {self.currency}**\n\n"
+                    "Admins will review and add the balance manually."
+                ),
+                ephemeral=True
+            )
+
+    class DepositPanelView(View):
+        def __init__(self):
+            super().__init__(timeout=None)
+
+        @discord.ui.button(label="Deposit Gems", style=discord.ButtonStyle.green, emoji="💎")
+        async def deposit_gems(self, interaction: discord.Interaction, button: discord.ui.Button):
+            modal = DepositModal(currency="gems")
+            await interaction.response.send_modal(modal)
+
+        @discord.ui.button(label="Deposit EXP", style=discord.ButtonStyle.blurple, emoji="📈")
+        async def deposit_exp(self, interaction: discord.Interaction, button: discord.ui.Button):
+            modal = DepositModal(currency="exp")
+            await interaction.response.send_modal(modal)
+
+    await ctx.send(embed=embed, view=DepositPanelView())
 
 
+# ==============================================================
+#                      ADMIN PANELS
+# ==============================================================
 
 # --------------------------------------------------------------
-#                📜 DEPOSIT LIST (ADMIN)
+#                 WITHDRAW ADMIN PANEL (SELECT)
 # --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def depositlist(ctx):
+async def withdrawadminpanel(ctx):
+    """
+    Admin panel: select a withdraw request and Accept / Deny.
+    Accept = keep deduction, just remove from list.
+    Deny   = refund ORIGINAL requested amount (not 1.2x / 1.9x).
+    """
 
-    ensure_global_lists()
+    if not data["withdrawals"]:
+        return await ctx.send("📭 No pending withdraw requests.")
 
-    pending = [d for d in data["deposits"] if d["status"] == "pending"]
+    class WithdrawSelect(discord.ui.Select):
+        def __init__(self, parent_view):
+            self.parent_view = parent_view
 
-    if not pending:
-        return await ctx.send("📭 No pending deposits.")
+            withdraw_items = sorted(
+                data["withdrawals"].items(),
+                key=lambda kv: int(kv[0])
+            )
+            # Discord max 25 options
+            options = []
+            for key, req in withdraw_items[:25]:
+                label = f"ID {req['id']} • {req['username']}"
+                desc = f"{fmt(req['amount'])} {req['currency']} • User {req['user_id']}"
+                options.append(discord.SelectOption(
+                    label=label,
+                    description=desc,
+                    value=str(req["id"])
+                ))
+
+            super().__init__(
+                placeholder="Select a withdraw request...",
+                min_values=1,
+                max_values=1,
+                options=options
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            if not interaction.user.guild_permissions.manage_guild:
+                return await interaction.response.send_message(
+                    "❌ Only admins can use this panel.",
+                    ephemeral=True
+                )
+            self.parent_view.selected_id = int(self.values[0])
+            await interaction.response.defer()
+
+    class WithdrawAdminView(View):
+        def __init__(self):
+            super().__init__(timeout=300)
+            self.selected_id: int | None = None
+            self.add_item(WithdrawSelect(self))
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.response.send_message(
+                    "❌ Only admins can use this panel.",
+                    ephemeral=True
+                )
+                return False
+            return True
+
+        @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.green)
+        async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.selected_id is None:
+                return await interaction.response.send_message(
+                    "❌ Select a withdraw first.",
+                    ephemeral=True
+                )
+
+            key = str(self.selected_id)
+            req = data["withdrawals"].pop(key, None)
+            if req is None:
+                return await interaction.response.send_message(
+                    "❌ This withdraw no longer exists.",
+                    ephemeral=True
+                )
+
+            save_data(data)
+
+            await interaction.response.send_message(
+                content=(
+                    f"✅ Withdraw **ID {req['id']}** marked as **ACCEPTED**.\n"
+                    f"User: <@{req['user_id']}>\n"
+                    f"Requested: **{fmt(req['amount'])} {req['currency']}**\n"
+                    f"Removed earlier: **{fmt(req['removed'])}**\n\n"
+                    "Reminder: Real payout is handled manually."
+                ),
+                ephemeral=True
+            )
+
+        @discord.ui.button(label="❌ Deny + Refund", style=discord.ButtonStyle.red)
+        async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.selected_id is None:
+                return await interaction.response.send_message(
+                    "❌ Select a withdraw first.",
+                    ephemeral=True
+                )
+
+            key = str(self.selected_id)
+            req = data["withdrawals"].pop(key, None)
+            if req is None:
+                return await interaction.response.send_message(
+                    "❌ This withdraw no longer exists.",
+                    ephemeral=True
+                )
+
+            # Refund ONLY original requested amount
+            ensure_user(req["user_id"])
+            u = data[str(req["user_id"])]
+            u.setdefault(req["currency"], 0)
+            u[req["currency"]] += req["amount"]
+
+            save_data(data)
+
+            await interaction.response.send_message(
+                content=(
+                    f"🔴 Withdraw **ID {req['id']}** **DENIED** and refunded.\n"
+                    f"Refunded: **{fmt(req['amount'])} {req['currency']}** to <@{req['user_id']}>."
+                ),
+                ephemeral=True
+            )
 
     embed = discord.Embed(
-        title="💳 Pending Deposits",
+        title="🏦 Withdraw Admin Panel",
+        description=(
+            "Select a withdraw request from the dropdown.\n"
+            "Then use **Accept** or **Deny + Refund**."
+        ),
         color=galaxy_color()
     )
-
-    for d in pending:
-        user = ctx.guild.get_member(d["user"])
-        embed.add_field(
-            name=f"ID {d['id']}",
-            value=(
-                f"👤 User: {user.mention if user else d['user']}\n"
-                f"💰 Amount: **{fmt(d['amount'])}**"
-            ),
-            inline=False
-        )
-
-    await ctx.send(embed=embed)
-
+    await ctx.send(embed=embed, view=WithdrawAdminView())
 
 
 # --------------------------------------------------------------
-#                ✅ CLAIM DEPOSIT (ADMIN)
+#                 DEPOSIT ADMIN PANEL (SELECT)
 # --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def claimdeposit(ctx, did: int):
+async def depositadminpanel(ctx):
+    """
+    Admin panel: select a deposit request and Accept / Deny.
+    Accept = add amount to user's balance.
+    Deny   = just delete the request.
+    """
 
-    ensure_global_lists()
+    if not data["deposits"]:
+        return await ctx.send("📭 No pending deposit requests.")
 
-    for d in data["deposits"]:
-        if d["id"] == did:
+    class DepositSelect(discord.ui.Select):
+        def __init__(self, parent_view):
+            self.parent_view = parent_view
 
-            if d["status"] != "pending":
-                return await ctx.send("❌ Already processed.")
+            deposit_items = sorted(
+                data["deposits"].items(),
+                key=lambda kv: int(kv[0])
+            )
+            options = []
+            for key, req in deposit_items[:25]:
+                label = f"ID {req['id']} • {req['username']}"
+                desc = f"{fmt(req['amount'])} {req['currency']} • User {req['user_id']}"
+                options.append(discord.SelectOption(
+                    label=label,
+                    description=desc,
+                    value=str(req["id"])
+                ))
 
-            user_id = str(d["user"])
-
-            # Give gems
-            ensure_user(d["user"])
-            data[user_id]["gems"] += d["amount"]
-
-            d["status"] = "claimed"
-            save_data(data)
-
-            user = ctx.guild.get_member(d["user"])
-            try:
-                await user.send(
-                    f"💳 Your deposit of **{fmt(d['amount'])}** has been **approved**!"
-                )
-            except:
-                pass
-
-            return await ctx.send(
-                f"✅ Deposit **ID {did}** has been **claimed**."
+            super().__init__(
+                placeholder="Select a deposit request...",
+                min_values=1,
+                max_values=1,
+                options=options
             )
 
-    await ctx.send("❌ Invalid ID.")
+        async def callback(self, interaction: discord.Interaction):
+            if not interaction.user.guild_permissions.manage_guild:
+                return await interaction.response.send_message(
+                    "❌ Only admins can use this panel.",
+                    ephemeral=True
+                )
+            self.parent_view.selected_id = int(self.values[0])
+            await interaction.response.defer()
 
+    class DepositAdminView(View):
+        def __init__(self):
+            super().__init__(timeout=300)
+            self.selected_id: int | None = None
+            self.add_item(DepositSelect(self))
 
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.response.send_message(
+                    "❌ Only admins can use this panel.",
+                    ephemeral=True
+                )
+                return False
+            return True
 
-# --------------------------------------------------------------
-#                ❌ DENY DEPOSIT (ADMIN)
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def denydeposit(ctx, did: int, *, reason: str = "No reason provided"):
+        @discord.ui.button(label="✅ Accept (Add Balance)", style=discord.ButtonStyle.green)
+        async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.selected_id is None:
+                return await interaction.response.send_message(
+                    "❌ Select a deposit first.",
+                    ephemeral=True
+                )
 
-    ensure_global_lists()
+            key = str(self.selected_id)
+            req = data["deposits"].pop(key, None)
+            if req is None:
+                return await interaction.response.send_message(
+                    "❌ This deposit no longer exists.",
+                    ephemeral=True
+                )
 
-    for d in data["deposits"]:
-        if d["id"] == did:
+            ensure_user(req["user_id"])
+            u = data[str(req["user_id"])]
+            u.setdefault(req["currency"], 0)
+            u[req["currency"]] += req["amount"]
 
-            if d["status"] != "pending":
-                return await ctx.send("❌ Already processed.")
-
-            d["status"] = "denied"
             save_data(data)
 
-            user = ctx.guild.get_member(d["user"])
-            try:
-                await user.send(
-                    f"❌ Your deposit was **denied**.\n📝 Reason: {reason}"
-                )
-            except:
-                pass
-
-            return await ctx.send(
-                f"❌ Deposit **ID {did}** has been **denied**."
+            await interaction.response.send_message(
+                content=(
+                    f"✅ Deposit **ID {req['id']}** **ACCEPTED**.\n"
+                    f"Added **{fmt(req['amount'])} {req['currency']}** to <@{req['user_id']}>."
+                ),
+                ephemeral=True
             )
 
-    await ctx.send("❌ Invalid ID.")
+        @discord.ui.button(label="❌ Deny (No Change)", style=discord.ButtonStyle.red)
+        async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.selected_id is None:
+                return await interaction.response.send_message(
+                    "❌ Select a deposit first.",
+                    ephemeral=True
+                )
+
+            key = str(self.selected_id)
+            req = data["deposits"].pop(key, None)
+            if req is None:
+                return await interaction.response.send_message(
+                    "❌ This deposit no longer exists.",
+                    ephemeral=True
+                )
+
+            save_data(data)
+
+            await interaction.response.send_message(
+                content=(
+                    f"🔴 Deposit **ID {req['id']}** **DENIED**.\n"
+                    "No balance changes were made."
+                ),
+                ephemeral=True
+            )
+
+    embed = discord.Embed(
+        title="💳 Deposit Admin Panel",
+        description=(
+            "Select a deposit request from the dropdown.\n"
+            "Then use **Accept (Add Balance)** or **Deny (No Change)**."
+        ),
+        color=galaxy_color()
+    )
+    await ctx.send(embed=embed, view=DepositAdminView())
+
+
 
 
 
