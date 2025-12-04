@@ -9,138 +9,78 @@ import io
 import asyncio
 from datetime import datetime
 
+# --------------------------------------------------------------
+#                       BOT CONFIG
+# --------------------------------------------------------------
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "casino_data.json"
+
 JOINS_CHANNEL = 1443625716859273406
 LEAVES_CHANNEL = 1443625744793342132
 SUSPICIOUS_SERVER = 1140681007197073468
 
-# Categories where commands are disabled
 DISABLED_CATEGORIES = {1431610646654488661}
-
-# Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
-
 
 GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack"]
 
 
-
-
 # --------------------------------------------------------------
-#                    DATA MANAGEMENT (LOAD / SAVE)
+#                    DATA MANAGEMENT
 # --------------------------------------------------------------
-# Ensure file exists
+# Create file if doesn't exist
 if not os.path.exists(DATA_FILE):
     with open(DATA_FILE, "w") as f:
         json.dump({}, f, indent=4)
 
-
 def load_data():
-    with open(DATA_FILE, "r") as f:
-        try:
+    try:
+        with open(DATA_FILE, "r") as f:
             return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-
+    except:
+        return {}
 
 def save_data(d):
     with open(DATA_FILE, "w") as f:
         json.dump(d, f, indent=4)
 
-
-# Load data *after* load_data() exists
 data = load_data()
 
-
 # --------------------------------------------------------------
-#  FIX MISSING KEYS FOR DEPOSIT / WITHDRAW SYSTEM
+#                CLEAN & CORRECT DEFAULT KEYS
 # --------------------------------------------------------------
-data.setdefault("next_deposit_id", 1)
-data.setdefault("deposits", [])
+# Withdraw / Deposit system
+data.setdefault("withdrawals", {})          # dict: id -> request
+data.setdefault("deposits", {})             # dict: id -> request
 data.setdefault("next_withdraw_id", 1)
-data.setdefault("withdrawals", [])
+data.setdefault("next_deposit_id", 1)
+
+# Deposit bonuses
 data.setdefault("deposit_bonuses", {})
+
+# Wheel system
 data.setdefault("wheel_last_spin", {})
+data.setdefault("wheel_extra_spins", {})     # IMPORTANT: FIXES YOUR ERROR
+
+# Quest system
 data.setdefault("quests", {})
 data.setdefault("quest_last_reset", 0)
 
-save_data(data)
-
-
-
-# --------------------------------------------------------------
-#   REQUIRED DEFAULTS FOR DEPOSITS + QUESTS (ADD THIS!)
-# --------------------------------------------------------------
-data.setdefault("next_deposit_id", 1)
-data.setdefault("deposits", [])
-data.setdefault("deposit_bonuses", {})
-
-data.setdefault("quests", {})
-data.setdefault("quest_last_reset", 0)
-
-
-
-# --- Required defaults (PREVENT KeyError) ---
-data.setdefault("next_deposit_id", 1)
-data.setdefault("next_withdraw_id", 1)
-data.setdefault("deposits", [])
-data.setdefault("withdrawals", [])
-data.setdefault("quests", {})
-data.setdefault("quest_last_reset", 0)
-data.setdefault("deposit_bonuses", {})
-data.setdefault("wheel_last_spin", {})
-save_data(data)
-
-
-data.setdefault("wheel_last_spin", {})
-data.setdefault("wheel_extra_spins", {})
-data.setdefault("deposit_bonuses", {})
-save_data(data)
-
-data.setdefault("withdrawals", {})
-data.setdefault("deposits", {})
-data.setdefault("next_withdraw_id", 1)
-data.setdefault("next_deposit_id", 1)
-save_data(data)
-
-
-# -------------------------------------------
-
-
-
-# Anti abuse fingerprint store
+# Anti-abuse fingerprints
 data.setdefault("_device_fingerprints", {})
 device_fp = data["_device_fingerprints"]
 
-
-# --------------------------------------------------------------
-#      Payout / Deposit / Wheel persistent data setup
-# --------------------------------------------------------------
-data.setdefault("withdrawals", [])
-data.setdefault("deposits", [])
-data.setdefault("next_withdraw_id", 1)
-data.setdefault("next_deposit_id", 1)
-
-# Deposit bonus for NEXT claimed deposit (C-choice)
-data.setdefault("deposit_bonuses", {})
-
-# Daily wheel last-spin timestamps
-data.setdefault("wheel_last_spin", {})
-
-# Save after setting defaults
 save_data(data)
 
 
+# --------------------------------------------------------------
+#                          OWNER ID
+# --------------------------------------------------------------
+OWNER_ID = 1317419437854560288
+
 
 # --------------------------------------------------------------
-#                          OWNER
-# --------------------------------------------------------------
-OWNER_ID = 1317419437854560288  # Replace with real owner ID
-
-
-# --------------------------------------------------------------
-#                       INTENTS & BOT INIT
+#                       BOT INIT
 # --------------------------------------------------------------
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
@@ -181,91 +121,36 @@ GALAXY_REWARD_AMOUNTS = [800_000_000, 1_000_000_000, 1_100_000_000, 1_250_000_00
 GALAXY_REWARD_CHANCES = [50, 30, 15, 5]
 
 CHEST_CONFIG = {
-    "common": {
-        "name": "Common Chest",
-        "emoji": "🟢",
-        "price": COMMON_PRICE,
-        "rewards": COMMON_REWARD_AMOUNTS,
-        "chances": COMMON_REWARD_CHANCES,
-    },
-    "rare": {
-        "name": "Rare Chest",
-        "emoji": "🔵",
-        "price": RARE_PRICE,
-        "rewards": RARE_REWARD_AMOUNTS,
-        "chances": RARE_REWARD_CHANCES,
-    },
-    "epic": {
-        "name": "Epic Chest",
-        "emoji": "🟣",
-        "price": EPIC_PRICE,
-        "rewards": EPIC_REWARD_AMOUNTS,
-        "chances": EPIC_REWARD_CHANCES,
-    },
-    "legendary": {
-        "name": "Legendary Chest",
-        "emoji": "🟡",
-        "price": LEGENDARY_PRICE,
-        "rewards": LEGENDARY_REWARD_AMOUNTS,
-        "chances": LEGENDARY_REWARD_CHANCES,
-    },
-    "mythic": {
-        "name": "Mythic Chest",
-        "emoji": "🔴",
-        "price": MYTHIC_PRICE,
-        "rewards": MYTHIC_REWARD_AMOUNTS,
-        "chances": MYTHIC_REWARD_CHANCES,
-    },
-    "galaxy": {
-        "name": "Galaxy Chest",
-        "emoji": "🌌",
-        "price": GALAXY_PRICE,
-        "rewards": GALAXY_REWARD_AMOUNTS,
-        "chances": GALAXY_REWARD_CHANCES,
-    },
+    "common": {"name": "Common Chest", "emoji": "🟢", "price": COMMON_PRICE, "rewards": COMMON_REWARD_AMOUNTS, "chances": COMMON_REWARD_CHANCES},
+    "rare": {"name": "Rare Chest", "emoji": "🔵", "price": RARE_PRICE, "rewards": RARE_REWARD_AMOUNTS, "chances": RARE_REWARD_CHANCES},
+    "epic": {"name": "Epic Chest", "emoji": "🟣", "price": EPIC_PRICE, "rewards": EPIC_REWARD_AMOUNTS, "chances": EPIC_REWARD_CHANCES},
+    "legendary": {"name": "Legendary Chest", "emoji": "🟡", "price": LEGENDARY_PRICE, "rewards": LEGENDARY_REWARD_AMOUNTS, "chances": LEGENDARY_REWARD_CHANCES},
+    "mythic": {"name": "Mythic Chest", "emoji": "🔴", "price": MYTHIC_PRICE, "rewards": MYTHIC_REWARD_AMOUNTS, "chances": MYTHIC_REWARD_CHANCES},
+    "galaxy": {"name": "Galaxy Chest", "emoji": "🌌", "price": GALAXY_PRICE, "rewards": GALAXY_REWARD_AMOUNTS, "chances": GALAXY_REWARD_CHANCES},
 }
 
 CHEST_ORDER = ["common", "rare", "epic", "legendary", "mythic", "galaxy"]
 
 
 # --------------------------------------------------------------
-#                       HELPERS (NO CHANGE)
+#                       HELPER FUNCTIONS
 # --------------------------------------------------------------
-
-
-
-
-
-# ---------------------- FREE vs GAMBLE TRACKING (35% IDEA) ---------------------- #
-
 FREE_SOURCES = {"daily", "work", "invite_reward", "admin_give", "dropbox"}
 GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack"}
 
-
 def compute_gamble_ratio(user_id):
-    """
-    Free kaynaklardan (daily, work, admin_give, invite, dropbox) gelen toplam kazanç
-    ve gambling oyunlarında (coinflip, slots, mines, tower, blackjack) harcanan toplam bahsi hesaplar.
-
-    Dönüş:
-      free_total, gambled_total, ratio (0–1 arası)
-    """
     ensure_user(user_id)
     hist = data[str(user_id)].get("history", [])
-
     free_total = 0
     gambled_total = 0
 
     for e in hist:
         game = e.get("game", "")
-        bet = e.get("bet", 0) or 0
-        earned = e.get("earned", 0) or 0
+        bet = e.get("bet", 0)
+        earned = e.get("earned", 0)
 
-        # FREE GELİR
         if game in FREE_SOURCES and earned > 0:
             free_total += earned
-
-        # GAMBLE BAHİS
         if game in GAMBLE_GAMES and bet > 0:
             gambled_total += bet
 
@@ -273,32 +158,18 @@ def compute_gamble_ratio(user_id):
     return free_total, gambled_total, ratio
 
 
-
 def fmt(n):
-    """
-    Format numbers like:
-    1_234 -> "1.23k"
-    1_000_000 -> "1m"
-    1_250_000_000 -> "1.25b"
-    50 -> "50"
-    """
     try:
         n = int(round(float(n)))
-    except Exception:
+    except:
         return str(n)
 
     if n >= 1_000_000_000:
-        v = n / 1_000_000_000
-        s = f"{v:.2f}".rstrip("0").rstrip(".")
-        return f"{s}b"
+        return f"{n/1_000_000_000:.2f}".rstrip("0").rstrip(".") + "b"
     if n >= 1_000_000:
-        v = n / 1_000_000
-        s = f"{v:.2f}".rstrip("0").rstrip(".")
-        return f"{s}m"
+        return f"{n/1_000_000:.2f}".rstrip("0").rstrip(".") + "m"
     if n >= 1_000:
-        v = n / 1_000
-        s = f"{v:.2f}".rstrip("0").rstrip(".")
-        return f"{s}k"
+        return f"{n/1000:.2f}".rstrip("0").rstrip(".") + "k"
     return str(n)
 
 
@@ -311,7 +182,6 @@ GALAXY_COLORS = [
     discord.Color.from_rgb(0, 191, 255),
 ]
 
-
 def galaxy_color():
     return random.choice(GALAXY_COLORS)
 
@@ -320,73 +190,48 @@ def ensure_user(user_id):
     uid = str(user_id)
     if uid not in data:
         data[uid] = {}
+
     u = data[uid]
     u.setdefault("gems", 25.0)
     u.setdefault("last_daily", 0.0)
     u.setdefault("last_work", 0.0)
     u.setdefault("history", [])
-    # bless/curse system
+
     u.setdefault("bless_infinite", False)
     u.setdefault("curse_infinite", False)
     u.setdefault("bless_charges", 0)
     u.setdefault("curse_charges", 0)
+
     save_data(data)
 
 
-
-
 # --------------------------------------------------------------
-#                        HISTORY + QUEST HOOK
+#                    HISTORY + QUEST HOOK
 # --------------------------------------------------------------
-GAMBLE_GAMES = {"slots", "mines", "tower", "coinflip", "blackjack"}
-
-
 def add_history(user_id, entry):
-    """
-    Central history logger.
-    Also forwards data into the quest system.
-    Expected entry keys (not all required):
-      - game  : str  (e.g. "slots", "daily", "deposit")
-      - bet   : int  (amount wagered)
-      - earned: int  (net profit, can be 0 or negative)
-    """
     ensure_user(user_id)
     uid = str(user_id)
 
-    # ---- QUEST HOOKS ----
     game = entry.get("game")
-    bet = int(entry.get("bet", 0) or 0)
-    earned = int(entry.get("earned", 0) or 0)
+    bet = int(entry.get("bet", 0))
+    earned = int(entry.get("earned", 0))
 
-    # 1) Earn quest → any positive earn counts
+    # Quest: earn > 0
     if earned > 0:
         _quest_add_earn(uid, earned)
 
-    # 2) Wager quest → only real gambling games
+    # Quest: wager in gamble games
     if bet > 0 and game in GAMBLE_GAMES:
         _quest_add_wager(uid, bet)
 
-    # 3) Deposit quest will be updated directly from claimdeposit,
-    #    so we don't handle it here.
-
-    # ---- NORMAL HISTORY ----
+    # Store history
     hist = data[uid].get("history", [])
     hist.append(entry)
-    if len(hist) > 50:
-        hist = hist[-50:]
-    data[uid]["history"] = hist
+    data[uid]["history"] = hist[-50:]  # limit
     save_data(data)
 
 
-
-
-
-
 def parse_amount(text, user_gems=None, allow_all=False):
-    """
-    Parses amounts like:
-    200000000, 200,000,000, 200m, 0.2b, 150k, all
-    """
     if isinstance(text, (int, float)):
         return float(text)
 
@@ -404,168 +249,44 @@ def parse_amount(text, user_gems=None, allow_all=False):
         if t.endswith("b"):
             return float(t[:-1]) * 1_000_000_000
         return float(t)
-    except ValueError:
+    except:
         return None
 
 
-def parse_duration(d: str):
-    """
-    Parses duration strings like:
-    30s, 10m, 2h, 1d
-    Returns duration in seconds or None if invalid.
-    """
-    s = d.strip().lower()
-    if len(s) < 2:
-        return None
-    unit = s[-1]
-    num_str = s[:-1]
-    try:
-        value = float(num_str)
-    except ValueError:
-        return None
-    if value <= 0:
-        return None
+def parse_market_number(value: str) -> int:
+    value = value.strip().replace(",", "").lower()
+    multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000, "t": 1_000_000_000_000}
 
-    if unit == "s":
-        return int(value)
-    if unit == "m":
-        return int(value * 60)
-    if unit == "h":
-        return int(value * 3600)
-    if unit == "d":
-        return int(value * 86400)
-    return None
+    if value[-1] in multipliers:
+        return int(float(value[:-1]) * multipliers[value[-1]])
+    return int(float(value))
 
 
-def normalize_role_name(name: str) -> str:
-    """
-    Lowercase, remove spaces and non-alphanumeric chars.
-    Works even if role has emojis or weird symbols.
-    """
-    return "".join(ch.lower() for ch in name if ch.isalnum())
-
-
-def find_role_by_query(guild: discord.Guild, query: str):
-    """
-    Smart role finder:
-    - supports role mention or ID
-    - ignores emojis, spaces, case
-    - exact normalized match first
-    - then partial normalized match
-    """
-    query = query.strip()
-
-    # If it's a mention or ID, extract digits and try
-    digits = "".join(ch for ch in query if ch.isdigit())
-    if digits:
-        try:
-            rid = int(digits)
-            role = guild.get_role(rid)
-            if role is not None:
-                return role
-        except ValueError:
-            pass
-
-    norm_query = normalize_role_name(query)
-    if not norm_query:
-        return None
-
-    roles = guild.roles
-
-    # 1) exact normalized match
-    exact_matches = [
-        r for r in roles
-        if normalize_role_name(r.name) == norm_query
-    ]
-    if len(exact_matches) == 1:
-        return exact_matches[0]
-    elif len(exact_matches) > 1:
-        # if multiple exact, pick shortest name (most basic)
-        return sorted(exact_matches, key=lambda r: len(r.name))[0]
-
-    # 2) partial normalized match
-    partial_matches = [
-        r for r in roles
-        if norm_query in normalize_role_name(r.name)
-    ]
-    if len(partial_matches) == 1:
-        return partial_matches[0]
-    elif len(partial_matches) > 1:
-        # again pick shortest name
-        return sorted(partial_matches, key=lambda r: len(r.name))[0]
-
-    return None
-
-
-def roll_chest_reward(chest_key: str) -> int:
-    """
-    Weighted random roll for a chest.
-    """
-    config = CHEST_CONFIG[chest_key]
-    rewards = config["rewards"]
-    chances = config["chances"]
-    total = sum(chances)
-    r = random.uniform(0, total)
-    upto = 0
-    for amount, weight in zip(rewards, chances):
-        if upto + weight >= r:
-            return amount
-        upto += weight
-    return rewards[-1]
-
-
-# ---------------------- BLESS / CURSE SYSTEM ---------------------- #
-
-
-def consume_rig(u):
-    """
-    Returns 'curse', 'bless' or None.
-    - If curse_infinite or curse_charges > 0 → 'curse'
-    - Else if bless_infinite or bless_charges > 0 → 'bless'
-    For finite charges, decreases count by 1.
-    Infinite flags stay until turned off.
-    Curse has priority over bless.
-    """
-    mode = None
-    # curse first
-    if u.get("curse_infinite") or u.get("curse_charges", 0) > 0:
-        mode = "curse"
-        if u.get("curse_charges", 0) > 0:
-            u["curse_charges"] -= 1
-    elif u.get("bless_infinite") or u.get("bless_charges", 0) > 0:
-        mode = "bless"
-        if u.get("bless_charges", 0) > 0:
-            u["bless_charges"] -= 1
-
-    save_data(data)
-    return mode
-
-
-#  ---------------------- BACKUP SYSTEM ---------------------- #
-
-async def backup_to_channel(reason: str = "auto"):
-    """Sends current data as JSON file to the backup channel."""
+# --------------------------------------------------------------
+#                   BACKUP SYSTEM
+# --------------------------------------------------------------
+async def backup_to_channel(reason="auto"):
     channel = bot.get_channel(BACKUP_CHANNEL_ID)
     if channel is None:
         try:
             channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
-        except Exception:
-            return  # can't backup, invalid channel or no access
+        except:
+            return
 
     try:
         stamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
         payload = json.dumps(data, indent=2)
-        fp = io.BytesIO(payload.encode("utf-8"))
+        fp = io.BytesIO(payload.encode())
         filename = f"casino_backup_{stamp}.json"
 
         embed = discord.Embed(
             title="💾 Galaxy Casino Backup",
-            description=f"Reason: **{reason}**\nTimestamp (UTC): `{stamp}`",
+            description=f"Reason: **{reason}**\nUTC: `{stamp}`",
             color=galaxy_color()
         )
-        await channel.send(embed=embed, file=discord.File(fp, filename=filename))
-    except Exception:
-        # don't crash the bot if backup fails
+
+        await channel.send(embed=embed, file=discord.File(fp, filename))
+    except:
         pass
 
 
@@ -584,50 +305,6 @@ async def on_ready():
     if not auto_backup_task.is_running():
         auto_backup_task.start()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-
-
-def short(n: int) -> str:
-    """Converts long numbers into short ones like 15000000 -> 15m"""
-    try:
-        n = int(n)
-    except:
-        return str(n)
-
-    if n >= 1_000_000_000:
-        return f"{n/1_000_000_000:.2f}".rstrip("0").rstrip(".") + "b"
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.2f}".rstrip("0").rstrip(".") + "m"
-    if n >= 1_000:
-        return f"{n/1000:.2f}".rstrip("0").rstrip(".") + "k"
-    return str(n)
-
-
-
-def parse_market_number(value: str) -> int:
-    """
-    Parse marketplace numbers: 5m, 10m, 250k, 1b, 66m, 2.5m, 10000000
-    """
-    value = value.strip().replace(",", "").lower()
-
-    multipliers = {
-        "k": 1_000,
-        "m": 1_000_000,
-        "b": 1_000_000_000,
-        "t": 1_000_000_000_000
-    }
-
-    # Ends with letter (5m, 250k…)
-    if value[-1] in multipliers:
-        return int(float(value[:-1]) * multipliers[value[-1]])
-
-    # Pure number (10000000)
-    return int(float(value))
-
-
-
-from discord.ui import Button, View  # you already have this
-# Modals & Select are used via discord.ui.Modal / discord.ui.TextInput / discord.ui.Select
-# so you DON'T need to change this line unless you want: Modal, TextInput, Select
 
 
 
