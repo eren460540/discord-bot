@@ -1087,6 +1087,1126 @@ async def roblox_verification_flow(interaction: discord.Interaction, roblox_user
 
 
 
+# ==============================================================
+#                 DEPOSIT / WITHDRAW DATA DEFAULTS
+# ==============================================================
+
+# Add these near your other data.setdefault(...) calls
+data.setdefault("withdrawals", [])
+data.setdefault("deposits", [])
+data.setdefault("next_withdraw_id", 1)
+data.setdefault("next_deposit_id", 1)
+data.setdefault("roblox_links", {})          # discord_id -> {username, user_id, avatar_url}
+data.setdefault("wheel_last_spin", {})
+data.setdefault("wheel_extra_spins", {})
+save_data(data)
+
+# Safety: if old code left dicts here, force them to lists
+if not isinstance(data.get("withdrawals"), list):
+    data["withdrawals"] = []
+if not isinstance(data.get("deposits"), list):
+    data["deposits"] = []
+save_data(data)
+
+
+# ==============================================================
+#                 WITHDRAW / DEPOSIT CONSTANTS
+# ==============================================================
+
+WITHDRAW_GEMS_LIMIT_2D = 500_000_000     # 500m in 48h
+WITHDRAW_EXP_LIMIT_2D  = 750_000_000     # 750m in 48h
+WITHDRAW_WINDOW_SEC    = 2 * 24 * 3600   # 2 days
+WITHDRAW_COOLDOWN_SEC  = 30 * 60         # 30 minutes
+
+WITHDRAW_GEMS_FEE = 1.2      # 1.2x removed from gems
+WITHDRAW_EXP_FEE  = 1.9      # 1.9x removed from exp
+
+
+# ==============================================================
+#                      OWNER DM HELPER
+# ==============================================================
+
+async def notify_owner(title: str, description: str, fields: list = None):
+    """
+    DM the OWNER_ID with an embed.
+    fields: list of tuples -> (name, value, inline)
+    """
+    try:
+        owner = bot.get_user(OWNER_ID) or await bot.fetch_user(OWNER_ID)
+    except Exception:
+        return
+
+    if not owner:
+        return
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=galaxy_color(),
+        timestamp=datetime.utcnow()
+    )
+
+    if fields:
+        for name, value, inline in fields:
+            embed.add_field(name=name, value=value, inline=inline)
+
+    try:
+        await owner.send(embed=embed)
+    except Exception:
+        pass
+
+
+# ==============================================================
+#                    ROBLOX AVATAR LOOKUP
+# ==============================================================
+
+async def roblox_lookup(username: str):
+    """
+    Returns (roblox_id, display_name, avatar_url) or (None, None, None)
+    Uses Roblox public APIs.
+    """
+    username = username.strip()
+    if not username:
+        return None, None, None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # 1) username -> userId
+            url = "https://users.roblox.com/v1/usernames/users"
+            payload = {"usernames": [username], "excludeBannedUsers": True}
+            async with session.post(url, json=payload) as resp:
+                if resp.status != 200:
+                    return None, None, None
+                j = await resp.json()
+                data_list = j.get("data", [])
+                if not data_list:
+                    return None, None, None
+                entry = data_list[0]
+                user_id = entry.get("id")
+                display_name = entry.get("displayName") or entry.get("name") or username
+
+            # 2) avatar thumbnail
+            thumb_url = (
+                "https://thumbnails.roblox.com/v1/users/avatar-headshot"
+                f"?userIds={user_id}&size=150x150&format=Png&isCircular=false"
+            )
+            async with session.get(thumb_url) as resp2:
+                if resp2.status != 200:
+                    avatar_url = None
+                else:
+                    j2 = await resp2.json()
+                    d2 = j2.get("data", [])
+                    avatar_url = d2[0].get("imageUrl") if d2 else None
+
+        return user_id, display_name, avatar_url
+    except Exception:
+        return None, None, None
+
+
+def get_roblox_link_for(discord_id: int):
+    return data.get("roblox_links", {}).get(str(discord_id))
+
+
+def set_roblox_link_for(discord_id: int, username: str, roblox_id: int, avatar_url: str | None):
+    links = data.setdefault("roblox_links", {})
+    links[str(discord_id)] = {
+        "username": username,
+        "user_id": roblox_id,
+        "avatar_url": avatar_url,
+    }
+    save_data(data)
+
+
+# ==============================================================
+#                WITHDRAW LIMIT / COOLDOWN HELPERS
+# ==============================================================
+
+def get_user_withdraws_last_2d(user_id: int, wtype: str):
+    """
+    Sum amount (base amount, not fee) of this user's withdraws
+    of given type (gems/exp) in the last 48h (pending + accepted).
+    """
+    now = time.time()
+    cutoff = now - WITHDRAW_WINDOW_SEC
+    total = 0
+    for w in data.get("withdrawals", []):
+        if w.get("user_id") != user_id:
+            continue
+        if w.get("type") != wtype:
+            continue
+        if w.get("created_at", 0) < cutoff:
+            continue
+        if w.get("status") not in ("pending", "accepted"):
+            continue
+        total += int(w.get("amount", 0) or 0)
+    return total
+
+
+def has_pending_withdraw(user_id: int) -> bool:
+    for w in data.get("withdrawals", []):
+        if w.get("user_id") == user_id and w.get("status") == "pending":
+            return True
+    return False
+
+
+def record_withdraw_cooldown(user_id: int):
+    ensure_user(user_id)
+    u = data[str(user_id)]
+    u["last_withdraw_cmd"] = time.time()
+    save_data(data)
+
+
+def check_withdraw_cooldown(user_id: int):
+    ensure_user(user_id)
+    u = data[str(user_id)]
+    last = u.get("last_withdraw_cmd", 0)
+    if last == 0:
+        return 0
+    diff = time.time() - last
+    remain = WITHDRAW_COOLDOWN_SEC - diff
+    return max(0, remain)
+
+
+# ==============================================================
+#              INTERNAL CREATORS (NO UI, JUST LOGIC)
+# ==============================================================
+
+def _create_withdraw_entry(user: discord.User, wtype: str, amount: int,
+                           deducted: int, roblox_username: str | None):
+    wid = data.get("next_withdraw_id", 1)
+    entry = {
+        "id": wid,
+        "user_id": user.id,
+        "discord_tag": str(user),
+        "type": wtype,                 # "gems" or "exp"
+        "amount": int(amount),         # base requested
+        "deducted": int(deducted),     # what we removed from balance
+        "roblox_username": roblox_username,
+        "status": "pending",           # pending / accepted / denied
+        "created_at": time.time(),
+    }
+    arr = data.setdefault("withdrawals", [])
+    arr.append(entry)
+    data["next_withdraw_id"] = wid + 1
+    save_data(data)
+    return entry
+
+
+def _create_deposit_entry(user: discord.User, dtype: str, amount: int,
+                          roblox_username: str | None):
+    did = data.get("next_deposit_id", 1)
+    entry = {
+        "id": did,
+        "user_id": user.id,
+        "discord_tag": str(user),
+        "type": dtype,                # "gems" or "exp"
+        "amount": int(amount),
+        "roblox_username": roblox_username,
+        "status": "pending",          # pending / accepted / denied
+        "created_at": time.time(),
+    }
+    arr = data.setdefault("deposits", [])
+    arr.append(entry)
+    data["next_deposit_id"] = did + 1
+    save_data(data)
+    return entry
+
+
+# ==============================================================
+#                FINALIZE WITHDRAW / DEPOSIT (LOGIC)
+# ==============================================================
+
+async def finalize_withdraw(interaction: discord.Interaction,
+                            user: discord.User,
+                            wtype: str,
+                            amount_str: str,
+                            roblox_username: str | None):
+    """
+    Shared withdraw logic once avatar is confirmed (for gems) or
+    directly for exp.
+    """
+    ensure_user(user.id)
+    u = data[str(user.id)]
+
+    # parse amount
+    amount = parse_amount(amount_str, u.get("gems", 0), allow_all=False)
+    if amount is None or amount <= 0:
+        return await interaction.response.send_message(
+            "❌ Invalid amount.", ephemeral=True
+        )
+
+    # cooldown check
+    remain = check_withdraw_cooldown(user.id)
+    if remain > 0:
+        mins = int(remain // 60)
+        secs = int(remain % 60)
+        await interaction.response.send_message(
+            f"⏳ You must wait **{mins}m {secs}s** before another withdraw.",
+            ephemeral=True
+        )
+        await notify_owner(
+            "Withdraw blocked (cooldown)",
+            f"User {user.mention} tried to withdraw during cooldown.",
+            [
+                ("User", f"{user.mention} (`{user.id}`)", False),
+                ("Type", wtype, True),
+                ("Amount", fmt(amount), True),
+            ],
+        )
+        return
+
+    # one pending only
+    if has_pending_withdraw(user.id):
+        await interaction.response.send_message(
+            "❌ You already have a pending withdraw. Wait for staff to handle it first.",
+            ephemeral=True
+        )
+        await notify_owner(
+            "Withdraw blocked (already pending)",
+            f"User {user.mention} tried to create a second withdraw while one is pending.",
+            [
+                ("User", f"{user.mention} (`{user.id}`)", False),
+                ("Type", wtype, True),
+                ("Amount", fmt(amount), True),
+            ],
+        )
+        return
+
+    # 48h limit
+    if wtype == "gems":
+        used = get_user_withdraws_last_2d(user.id, "gems")
+        limit = WITHDRAW_GEMS_LIMIT_2D
+    else:
+        used = get_user_withdraws_last_2d(user.id, "exp")
+        limit = WITHDRAW_EXP_LIMIT_2D
+
+    if used + amount > limit:
+        await interaction.response.send_message(
+            f"❌ You reached the 2-day limit for {wtype} withdraws.\n"
+            f"Used: **{fmt(used)}**, limit: **{fmt(limit)}**.",
+            ephemeral=True
+        )
+        await notify_owner(
+            "Withdraw blocked (48h limit)",
+            f"User {user.mention} hit the {wtype} withdraw limit.",
+            [
+                ("User", f"{user.mention} (`{user.id}`)", False),
+                ("Type", wtype, True),
+                ("Requested", fmt(amount), True),
+                ("Used (48h)", fmt(used), True),
+                ("Limit", fmt(limit), True),
+            ],
+        )
+        return
+
+    # balance + fee
+    if wtype == "gems":
+        fee_mult = WITHDRAW_GEMS_FEE
+        balance = float(u.get("gems", 0))
+    else:
+        fee_mult = WITHDRAW_EXP_FEE
+        balance = float(u.get("exp", 0))
+
+    deducted = int(amount * fee_mult)
+
+    if balance < deducted:
+        await interaction.response.send_message(
+            f"❌ You don't have enough {wtype}.\n"
+            f"Needed (with fee): **{fmt(deducted)}**",
+            ephemeral=True
+        )
+        return
+
+    # deduct
+    if wtype == "gems":
+        u["gems"] = balance - deducted
+    else:
+        u["exp"] = balance - deducted
+    save_data(data)
+
+    record_withdraw_cooldown(user.id)
+
+    # queue entry
+    entry = _create_withdraw_entry(
+        user=user,
+        wtype=wtype,
+        amount=int(amount),
+        deducted=int(deducted),
+        roblox_username=roblox_username,
+    )
+
+    # history
+    add_history(user.id, {
+        "game": f"withdraw_{wtype}",
+        "bet": deducted,
+        "result": "pending",
+        "earned": 0,
+        "timestamp": time.time()
+    })
+
+    # user message
+    await interaction.response.send_message(
+        f"✅ Your **{wtype}** withdraw request has been created.\n"
+        f"ID: **#{entry['id']}**\n"
+        f"Amount requested: **{fmt(amount)}** (fee: {fee_mult}x → deducted **{fmt(deducted)}**).",
+        ephemeral=True
+    )
+
+    # owner DM
+    await notify_owner(
+        "New Withdraw Request",
+        f"User {user.mention} created a {wtype} withdraw.",
+        [
+            ("User", f"{user.mention} (`{user.id}`)", False),
+            ("Type", wtype, True),
+            ("Amount", fmt(amount), True),
+            ("Deducted", fmt(deducted), True),
+            ("Roblox Username", roblox_username or "None / EXP", False),
+            ("Entry ID", f"#{entry['id']}", True),
+        ],
+    )
+
+
+async def finalize_deposit(interaction: discord.Interaction,
+                           user: discord.User,
+                           dtype: str,
+                           amount_str: str,
+                           roblox_username: str | None):
+    """
+    Create a pending deposit request.
+    No balance changes here. Staff adds on accept.
+    """
+    ensure_user(user.id)
+    u = data[str(user.id)]
+
+    amount = parse_amount(amount_str, u.get("gems", 0), allow_all=False)
+    if amount is None or amount <= 0:
+        return await interaction.response.send_message(
+            "❌ Invalid amount.", ephemeral=True
+        )
+
+    entry = _create_deposit_entry(
+        user=user,
+        dtype=dtype,
+        amount=int(amount),
+        roblox_username=roblox_username,
+    )
+
+    # history (info only)
+    add_history(user.id, {
+        "game": f"deposit_{dtype}",
+        "bet": 0,
+        "result": "pending",
+        "earned": 0,
+        "timestamp": time.time()
+    })
+
+    await interaction.response.send_message(
+        f"✅ Your **{dtype}** deposit request has been created.\n"
+        f"ID: **#{entry['id']}**\n"
+        f"Amount: **{fmt(amount)}**.\n"
+        f"Staff will handle it soon.",
+        ephemeral=True
+    )
+
+    await notify_owner(
+        "New Deposit Request",
+        f"User {user.mention} created a {dtype} deposit.",
+        [
+            ("User", f"{user.mention} (`{user.id}`)", False),
+            ("Type", dtype, True),
+            ("Amount", fmt(amount), True),
+            ("Roblox Username", roblox_username or "None / EXP", False),
+            ("Entry ID", f"#{entry['id']}", True),
+        ],
+    )
+
+
+# ==============================================================
+#            ROBLOX AVATAR CONFIRM VIEWS (YES / NO)
+# ==============================================================
+
+class RobloxConfirmView(discord.ui.View):
+    def __init__(self, user: discord.User, username: str, roblox_id: int,
+                 avatar_url: str | None, mode: str, amount_str: str):
+        """
+        mode: 'withdraw_gems' or 'deposit_gems'
+        """
+        super().__init__(timeout=60)
+        self.target = user
+        self.username = username
+        self.roblox_id = roblox_id
+        self.avatar_url = avatar_url
+        self.mode = mode
+        self.amount_str = amount_str
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message(
+                "❌ This confirmation is not for you.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="✅ Yes, that's me", style=discord.ButtonStyle.success)
+    async def yes_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # store link
+        set_roblox_link_for(
+            discord_id=self.target.id,
+            username=self.username,
+            roblox_id=self.roblox_id,
+            avatar_url=self.avatar_url
+        )
+
+        if self.mode == "withdraw_gems":
+            await finalize_withdraw(
+                interaction=interaction,
+                user=self.target,
+                wtype="gems",
+                amount_str=self.amount_str,
+                roblox_username=self.username
+            )
+        else:  # deposit_gems
+            await finalize_deposit(
+                interaction=interaction,
+                user=self.target,
+                dtype="gems",
+                amount_str=self.amount_str,
+                roblox_username=self.username
+            )
+
+        self.stop()
+
+    @discord.ui.button(label="❌ No, that's not me", style=discord.ButtonStyle.danger)
+    async def no_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Just cancel, DM owner
+        await interaction.response.send_message(
+            "❌ Withdraw/Deposit cancelled. Please try again with the correct Roblox username.",
+            ephemeral=True
+        )
+
+        await notify_owner(
+            "Roblox Avatar Rejected",
+            f"{self.target.mention} rejected the shown Roblox account.",
+            [
+                ("User", f"{self.target.mention} (`{self.target.id}`)", False),
+                ("Entered Username", self.username, True),
+                ("Roblox ID", str(self.roblox_id), True),
+            ],
+        )
+        self.stop()
+
+
+# ==============================================================
+#                      WITHDRAW COMMAND
+# ==============================================================
+
+class WithdrawGemsModal(discord.ui.Modal, title="Gems Withdraw"):
+    def __init__(self, user: discord.User):
+        super().__init__(timeout=120)
+        self.target = user
+
+        self.roblox_username = discord.ui.TextInput(
+            label="Roblox Username",
+            placeholder="Your Roblox username",
+            min_length=3,
+            max_length=30
+        )
+        self.amount = discord.ui.TextInput(
+            label="Amount (e.g. 100m, 250k)",
+            placeholder="Only the amount, no 'all'",
+        )
+        self.add_item(self.roblox_username)
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        username = str(self.roblox_username.value).strip()
+        amount_str = str(self.amount.value).strip()
+
+        # If we already have a stored link with same username, skip lookup
+        existing = get_roblox_link_for(self.target.id)
+        if existing and existing.get("username", "").lower() == username.lower():
+            # Directly finalize (no avatar popup again)
+            await finalize_withdraw(
+                interaction=interaction,
+                user=self.target,
+                wtype="gems",
+                amount_str=amount_str,
+                roblox_username=username
+            )
+            return
+
+        # New username → lookup + avatar confirm
+        rid, display_name, avatar_url = await roblox_lookup(username)
+        if not rid:
+            return await interaction.response.send_message(
+                "❌ Could not find this Roblox username. Check spelling and try again.",
+                ephemeral=True
+            )
+
+        embed = discord.Embed(
+            title="🔍 Roblox Account Check",
+            description=(
+                f"Is this your Roblox account?\n\n"
+                f"**Username:** `{display_name}`\n"
+                f"**ID:** `{rid}`\n\n"
+                f"If yes, I will link this account to your Discord for future gems withdraws/deposits."
+            ),
+            color=galaxy_color()
+        )
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+
+        view = RobloxConfirmView(
+            user=self.target,
+            username=username,
+            roblox_id=rid,
+            avatar_url=avatar_url,
+            mode="withdraw_gems",
+            amount_str=amount_str
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class WithdrawExpModal(discord.ui.Modal, title="EXP Withdraw"):
+    def __init__(self, user: discord.User):
+        super().__init__(timeout=120)
+        self.target = user
+
+        self.amount = discord.ui.TextInput(
+            label="Amount (e.g. 100m, 250k)",
+            placeholder="Only the amount, no 'all'",
+        )
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        amount_str = str(self.amount.value).strip()
+        # No username needed here
+        await finalize_withdraw(
+            interaction=interaction,
+            user=self.target,
+            wtype="exp",
+            amount_str=amount_str,
+            roblox_username=None
+        )
+
+
+class WithdrawChoiceView(discord.ui.View):
+    def __init__(self, user: discord.User):
+        super().__init__(timeout=60)
+        self.target = user
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message(
+                "❌ This withdraw menu is not for you.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="💎 Gems Withdraw", style=discord.ButtonStyle.primary)
+    async def gems_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(WithdrawGemsModal(self.target))
+
+    @discord.ui.button(label="⭐ EXP Withdraw", style=discord.ButtonStyle.secondary)
+    async def exp_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(WithdrawExpModal(self.target))
+
+
+@bot.command()
+async def withdraw(ctx):
+    """
+    Player command:
+    !withdraw  -> opens panel with Gems / EXP withdraw (forms)
+    """
+    ensure_user(ctx.author.id)
+
+    embed = discord.Embed(
+        title="🏦 Withdraw Panel",
+        description=(
+            "Choose what you want to withdraw:\n\n"
+            "💎 **Gems** — 1.2x fee (remove 1.2x from your gems balance)\n"
+            "⭐ **EXP** — 1.9x fee (remove 1.9x from your EXP balance)\n\n"
+            "⚠ Only **one pending withdraw** at a time.\n"
+            f"⚠ Max per 48h: **{fmt(WITHDRAW_GEMS_LIMIT_2D)} gems**, "
+            f"**{fmt(WITHDRAW_EXP_LIMIT_2D)} EXP**.\n"
+            "⚠ 30 minutes cooldown between withdraws."
+        ),
+        color=galaxy_color()
+    )
+    view = WithdrawChoiceView(ctx.author)
+    await ctx.send(embed=embed, view=view)
+
+
+# ==============================================================
+#                      DEPOSIT COMMAND
+# ==============================================================
+
+class DepositGemsModal(discord.ui.Modal, title="Gems Deposit"):
+    def __init__(self, user: discord.User):
+        super().__init__(timeout=120)
+        self.target = user
+
+        self.roblox_username = discord.ui.TextInput(
+            label="Roblox Username",
+            placeholder="Your Roblox username",
+            min_length=3,
+            max_length=30
+        )
+        self.amount = discord.ui.TextInput(
+            label="Amount (e.g. 100m, 250k)",
+            placeholder="Only the amount, no 'all'",
+        )
+        self.add_item(self.roblox_username)
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        username = str(self.roblox_username.value).strip()
+        amount_str = str(self.amount.value).strip()
+
+        existing = get_roblox_link_for(self.target.id)
+        if existing and existing.get("username", "").lower() == username.lower():
+            await finalize_deposit(
+                interaction=interaction,
+                user=self.target,
+                dtype="gems",
+                amount_str=amount_str,
+                roblox_username=username
+            )
+            return
+
+        rid, display_name, avatar_url = await roblox_lookup(username)
+        if not rid:
+            return await interaction.response.send_message(
+                "❌ Could not find this Roblox username. Check spelling and try again.",
+                ephemeral=True
+            )
+
+        embed = discord.Embed(
+            title="🔍 Roblox Account Check",
+            description=(
+                f"Is this your Roblox account for **GEMS deposit**?\n\n"
+                f"**Username:** `{display_name}`\n"
+                f"**ID:** `{rid}`\n\n"
+                f"If yes, I will link this account to your Discord for future gems operations."
+            ),
+            color=galaxy_color()
+        )
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+
+        view = RobloxConfirmView(
+            user=self.target,
+            username=username,
+            roblox_id=rid,
+            avatar_url=avatar_url,
+            mode="deposit_gems",
+            amount_str=amount_str
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class DepositExpModal(discord.ui.Modal, title="EXP Deposit"):
+    def __init__(self, user: discord.User):
+        super().__init__(timeout=120)
+        self.target = user
+
+        self.amount = discord.ui.TextInput(
+            label="Amount (e.g. 100m, 250k)",
+            placeholder="Only the amount, no 'all'",
+        )
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        amount_str = str(self.amount.value).strip()
+        await finalize_deposit(
+            interaction=interaction,
+            user=self.target,
+            dtype="exp",
+            amount_str=amount_str,
+            roblox_username=None   # admin will manage for EXP in panel
+        )
+
+
+class DepositChoiceView(discord.ui.View):
+    def __init__(self, user: discord.User):
+        super().__init__(timeout=60)
+        self.target = user
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message(
+                "❌ This deposit menu is not for you.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="💎 Gems Deposit", style=discord.ButtonStyle.primary)
+    async def gems_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DepositGemsModal(self.target))
+
+    @discord.ui.button(label="⭐ EXP Deposit", style=discord.ButtonStyle.secondary)
+    async def exp_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DepositExpModal(self.target))
+
+
+@bot.command()
+async def deposit(ctx):
+    """
+    Player command:
+    !deposit  -> opens panel with Gems / EXP deposit (forms)
+    """
+    ensure_user(ctx.author.id)
+
+    embed = discord.Embed(
+        title="🏦 Deposit Panel",
+        description=(
+            "Create a **pending** deposit request:\n\n"
+            "💎 **Gems** — Roblox username required (avatar check)\n"
+            "⭐ **EXP** — No username here, staff uses panel side\n\n"
+            "Deposits **do not change your balance automatically**.\n"
+            "Staff accepts them in the admin panel and then adds the amount."
+        ),
+        color=galaxy_color()
+    )
+    view = DepositChoiceView(ctx.author)
+    await ctx.send(embed=embed, view=view)
+
+
+# ==============================================================
+#               ADMIN WITHDRAW PANEL (!withdrawpanel)
+# ==============================================================
+
+class WithdrawAdminView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, entries: list[dict]):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.entries = entries
+        self.index = 0
+
+    def current(self):
+        if not self.entries:
+            return None
+        if self.index < 0:
+            self.index = 0
+        if self.index >= len(self.entries):
+            self.index = len(self.entries) - 1
+        return self.entries[self.index]
+
+    def make_embed(self):
+        cur = self.current()
+        if not cur:
+            return discord.Embed(
+                title="🏦 Withdraw Queue",
+                description="No pending withdraws.",
+                color=galaxy_color()
+            )
+
+        user_id = cur["user_id"]
+        user = self.ctx.guild.get_member(user_id)
+
+        e = discord.Embed(
+            title=f"🏦 Withdraw #{cur['id']} — {cur['type'].upper()}",
+            color=galaxy_color()
+        )
+        e.add_field(name="User", value=f"<@{user_id}> (`{user_id}`)", inline=False)
+        e.add_field(name="Type", value=cur["type"], inline=True)
+        e.add_field(name="Requested", value=fmt(cur["amount"]), inline=True)
+        e.add_field(name="Deducted", value=fmt(cur["deducted"]), inline=True)
+        e.add_field(name="Roblox Username", value=cur.get("roblox_username") or "None (EXP?)", inline=False)
+        ts = datetime.utcfromtimestamp(cur["created_at"]).strftime("%Y-%m-%d %H:%M:%S UTC")
+        e.add_field(name="Created", value=ts, inline=False)
+        e.set_footer(text=f"Entry {self.index+1} / {len(self.entries)} — use buttons below.")
+        return e
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    async def on_timeout(self):
+        for b in self.children:
+            b.disabled = True
+
+    @discord.ui.button(label="⬅ Prev", style=discord.ButtonStyle.secondary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        if not self.entries:
+            return await interaction.response.send_message("No entries.", ephemeral=True)
+        self.index = max(0, self.index - 1)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Next ➡", style=discord.ButtonStyle.secondary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        if not self.entries:
+            return await interaction.response.send_message("No entries.", ephemeral=True)
+        self.index = min(len(self.entries) - 1, self.index + 1)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        cur = self.current()
+        if not cur:
+            return await interaction.response.send_message("No entry.", ephemeral=True)
+        if cur["status"] != "pending":
+            return await interaction.response.send_message("Already handled.", ephemeral=True)
+
+        cur["status"] = "accepted"
+        save_data(data)
+
+        await interaction.response.send_message(
+            f"✅ Withdraw **#{cur['id']}** marked as **ACCEPTED**.\n"
+            f"Remember: payout is manual (Roblox / external).",
+            ephemeral=True
+        )
+
+        await notify_owner(
+            "Withdraw ACCEPTED",
+            f"Admin {interaction.user.mention} accepted withdraw #{cur['id']}.",
+            [
+                ("User", f"<@{cur['user_id']}> (`{cur['user_id']}`)", False),
+                ("Type", cur["type"], True),
+                ("Requested", fmt(cur["amount"]), True),
+                ("Deducted", fmt(cur["deducted"]), True),
+                ("Roblox Username", cur.get("roblox_username") or "None", False),
+            ],
+        )
+
+    @discord.ui.button(label="❌ Deny + Refund", style=discord.ButtonStyle.danger)
+    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        cur = self.current()
+        if not cur:
+            return await interaction.response.send_message("No entry.", ephemeral=True)
+        if cur["status"] != "pending":
+            return await interaction.response.send_message("Already handled.", ephemeral=True)
+
+        # Refund deducted amount
+        uid = str(cur["user_id"])
+        ensure_user(uid)
+        u = data[uid]
+        if cur["type"] == "gems":
+            u["gems"] = float(u.get("gems", 0)) + cur["deducted"]
+        else:
+            u["exp"] = float(u.get("exp", 0)) + cur["deducted"]
+        save_data(data)
+
+        cur["status"] = "denied"
+        save_data(data)
+
+        await interaction.response.send_message(
+            f"❌ Withdraw **#{cur['id']}** denied. "
+            f"Refunded **{fmt(cur['deducted'])} {cur['type']}** to user.",
+            ephemeral=True
+        )
+
+        await notify_owner(
+            "Withdraw DENIED",
+            f"Admin {interaction.user.mention} denied withdraw #{cur['id']} and refunded.",
+            [
+                ("User", f"<@{cur['user_id']}> (`{cur['user_id']}`)", False),
+                ("Type", cur["type"], True),
+                ("Requested", fmt(cur["amount"]), True),
+                ("Refunded", fmt(cur["deducted"]), True),
+            ],
+        )
+
+    @discord.ui.button(label="🛑 Close", style=discord.ButtonStyle.secondary)
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        for b in self.children:
+            b.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def withdrawpanel(ctx):
+    """
+    Admin command:
+    !withdrawpanel  -> open admin viewer for pending withdraws
+    """
+    pending = [w for w in data.get("withdrawals", []) if w.get("status") == "pending"]
+    if not pending:
+        return await ctx.send("✅ No pending withdraws.")
+
+    view = WithdrawAdminView(ctx, pending)
+    await ctx.send(embed=view.make_embed(), view=view)
+
+
+# ==============================================================
+#               ADMIN DEPOSIT PANEL (!depositpanel)
+# ==============================================================
+
+class DepositAdminView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, entries: list[dict]):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.entries = entries
+        self.index = 0
+
+    def current(self):
+        if not self.entries:
+            return None
+        if self.index < 0:
+            self.index = 0
+        if self.index >= len(self.entries):
+            self.index = len(self.entries) - 1
+        return self.entries[self.index]
+
+    def make_embed(self):
+        cur = self.current()
+        if not cur:
+            return discord.Embed(
+                title="🏦 Deposit Queue",
+                description="No pending deposits.",
+                color=galaxy_color()
+            )
+
+        user_id = cur["user_id"]
+
+        e = discord.Embed(
+            title=f"🏦 Deposit #{cur['id']} — {cur['type'].upper()}",
+            color=galaxy_color()
+        )
+        e.add_field(name="User", value=f"<@{user_id}> (`{user_id}`)", inline=False)
+        e.add_field(name="Type", value=cur["type"], inline=True)
+        e.add_field(name="Amount", value=fmt(cur["amount"]), inline=True)
+        e.add_field(name="Roblox Username", value=cur.get("roblox_username") or "None (EXP / not provided)", inline=False)
+        ts = datetime.utcfromtimestamp(cur["created_at"]).strftime("%Y-%m-%d %H:%M:%S UTC")
+        e.add_field(name="Created", value=ts, inline=False)
+        e.set_footer(text=f"Entry {self.index+1} / {len(self.entries)} — use buttons below.")
+        return e
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    async def on_timeout(self):
+        for b in self.children:
+            b.disabled = True
+
+    @discord.ui.button(label="⬅ Prev", style=discord.ButtonStyle.secondary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        if not self.entries:
+            return await interaction.response.send_message("No entries.", ephemeral=True)
+        self.index = max(0, self.index - 1)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Next ➡", style=discord.ButtonStyle.secondary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        if not self.entries:
+            return await interaction.response.send_message("No entries.", ephemeral=True)
+        self.index = min(len(self.entries) - 1, self.index + 1)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="✅ Accept + Add Balance", style=discord.ButtonStyle.success)
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        cur = self.current()
+        if not cur:
+            return await interaction.response.send_message("No entry.", ephemeral=True)
+        if cur["status"] != "pending":
+            return await interaction.response.send_message("Already handled.", ephemeral=True)
+
+        uid = str(cur["user_id"])
+        ensure_user(uid)
+        u = data[uid]
+
+        if cur["type"] == "gems":
+            u["gems"] = float(u.get("gems", 0)) + cur["amount"]
+        else:
+            u["exp"] = float(u.get("exp", 0)) + cur["amount"]
+        save_data(data)
+
+        cur["status"] = "accepted"
+        save_data(data)
+
+        await interaction.response.send_message(
+            f"✅ Deposit **#{cur['id']}** accepted.\n"
+            f"Added **{fmt(cur['amount'])} {cur['type']}** to user balance.",
+            ephemeral=True
+        )
+
+        await notify_owner(
+            "Deposit ACCEPTED",
+            f"Admin {interaction.user.mention} accepted deposit #{cur['id']}.",
+            [
+                ("User", f"<@{cur['user_id']}> (`{cur['user_id']}`)", False),
+                ("Type", cur["type"], True),
+                ("Amount", fmt(cur["amount"]), True),
+            ],
+        )
+
+    @discord.ui.button(label="❌ Deny (no balance change)", style=discord.ButtonStyle.danger)
+    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        cur = self.current()
+        if not cur:
+            return await interaction.response.send_message("No entry.", ephemeral=True)
+        if cur["status"] != "pending":
+            return await interaction.response.send_message("Already handled.", ephemeral=True)
+
+        cur["status"] = "denied"
+        save_data(data)
+
+        await interaction.response.send_message(
+            f"❌ Deposit **#{cur['id']}** denied. No balance change.",
+            ephemeral=True
+        )
+
+        await notify_owner(
+            "Deposit DENIED",
+            f"Admin {interaction.user.mention} denied deposit #{cur['id']}.",
+            [
+                ("User", f"<@{cur['user_id']}> (`{cur['user_id']}`)", False),
+                ("Type", cur["type"], True),
+                ("Amount", fmt(cur["amount"]), True),
+            ],
+        )
+
+    @discord.ui.button(label="🛑 Close", style=discord.ButtonStyle.secondary)
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
+        for b in self.children:
+            b.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def depositpanel(ctx):
+    """
+    Admin command:
+    !depositpanel  -> open admin viewer for pending deposits
+    """
+    pending = [d for d in data.get("deposits", []) if d.get("status") == "pending"]
+    if not pending:
+        return await ctx.send("✅ No pending deposits.")
+
+    view = DepositAdminView(ctx, pending)
+    await ctx.send(embed=view.make_embed(), view=view)
+
+
+
+
+
+
 
 # ==============================================================
 #                     DAILY QUEST SYSTEM
@@ -1251,694 +2371,6 @@ async def questclaim(ctx):
     save_data(data)
 
     await ctx.send("🎉 You claimed **100m gems + 10% deposit bonus**! Nice work!")
-
-
-
-
-
-
-
-# ==============================================================
-#                       WITHDRAW SYSTEM
-# ==============================================================
-
-class GemsWithdrawModal(Modal, title="Gems Withdraw"):
-    def __init__(self, requester: discord.Member):
-        super().__init__()
-        self.requester = requester
-
-        self.roblox_name = TextInput(
-            label="Roblox Username",
-            placeholder="Your Roblox username",
-            required=True,
-            max_length=40
-        )
-        self.amount = TextInput(
-            label="Amount (e.g. 100m)",
-            placeholder="Use numbers: 100m, 250k, 1b...",
-            required=True,
-            max_length=20
-        )
-        self.add_item(self.roblox_name)
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester.id:
-            return await interaction.response.send_message(
-                "❌ Not your modal.", ephemeral=True
-            )
-
-        raw_amount = self.amount.value
-        parsed = parse_amount(raw_amount, None, allow_all=False)
-        if parsed is None or parsed <= 0:
-            return await interaction.response.send_message(
-                "❌ Invalid amount.", ephemeral=True
-            )
-
-        amount_int = int(parsed)
-        roblox_username = self.roblox_name.value.strip()
-
-        # Fetch avatar
-        user_id, avatar_url = await fetch_roblox_avatar(roblox_username)
-        if not user_id:
-            return await interaction.response.send_message(
-                "❌ I couldn't find that Roblox user. Check spelling and try again.",
-                ephemeral=True
-            )
-
-        embed = discord.Embed(
-            title="Roblox Identity Check",
-            description=(
-                f"Is this your Roblox account?\n\n"
-                f"👤 **{roblox_username}** (ID: `{user_id}`)\n"
-                f"Requested withdraw: **{fmt(amount_int)} gems**\n\n"
-                "Confirm to create a withdraw request."
-            ),
-            color=galaxy_color()
-        )
-        embed.set_image(url=avatar_url)
-
-        view = ConfirmRobloxView(
-            requester_id=self.requester.id,
-            roblox_username=roblox_username,
-            amount=amount_int,
-            kind="gems",
-            currency="gems",
-            avatar_url=avatar_url,
-            roblox_user_id=user_id,
-            is_withdraw=True
-        )
-
-        await interaction.response.send_message(
-            embed=embed,
-            view=view,
-            ephemeral=True
-        )
-
-
-class ExpWithdrawModal(Modal, title="EXP Withdraw"):
-    def __init__(self, requester: discord.Member):
-        super().__init__()
-        self.requester = requester
-
-        self.amount = TextInput(
-            label="Amount (e.g. 100m EXP)",
-            placeholder="Use numbers: 100m, 250k, 1b...",
-            required=True,
-            max_length=20
-        )
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester.id:
-            return await interaction.response.send_message(
-                "❌ Not your modal.", ephemeral=True
-            )
-
-        raw_amount = self.amount.value
-        parsed = parse_amount(raw_amount, None, allow_all=False)
-        if parsed is None or parsed <= 0:
-            return await interaction.response.send_message(
-                "❌ Invalid amount.", ephemeral=True
-            )
-
-        amount_int = int(parsed)
-        uid = str(self.requester.id)
-        ensure_user(self.requester.id)
-        u = data[uid]
-
-        # Check if already has pending withdraw
-        pending = any(
-            w.get("user_id") == self.requester.id and w.get("status") == "pending"
-            for w in data.get("withdrawals", [])
-        )
-        if pending:
-            return await interaction.response.send_message(
-                "❌ You already have a **pending withdraw**. Wait until it is processed.",
-                ephemeral=True
-            )
-
-        # Limits / cooldown (EXP)
-        ok, reason = _can_withdraw_now(uid, "exp", amount_int)
-        if not ok:
-            return await interaction.response.send_message(
-                reason, ephemeral=True
-            )
-
-        # Cost factor 1.9x
-        cost = int(amount_int * 1.9)
-        if u["gems"] < cost:
-            return await interaction.response.send_message(
-                (
-                    f"❌ You don't have enough gems.\n"
-                    f"Needed: **{fmt(cost)}**, you have: **{fmt(u['gems'])}**."
-                ),
-                ephemeral=True
-            )
-
-        u["gems"] -= cost
-        save_data(data)
-
-        wid = data.get("next_withdraw_id", 1)
-        entry = {
-            "id": wid,
-            "user_id": self.requester.id,
-            "currency": "exp",
-            "amount": amount_int,
-            "cost": cost,
-            "roblox_username": None,  # will be filled by admin later
-            "roblox_user_id": None,
-            "avatar_url": None,
-            "created_at": time.time(),
-            "status": "pending",
-            "reason": None,
-        }
-        data["next_withdraw_id"] = wid + 1
-        data.setdefault("withdrawals", []).append(entry)
-        save_data(data)
-
-        _mark_withdraw_used(uid, "exp", amount_int)
-
-        add_history(self.requester.id, {
-            "game": "withdraw_exp",
-            "bet": cost,
-            "result": "pending",
-            "earned": -cost,
-            "timestamp": time.time()
-        })
-
-        await dm_owner_new_request("withdraw", entry)
-
-        embed = discord.Embed(
-            title="✅ EXP Withdraw Request Created",
-            description=(
-                f"ID: **#{wid}**\n"
-                f"Amount: **{fmt(amount_int)} EXP**\n"
-                f"Cost charged: **{fmt(cost)} gems**\n\n"
-                "Admin will process it in the withdraw panel.\n"
-                "Roblox username will be attached by admin."
-            ),
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(
-            embed=embed,
-            ephemeral=True
-        )
-
-
-@bot.command()
-async def withdraw(ctx):
-    """
-    Opens a small menu → choose GEMS or EXP withdraw.
-    Then a modal pops up.
-    """
-    if ctx.channel.category_id in DISABLED_CATEGORIES:
-        return
-
-    class WithdrawTypeView(View):
-        def __init__(self, author: discord.Member):
-            super().__init__(timeout=30)
-            self.author = author
-
-        @discord.ui.button(label="💎 GEMS Withdraw", style=discord.ButtonStyle.primary)
-        async def gems_btn(self, interaction: discord.Interaction, button: Button):
-            if interaction.user.id != self.author.id:
-                return await interaction.response.send_message(
-                    "❌ Not your withdraw menu.", ephemeral=True
-                )
-            await interaction.response.send_modal(GemsWithdrawModal(self.author))
-
-        @discord.ui.button(label="⭐ EXP Withdraw", style=discord.ButtonStyle.secondary)
-        async def exp_btn(self, interaction: discord.Interaction, button: Button):
-            if interaction.user.id != self.author.id:
-                return await interaction.response.send_message(
-                    "❌ Not your withdraw menu.", ephemeral=True
-                )
-            await interaction.response.send_modal(ExpWithdrawModal(self.author))
-
-    view = WithdrawTypeView(ctx.author)
-    embed = discord.Embed(
-        title="🏦 Withdraw Menu",
-        description="Choose what you want to withdraw:",
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed, view=view)
-
-
-# ==============================================================
-#                       DEPOSIT SYSTEM
-# ==============================================================
-
-class GemsDepositModal(Modal, title="Gems Deposit"):
-    def __init__(self, requester: discord.Member):
-        super().__init__()
-        self.requester = requester
-
-        self.roblox_name = TextInput(
-            label="Roblox Username",
-            placeholder="Your Roblox username",
-            required=True,
-            max_length=40
-        )
-        self.amount = TextInput(
-            label="Amount (e.g. 100m)",
-            placeholder="Use numbers: 100m, 250k, 1b...",
-            required=True,
-            max_length=20
-        )
-        self.add_item(self.roblox_name)
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester.id:
-            return await interaction.response.send_message(
-                "❌ Not your modal.", ephemeral=True
-            )
-
-        raw_amount = self.amount.value
-        parsed = parse_amount(raw_amount, None, allow_all=False)
-        if parsed is None or parsed <= 0:
-            return await interaction.response.send_message(
-                "❌ Invalid amount.", ephemeral=True
-            )
-
-        amount_int = int(parsed)
-        roblox_username = self.roblox_name.value.strip()
-
-        user_id, avatar_url = await fetch_roblox_avatar(roblox_username)
-        if not user_id:
-            return await interaction.response.send_message(
-                "❌ I couldn't find that Roblox user. Check spelling and try again.",
-                ephemeral=True
-            )
-
-        embed = discord.Embed(
-            title="Roblox Identity Check",
-            description=(
-                f"Is this your Roblox account?\n\n"
-                f"👤 **{roblox_username}** (ID: `{user_id}`)\n"
-                f"Requested deposit: **{fmt(amount_int)} gems**\n\n"
-                "Confirm to create a deposit request."
-            ),
-            color=galaxy_color()
-        )
-        embed.set_image(url=avatar_url)
-
-        view = ConfirmRobloxView(
-            requester_id=self.requester.id,
-            roblox_username=roblox_username,
-            amount=amount_int,
-            kind="gems",
-            currency="gems",
-            avatar_url=avatar_url,
-            roblox_user_id=user_id,
-            is_withdraw=False
-        )
-
-        await interaction.response.send_message(
-            embed=embed,
-            view=view,
-            ephemeral=True
-        )
-
-
-class ExpDepositModal(Modal, title="EXP Deposit"):
-    def __init__(self, requester: discord.Member):
-        super().__init__()
-        self.requester = requester
-
-        self.amount = TextInput(
-            label="Amount (e.g. 100m EXP)",
-            placeholder="Use numbers: 100m, 250k, 1b...",
-            required=True,
-            max_length=20
-        )
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester.id:
-            return await interaction.response.send_message(
-                "❌ Not your modal.", ephemeral=True
-            )
-
-        raw_amount = self.amount.value
-        parsed = parse_amount(raw_amount, None, allow_all=False)
-        if parsed is None or parsed <= 0:
-            return await interaction.response.send_message(
-                "❌ Invalid amount.", ephemeral=True
-            )
-
-        amount_int = int(parsed)
-        uid = str(self.requester.id)
-        ensure_user(self.requester.id)
-
-        did = data.get("next_deposit_id", 1)
-        entry = {
-            "id": did,
-            "user_id": self.requester.id,
-            "currency": "exp",
-            "amount": amount_int,
-            "roblox_username": None,  # admin will fill
-            "roblox_user_id": None,
-            "avatar_url": None,
-            "created_at": time.time(),
-            "status": "pending",
-            "reason": None,
-        }
-        data["next_deposit_id"] = did + 1
-        data.setdefault("deposits", []).append(entry)
-        save_data(data)
-
-        add_history(self.requester.id, {
-            "game": "deposit_exp",
-            "bet": 0,
-            "result": "pending",
-            "earned": 0,
-            "timestamp": time.time()
-        })
-
-        await dm_owner_new_request("deposit", entry)
-
-        embed = discord.Embed(
-            title="✅ EXP Deposit Request Created",
-            description=(
-                f"ID: **#{did}**\n"
-                f"Amount: **{fmt(amount_int)} EXP**\n\n"
-                "Admin will process it in the deposit panel.\n"
-                "Roblox username will be attached by admin."
-            ),
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(
-            embed=embed,
-            ephemeral=True
-        )
-
-
-@bot.command()
-async def deposit(ctx):
-    """
-    Opens a small menu → choose GEMS or EXP deposit.
-    """
-    if ctx.channel.category_id in DISABLED_CATEGORIES:
-        return
-
-    class DepositTypeView(View):
-        def __init__(self, author: discord.Member):
-            super().__init__(timeout=30)
-            self.author = author
-
-        @discord.ui.button(label="💎 GEMS Deposit", style=discord.ButtonStyle.primary)
-        async def gems_btn(self, interaction: discord.Interaction, button: Button):
-            if interaction.user.id != self.author.id:
-                return await interaction.response.send_message(
-                    "❌ Not your deposit menu.", ephemeral=True
-                )
-            await interaction.response.send_modal(GemsDepositModal(self.author))
-
-        @discord.ui.button(label="⭐ EXP Deposit", style=discord.ButtonStyle.secondary)
-        async def exp_btn(self, interaction: discord.Interaction, button: Button):
-            if interaction.user.id != self.author.id:
-                return await interaction.response.send_message(
-                    "❌ Not your deposit menu.", ephemeral=True
-                )
-            await interaction.response.send_modal(ExpDepositModal(self.author))
-
-    view = DepositTypeView(ctx.author)
-    embed = discord.Embed(
-        title="🏦 Deposit Menu",
-        description="Choose what you want to deposit:",
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed, view=view)
-
-
-# ==============================================================
-#                 ADMIN PANELS: WITHDRAW / DEPOSIT
-# ==============================================================
-
-def _get_pending_entries(kind: str):
-    if kind == "withdraw":
-        return [w for w in data.get("withdrawals", []) if w.get("status") == "pending"]
-    else:
-        return [d for d in data.get("deposits", []) if d.get("status") == "pending"]
-
-
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def withdrawpanel(ctx):
-    pending = _get_pending_entries("withdraw")
-    if not pending:
-        return await ctx.send("✅ No pending withdraws.")
-
-    # limit to 25 for select
-    pending = sorted(pending, key=lambda e: e["id"])[:25]
-
-    class WithdrawSelect(discord.ui.Select):
-        def __init__(self, entries):
-            options = []
-            for e in entries:
-                uid = e["user_id"]
-                member = ctx.guild.get_member(uid)
-                name = member.name if member else str(uid)
-                label = f"#{e['id']} — {fmt(e['amount'])} {e['currency']} by {name}"
-                options.append(discord.SelectOption(label=label, value=str(e["id"])))
-            super().__init__(placeholder="Select a withdraw to manage", options=options)
-            self.entries = {str(e["id"]): e for e in entries}
-
-        async def callback(self, interaction: discord.Interaction):
-            if not interaction.user.guild_permissions.manage_guild:
-                return await interaction.response.send_message(
-                    "❌ Admins only.", ephemeral=True
-                )
-            wid = self.values[0]
-            entry = self.entries[wid]
-            await show_withdraw_controls(interaction, entry)
-
-    class WithdrawPanelView(View):
-        def __init__(self, entries):
-            super().__init__(timeout=180)
-            self.add_item(WithdrawSelect(entries))
-
-    async def show_withdraw_controls(interaction: discord.Interaction, entry: dict):
-        uid = entry["user_id"]
-        member = ctx.guild.get_member(uid)
-        name = member.mention if member else f"`{uid}`"
-
-        desc = (
-            f"ID: **#{entry['id']}**\n"
-            f"User: {name}\n"
-            f"Currency: **{entry['currency']}**\n"
-            f"Requested: **{fmt(entry['amount'])}**\n"
-            f"Cost charged: **{fmt(entry.get('cost', 0))} gems**\n"
-            f"Roblox: `{entry.get('roblox_username') or 'N/A'}`\n"
-            f"Status: **{entry['status']}**"
-        )
-
-        embed = discord.Embed(
-            title="Withdraw Control",
-            description=desc,
-            color=galaxy_color()
-        )
-
-        class ControlView(View):
-            def __init__(self):
-                super().__init__(timeout=60)
-
-            @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success)
-            async def approve(self, i: discord.Interaction, button: Button):
-                if not i.user.guild_permissions.manage_guild:
-                    return await i.response.send_message("❌ Admins only.", ephemeral=True)
-                if entry["status"] != "pending":
-                    return await i.response.send_message("❌ Already processed.", ephemeral=True)
-
-                entry["status"] = "approved"
-                save_data(data)
-
-                await i.response.edit_message(
-                    embed=discord.Embed(
-                        title="✅ Withdraw Approved",
-                        description=desc + "\n\nStatus updated to **approved**.",
-                        color=discord.Color.green()
-                    ),
-                    view=None
-                )
-
-            @discord.ui.button(label="❌ Deny + Refund", style=discord.ButtonStyle.danger)
-            async def deny(self, i: discord.Interaction, button: Button):
-                if not i.user.guild_permissions.manage_guild:
-                    return await i.response.send_message("❌ Admins only.", ephemeral=True)
-                if entry["status"] != "pending":
-                    return await i.response.send_message("❌ Already processed.", ephemeral=True)
-
-                entry["status"] = "denied"
-                save_data(data)
-
-                # refund cost
-                cost = int(entry.get("cost", 0))
-                if cost > 0:
-                    ensure_user(uid)
-                    data[str(uid)]["gems"] += cost
-                    save_data(data)
-
-                await i.response.edit_message(
-                    embed=discord.Embed(
-                        title="❌ Withdraw Denied",
-                        description=desc + "\n\nStatus updated to **denied** (cost refunded).",
-                        color=discord.Color.red()
-                    ),
-                    view=None
-                )
-
-        await interaction.response.send_message(
-            embed=embed,
-            view=ControlView(),
-            ephemeral=True
-        )
-
-    embed = discord.Embed(
-        title="Withdraw Panel",
-        description="Select a withdraw request to approve or deny.",
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed, view=WithdrawPanelView(pending))
-
-
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def depositpanel(ctx):
-    pending = _get_pending_entries("deposit")
-    if not pending:
-        return await ctx.send("✅ No pending deposits.")
-
-    pending = sorted(pending, key=lambda e: e["id"])[:25]
-
-    class DepositSelect(discord.ui.Select):
-        def __init__(self, entries):
-            options = []
-            for e in entries:
-                uid = e["user_id"]
-                member = ctx.guild.get_member(uid)
-                name = member.name if member else str(uid)
-                label = f"#{e['id']} — {fmt(e['amount'])} {e['currency']} by {name}"
-                options.append(discord.SelectOption(label=label, value=str(e["id"])))
-            super().__init__(placeholder="Select a deposit to manage", options=options)
-            self.entries = {str(e["id"]): e for e in entries}
-
-        async def callback(self, interaction: discord.Interaction):
-            if not interaction.user.guild_permissions.manage_guild:
-                return await interaction.response.send_message(
-                    "❌ Admins only.", ephemeral=True
-                )
-            did = self.values[0]
-            entry = self.entries[did]
-            await show_deposit_controls(interaction, entry)
-
-    class DepositPanelView(View):
-        def __init__(self, entries):
-            super().__init__(timeout=180)
-            self.add_item(DepositSelect(entries))
-
-    async def show_deposit_controls(interaction: discord.Interaction, entry: dict):
-        uid = entry["user_id"]
-        member = ctx.guild.get_member(uid)
-        name = member.mention if member else f"`{uid}`"
-
-        desc = (
-            f"ID: **#{entry['id']}**\n"
-            f"User: {name}\n"
-            f"Currency: **{entry['currency']}**\n"
-            f"Amount: **{fmt(entry['amount'])}**\n"
-            f"Roblox: `{entry.get('roblox_username') or 'N/A'}`\n"
-            f"Status: **{entry['status']}**"
-        )
-
-        embed = discord.Embed(
-            title="Deposit Control",
-            description=desc,
-            color=galaxy_color()
-        )
-
-        class ControlView(View):
-            def __init__(self):
-                super().__init__(timeout=60)
-
-            @discord.ui.button(label="✅ Approve (give gems)", style=discord.ButtonStyle.success)
-            async def approve(self, i: discord.Interaction, button: Button):
-                if not i.user.guild_permissions.manage_guild:
-                    return await i.response.send_message("❌ Admins only.", ephemeral=True)
-                if entry["status"] != "pending":
-                    return await i.response.send_message("❌ Already processed.", ephemeral=True)
-
-                ensure_user(uid)
-                # Apply deposit bonus if any
-                bonus_map = data.setdefault("deposit_bonuses", {})
-                bonus_percent = bonus_map.get(str(uid), 0)
-                base = int(entry["amount"])
-                bonus_amount = int(base * (bonus_percent / 100))
-                total_credit = base + bonus_amount
-
-                data[str(uid)]["gems"] += total_credit
-                # consume bonus
-                bonus_map[str(uid)] = 0
-                entry["status"] = "approved"
-                save_data(data)
-
-                add_history(uid, {
-                    "game": "deposit_claimed",
-                    "bet": 0,
-                    "result": "approved",
-                    "earned": total_credit,
-                    "timestamp": time.time()
-                })
-
-                txt = (
-                    desc
-                    + f"\n\nCredited: **{fmt(base)}** gems"
-                    + (f" + **{fmt(bonus_amount)}** bonus ({bonus_percent}%)" if bonus_amount > 0 else "")
-                )
-
-                await i.response.edit_message(
-                    embed=discord.Embed(
-                        title="✅ Deposit Approved",
-                        description=txt,
-                        color=discord.Color.green()
-                    ),
-                    view=None
-                )
-
-            @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
-            async def deny(self, i: discord.Interaction, button: Button):
-                if not i.user.guild_permissions.manage_guild:
-                    return await i.response.send_message("❌ Admins only.", ephemeral=True)
-                if entry["status"] != "pending":
-                    return await i.response.send_message("❌ Already processed.", ephemeral=True)
-
-                entry["status"] = "denied"
-                save_data(data)
-
-                await i.response.edit_message(
-                    embed=discord.Embed(
-                        title="❌ Deposit Denied",
-                        description=desc + "\n\nStatus updated to **denied**.",
-                        color=discord.Color.red()
-                    ),
-                    view=None
-                )
-
-        await interaction.response.send_message(
-            embed=embed,
-            view=ControlView(),
-            ephemeral=True
-        )
-
-    embed = discord.Embed(
-        title="Deposit Panel",
-        description="Select a deposit request to approve or deny.",
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed, view=DepositPanelView(pending))
-
 
 
 
@@ -4730,8 +5162,8 @@ async def help(ctx):
             "**!wheel** — Spin the daily wheel\n"
             "**!gift @user amount** — Gift gems\n"
             "**!sell <name> <income> <price>** — Create a listing\n"
-            "**!withdrawpanel** — Open withdraw panel (buttons & form)\n"
-            "**!depositpanel** — Open deposit panel (buttons & form)"
+            "**!withdraw** — Start a withdraw request (form)\n"
+            "**!deposit** — Start a deposit request (form)"
         ),
         inline=False
     )
@@ -4788,10 +5220,6 @@ async def help(ctx):
 
 
 
-
-
-
-
 # ==============================================================
 #                       HELP (ADMIN)
 # ==============================================================
@@ -4804,7 +5232,7 @@ async def helpadmin(ctx):
         color=galaxy_color()
     )
 
-    # ---------------- Currency Control ----------------
+    # ---------------- Currency Management ----------------
     embed.add_field(
         name="💰 Gem / EXP Management",
         value=(
@@ -4818,16 +5246,19 @@ async def helpadmin(ctx):
         inline=False
     )
 
-    # ---------------- Withdraw / Deposit Panels ----------------
+    # ---------------- Withdraw & Deposit Panels ----------------
     embed.add_field(
         name="🏦 Withdraw & Deposit System",
         value=(
-            "**!withdrawadminpanel** — Admin panel to Accept / Deny+Refund withdrawals\n"
-            "**!depositadminpanel** — Admin panel to Accept / Deny deposits\n\n"
-            "✔ Withdraw requests automatically deduct balance (1.2x gems / 1.9x exp)\n"
-            "✔ Denying a withdraw refunds the *original* amount\n"
-            "✔ Accepting a withdraw only removes it from the queue (manual payout)\n"
-            "✔ Deposits add balance ONLY when accepted"
+            "**!withdrawpanel** — Open withdraw admin panel (Accept / Deny)\n"
+            "**!depositpanel** — Open deposit admin panel (Accept / Deny)\n\n"
+            "✔ Withdraw auto-fees: **1.2× for gems**, **1.9× for EXP**\n"
+            "✔ Gems withdraws require Roblox avatar confirmation\n"
+            "✔ EXP withdraws do NOT require Roblox username\n"
+            "✔ Owner receives DM for EVERY action\n"
+            "✔ Users may only have ONE active request\n"
+            "✔ 30-minute cooldown between withdraws\n"
+            "✔ Max 500m per request, 750m every 2 days"
         ),
         inline=False
     )
@@ -4836,9 +5267,9 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🎡 Wheel System",
         value=(
-            "**!wheel** — Daily player spin (1 every 24 hours)\n"
-            "Uses real weighted rewards: 5m, 10m, 10% bonus, 25% bonus, 100m, 200m\n"
-            "Jackpot items shown visually but impossible (0% chance)"
+            "**!wheel** — Daily spin (24h cooldown)\n"
+            "Weighted rewards: 5m, 10m, 10% bonus, 25% bonus, 100m, 200m\n"
+            "Jackpots shown visually but 0% chance"
         ),
         inline=False
     )
@@ -4847,9 +5278,9 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🎡 Admin Wheel Controls",
         value=(
-            "**!adminwheel @user <spins>** — Give bonus wheel spins ignoring cooldown\n"
+            "**!adminwheel @user <spins>** — Give extra wheel spins\n"
             "**!adminwheel everyone <spins>** — Give spins to all players\n\n"
-            "Extra spins stored in `wheel_extra_spins` and consumed on next `!wheel` use."
+            "Extra spins stored and consumed on next `!wheel` use."
         ),
         inline=False
     )
@@ -4860,13 +5291,16 @@ async def helpadmin(ctx):
         value=(
             "**!backup** — Force a JSON backup upload\n"
             "**!membercount** — Show server stats\n"
-            "Automatic backups run every 10 minutes."
+            "Automatic backups every 10 minutes."
         ),
         inline=False
     )
 
-    embed.set_footer(text="Admins need 'Manage Server' permission to use these commands.")
+    embed.set_footer(text="Admins require 'Manage Server' permission.")
     await ctx.send(embed=embed)
+
+
+
 
 
 
