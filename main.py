@@ -4081,14 +4081,13 @@ async def help(ctx):
     embed.add_field(
         name="💰 Economy",
         value=(
-            "**!balance / !bal [@user]** — Check gems\n"
+            "**!balance / !bal [@user]** — Check your gems/exp\n"
             "**!daily** — Claim daily 25m\n"
-            "**!wheel** — Claim daily Wheel\n"
+            "**!wheel** — Spin the daily wheel\n"
             "**!gift @user amount** — Gift gems\n"
             "**!sell <name> <income> <price>** — Create a listing\n"
-            "**!withdraw 'username' 'amount' 'Gems/EXP'** — Request withdrawal\n"
-            "**!deposit 'username' 'amount' 'Gems/EXP'** — Create deposit request\n"
-            "**!list** — View pending withdraw queue"
+            "**!withdrawpanel** — Open withdraw panel (buttons & form)\n"
+            "**!depositpanel** — Open deposit panel (buttons & form)"
         ),
         inline=False
     )
@@ -4101,7 +4100,7 @@ async def help(ctx):
             "**!slots amount** — Slot machine\n"
             "**!mines amount [mines]** — Mines game\n"
             "**!tower amount** — 10-floor tower\n"
-            "**!blackjack amount** — Interactive blackjack\n"
+            "**!blackjack amount** — Blackjack game\n"
             "**!chests** — Open Galaxy Chests"
         ),
         inline=False
@@ -4111,7 +4110,7 @@ async def help(ctx):
     embed.add_field(
         name="📘 Daily Quests",
         value=(
-            "**!quest** — Check your daily quest progress\n"
+            "**!quest** — Check daily quest progress\n"
             "**!questclaim** — Claim quest reward (100m + 10% deposit bonus)"
         ),
         inline=False
@@ -4122,27 +4121,26 @@ async def help(ctx):
         name="📊 Player Information",
         value=(
             "**!history** — Last 10 games\n"
-            "**!stats** — Full stats\n"
+            "**!stats** — Player stats\n"
             "**!leaderboard** — Top richest players\n"
-            "**!membercount** — Server stats"
+            "**!membercount** — Server statistics"
         ),
         inline=False
     )
 
-    # ---------------- Events ----------------
+    # ---------------- Fun Events ----------------
     embed.add_field(
         name="🎟 Events",
         value=(
             "**!guessthecolor amount** — Guess the color\n"
-            "**!guessthenumber amount** — Guess a number 1–10\n"
-            "**!splitorsteal amount** — PvP Split-or-Steal game"
+            "**!guessthenumber amount** — Guess between 1–10\n"
+            "**!splitorsteal amount** — PvP Split-or-Steal"
         ),
         inline=False
     )
 
     embed.set_footer(text="Galaxy Casino • Good luck 💎🌌")
     await ctx.send(embed=embed)
-
 
 
 
@@ -4158,7 +4156,7 @@ async def help(ctx):
 async def helpadmin(ctx):
     embed = discord.Embed(
         title="🛠 Galaxy Casino — Admin Commands",
-        description="Full administrative control panel:",
+        description="Full administrative command panel:",
         color=galaxy_color()
     )
 
@@ -4166,58 +4164,66 @@ async def helpadmin(ctx):
     embed.add_field(
         name="💰 Gem / EXP Management",
         value=(
-            "**!admin give @user amount** — Add gems\n"
-            "**!admin remove @user amount** — Remove gems (can go negative)\n"
-            "**!giverole <role> amount** — Give gems to all humans in a role\n"
-            "**!removerole <role> amount** — Remove gems from all humans in a role\n"
+            "**!admin give @user amount** — Add gems/exp manually\n"
+            "**!admin remove @user amount** — Remove gems/exp (can go negative)\n"
+            "**!giverole <role> amount** — Give gems to everyone with a role\n"
+            "**!removerole <role> amount** — Remove gems from everyone with a role\n"
             "**!giveall amount** — Give gems to the entire server\n"
-            "**!tax percent** — Remove % of every user's balance"
+            "**!tax percent** — Tax all balances by %"
         ),
         inline=False
     )
 
-    # ---------------- Withdraw / Deposit ----------------
+    # ---------------- Withdraw / Deposit Panels ----------------
     embed.add_field(
-        name="🏦 Withdraw & Deposit",
+        name="🏦 Withdraw & Deposit System",
         value=(
-            "**!withdrawlist** — Show all pending withdrawals\n"
-            "**!claimwithdraw <id>** — Mark withdrawal as claimed\n"
-            "**!denywithdraw <id> [reason]** — Deny and refund\n\n"
-            "**!depositlist** — Show all pending deposits\n"
-            "**!claimdeposit <id>** — Claim deposit (applies stored deposit bonus)\n"
-            "**!denydeposit <id> [reason]** — Deny deposit\n\n"
-            "💳 Deposit Bonus: earned via `!wheel`, stored per user and consumed on the **next claimed deposit**."
+            "**!withdrawadminpanel** — Admin panel to Accept / Deny+Refund withdrawals\n"
+            "**!depositadminpanel** — Admin panel to Accept / Deny deposits\n\n"
+            "✔ Withdraw requests automatically deduct balance (1.2x gems / 1.9x exp)\n"
+            "✔ Denying a withdraw refunds the *original* amount\n"
+            "✔ Accepting a withdraw only removes it from the queue (manual payout)\n"
+            "✔ Deposits add balance ONLY when accepted"
         ),
         inline=False
     )
 
-    # ---------------- Wheel ----------------
+    # ---------------- Wheel System ----------------
     embed.add_field(
         name="🎡 Wheel System",
         value=(
-            "**!wheel** — Daily spin (1x every 24h)\n"
-            "Real weighted rewards: 5m, 10m, 10% bonus, 25% bonus, 100m, 200m.\n"
-            "Huge rewards are **visible but 0% chance** to bait players.\n"
-            "Includes wheel animation + slowing effect."
+            "**!wheel** — Daily player spin (1 every 24 hours)\n"
+            "Uses real weighted rewards: 5m, 10m, 10% bonus, 25% bonus, 100m, 200m\n"
+            "Jackpot items shown visually but impossible (0% chance)"
         ),
         inline=False
     )
 
-    # ---------------- Admin Wheel (NEW) ----------------
+    # ---------------- Admin Wheel ----------------
     embed.add_field(
-        name="🎡 Admin Wheel — Force Spins (NEW)",
+        name="🎡 Admin Wheel Controls",
         value=(
-            "**!adminwheel @user <spins>** — Give wheel spins to ONE user (ignores cooldown)\n"
-            "**!adminwheel everyone <spins>** — Give spins to ALL users (no ping)\n\n"
-            "Admin wheel uses the **same reward chances**.\n"
-            "Animation still plays.\n"
-            "0% rewards are still shown visually but never chosen."
+            "**!adminwheel @user <spins>** — Give bonus wheel spins ignoring cooldown\n"
+            "**!adminwheel everyone <spins>** — Give spins to all players\n\n"
+            "Extra spins stored in `wheel_extra_spins` and consumed on next `!wheel` use."
+        ),
+        inline=False
+    )
+
+    # ---------------- Server Tools ----------------
+    embed.add_field(
+        name="🛡 Moderation & Tools",
+        value=(
+            "**!backup** — Force a JSON backup upload\n"
+            "**!membercount** — Show server stats\n"
+            "Automatic backups run every 10 minutes."
         ),
         inline=False
     )
 
     embed.set_footer(text="Admins need 'Manage Server' permission to use these commands.")
     await ctx.send(embed=embed)
+
 
 
 
