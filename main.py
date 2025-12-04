@@ -37,6 +37,15 @@ WITHDRAW_COOLDOWN = 30 * 60               # 30 minutes
 
 
 
+# Fix missing keys in old withdrawals
+for w in data.get("withdrawals", []):
+    w.setdefault("type", "gems")        # default guess
+    w.setdefault("roblox_user", None)
+    w.setdefault("roblox_avatar", None)
+
+
+
+
 # --------------------------------------------------------------
 #                    DATA MANAGEMENT (LOAD / SAVE)
 # --------------------------------------------------------------
