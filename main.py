@@ -12,8 +12,6 @@ import aiohttp  # NEW: for Roblox API
 from discord.ui import Button, View, Modal, TextInput
 
 
-data = load_data()
-
 
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "casino_data.json"
