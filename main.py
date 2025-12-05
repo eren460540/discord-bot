@@ -12,6 +12,9 @@ import aiohttp  # NEW: for Roblox API
 from discord.ui import Button, View, Modal, TextInput
 
 
+data = load_data()
+
+
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "casino_data.json"
 JOINS_CHANNEL = 1443625716859273406
@@ -790,6 +793,61 @@ def consume_rig(u):
 
     save_data(data)
     return mode
+
+
+
+# ==============================================================
+#                 CRITICAL DATA PATCH FIX (RUN ONCE)
+# ==============================================================
+# This runs every startup and gently fixes old data formats.
+# It is SAFE to keep; it won't break anything if run again.
+
+# Ensure new global dicts exist
+if "wheel_extra_spins" not in data or not isinstance(data["wheel_extra_spins"], dict):
+    data["wheel_extra_spins"] = {}
+
+if "wheel_last_spin" not in data or not isinstance(data["wheel_last_spin"], dict):
+    data["wheel_last_spin"] = {}
+
+if "withdraw_history" not in data or not isinstance(data["withdraw_history"], dict):
+    data["withdraw_history"] = {}
+
+if "withdraw_last_time" not in data or not isinstance(data["withdraw_last_time"], dict):
+    data["withdraw_last_time"] = {}
+
+if "roblox_links" not in data or not isinstance(data["roblox_links"], dict):
+    data["roblox_links"] = {}
+
+# ---------------- FIX OLD WITHDRAW ENTRIES ----------------
+for w in data.get("withdrawals", []):
+    if not isinstance(w, dict):
+        continue
+
+    # New system expects w["type"] ("gems" / "exp")
+    if "type" not in w:
+        # migrate from old "currency" if exists, else default to "gems"
+        w["type"] = w.get("currency", "gems")
+
+    # If old field name "cost" was used, create "deducted" for the new code
+    if "deducted" not in w and "cost" in w:
+        w["deducted"] = w["cost"]
+
+# ---------------- FIX OLD DEPOSIT ENTRIES ----------------
+for d in data.get("deposits", []):
+    if not isinstance(d, dict):
+        continue
+
+    # New system expects d["type"]
+    if "type" not in d:
+        d["type"] = d.get("currency", "gems")
+
+# Save fixed structure
+save_data(data)
+# ==============================================================
+
+
+
+
 
 #  ---------------------- BACKUP SYSTEM ---------------------- #
 
@@ -2463,7 +2521,7 @@ def build_spin_sequence(prize_index: int, num_slots: int) -> list[int]:
     return seq
 
 
- # --------------------------------------------------------------
+# --------------------------------------------------------------
 #                           !wheel
 # --------------------------------------------------------------
 @bot.command()
@@ -2474,20 +2532,33 @@ async def wheel(ctx):
     - Extra spins (no cooldown) from !adminwheel
     - Animated arrow in embed
     """
+
     uid = str(ctx.author.id)
     ensure_user(uid)
 
-    # ---- EXTRA SPINS OVERRIDE COOLDOWN ----
+    # ---------------------------
+    # SAFETY: Ensure structures exist
+    # ---------------------------
+    if "wheel_extra_spins" not in data or not isinstance(data["wheel_extra_spins"], dict):
+        data["wheel_extra_spins"] = {}
+
+    if "wheel_last_spin" not in data or not isinstance(data["wheel_last_spin"], dict):
+        data["wheel_last_spin"] = {}
+
+    # --------------------------------------------------
+    # EXTRA SPINS (no cooldown)
+    # --------------------------------------------------
     extra_spins = data["wheel_extra_spins"].get(uid, 0)
+    bypass_cooldown = False
 
     if extra_spins > 0:
         data["wheel_extra_spins"][uid] = extra_spins - 1
         save_data(data)
         bypass_cooldown = True
-    else:
-        bypass_cooldown = False
 
-    # ---- NORMAL COOLDOWN IF NO EXTRA ----
+    # --------------------------------------------------
+    # NORMAL COOLDOWN (24h)
+    # --------------------------------------------------
     now = time.time()
     last = data["wheel_last_spin"].get(uid, 0)
 
@@ -2505,18 +2576,18 @@ async def wheel(ctx):
         save_data(data)
 
     # --------------------------------------------------
-    # PREPARE ANIMATION
+    # SPIN ANIMATION SETUP
     # --------------------------------------------------
     names = [p["name"] for p in WHEEL_PRIZES]
 
-    # decide REAL prize via weights
+    # choose prize via weight
     prize_obj = pick_prize()
     prize_index = WHEEL_PRIZES.index(prize_obj)
 
-    # build sequence for arrow moves
+    # arrow movement sequence
     sequence = build_spin_sequence(prize_index, len(names))
 
-    # first embed
+    # initial embed
     embed = discord.Embed(
         title="🎡 Galaxy Wheel",
         description="Spinning...",
@@ -2525,7 +2596,7 @@ async def wheel(ctx):
     msg = await ctx.send(embed=embed)
 
     # --------------------------------------------------
-    # ANIMATION: arrow moving down list in embed
+    # ANIMATION LOOP
     # --------------------------------------------------
     for step, idx in enumerate(sequence):
         lines = []
@@ -2540,19 +2611,18 @@ async def wheel(ctx):
             "\n".join(lines)
         )
 
-        embed = discord.Embed(
+        anim_embed = discord.Embed(
             title="🎡 Galaxy Wheel",
             description=desc,
             color=galaxy_color()
         )
+        await msg.edit(embed=anim_embed)
 
-        await msg.edit(embed=embed)
-
-        # slow down towards the end
+        # slowdown effect
         await asyncio.sleep(0.08 + step * 0.04)
 
     # --------------------------------------------------
-    # APPLY PRIZE (after animation)
+    # APPLY PRIZE
     # --------------------------------------------------
     if prize_obj["type"] == "gems":
         data[uid]["gems"] = data[uid].get("gems", 0) + prize_obj["amount"]
@@ -2567,6 +2637,9 @@ async def wheel(ctx):
         })
 
     elif prize_obj["type"] == "bonus":
+        if "deposit_bonuses" not in data:
+            data["deposit_bonuses"] = {}
+
         bonus_map = data["deposit_bonuses"]
         bonus_map[uid] = bonus_map.get(uid, 0) + prize_obj["bonus"]
         save_data(data)
@@ -2595,8 +2668,10 @@ async def wheel(ctx):
         description=final_desc,
         color=galaxy_color()
     )
+
     await msg.edit(embed=result_embed)
-    
+
+
 
 # --------------------------------------------------------------
 #                        !adminwheel
@@ -2605,16 +2680,24 @@ async def wheel(ctx):
 @commands.has_guild_permissions(manage_guild=True)
 async def adminwheel(ctx, target: str, spins: int):
     """
-    Give extra wheel spins that ignore cooldown.
+    Give extra wheel spins (ignore cooldown)
     Usage:
       !adminwheel @user 3
       !adminwheel everyone 2
     """
 
+    # -------------------------
+    # SAFETY: ensure structure
+    # -------------------------
+    if "wheel_extra_spins" not in data or not isinstance(data["wheel_extra_spins"], dict):
+        data["wheel_extra_spins"] = {}
+
     if spins <= 0:
         return await ctx.send("❌ Spins must be a positive number.")
 
-    # ----- GIVE TO EVERYONE -----
+    # -------------------------
+    # GIVE TO EVERYONE
+    # -------------------------
     if target.lower() == "everyone":
         count = 0
         for member in ctx.guild.members:
@@ -2628,11 +2711,12 @@ async def adminwheel(ctx, target: str, spins: int):
 
         save_data(data)
         return await ctx.send(
-            f"🌍 Gave **{spins} extra spins** to **{count} users**. "
-            f"They can use them with `!wheel`."
+            f"🌍 Gave **{spins} extra spins** to **{count} users**."
         )
 
-    # ----- GIVE TO ONE USER (mention) -----
+    # -------------------------
+    # GIVE TO ONE USER (mention)
+    # -------------------------
     if not ctx.message.mentions:
         return await ctx.send("❌ Mention a user or use `everyone`.")
 
@@ -2644,8 +2728,7 @@ async def adminwheel(ctx, target: str, spins: int):
     save_data(data)
 
     await ctx.send(
-        f"🎡 Gave **{spins} extra spins** to {user.mention}. "
-        f"They can use them with `!wheel`."
+        f"🎡 Gave **{spins} extra spins** to {user.mention}."
     )
 
 
