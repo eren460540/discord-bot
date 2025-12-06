@@ -1164,7 +1164,7 @@ async def roblox_verification_flow(interaction: discord.Interaction, roblox_user
 #                 DEPOSIT / WITHDRAW DATA DEFAULTS
 # ==============================================================
 
-# Add these near your other data.setdefault(...) calls
+# Core defaults
 data.setdefault("withdrawals", [])
 data.setdefault("deposits", [])
 data.setdefault("next_withdraw_id", 1)
@@ -1181,6 +1181,29 @@ if not isinstance(data.get("deposits"), list):
     data["deposits"] = []
 save_data(data)
 
+# --- MIGRATION PATCH FOR OLD ENTRIES (fix KeyError: 'type') ---
+changed = False
+
+for w in data.get("withdrawals", []):
+    if "type" not in w:
+        # Best guess: old system probably only had gems
+        w["type"] = "gems"
+        changed = True
+    if "status" not in w:
+        w["status"] = "pending"
+        changed = True
+
+for d in data.get("deposits", []):
+    if "type" not in d:
+        d["type"] = "gems"
+        changed = True
+    if "status" not in d:
+        d["status"] = "pending"
+        changed = True
+
+if changed:
+    save_data(data)
+
 
 # ==============================================================
 #                 WITHDRAW / DEPOSIT CONSTANTS
@@ -1191,7 +1214,7 @@ WITHDRAW_EXP_LIMIT_2D  = 750_000_000     # 750m in 48h
 WITHDRAW_WINDOW_SEC    = 2 * 24 * 3600   # 2 days
 WITHDRAW_COOLDOWN_SEC  = 30 * 60         # 30 minutes
 
-WITHDRAW_GEMS_FEE = 1.2      # 1.2x removed from gems
+WITHDRAW_GEMS_FEE = 1.2      # 1.2x removed from gems  (20% penalty)
 WITHDRAW_EXP_FEE  = 1.9      # 1.9x removed from exp
 
 
@@ -1288,6 +1311,56 @@ def set_roblox_link_for(discord_id: int, username: str, roblox_id: int, avatar_u
         "avatar_url": avatar_url,
     }
     save_data(data)
+
+
+# ==============================================================
+#      HELPERS: FIND DUPLICATE ROBLOX ACCOUNTS (MULTI DISCORD)
+# ==============================================================
+
+def find_roblox_duplicates():
+    """
+    Returns dict[roblox_id] -> list[discord_id] where same roblox_id
+    is linked by 2+ different Discord accounts.
+    """
+    links = data.get("roblox_links", {})
+    by_rid: dict[int, list[int]] = {}
+
+    for did_str, info in links.items():
+        try:
+            did = int(did_str)
+        except ValueError:
+            continue
+        rid = info.get("user_id")
+        if not rid:
+            continue
+        by_rid.setdefault(rid, []).append(did)
+
+    duplicates = {rid: dids for rid, dids in by_rid.items() if len(dids) > 1}
+    return duplicates
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def robloxdupes(ctx):
+    """
+    Admin command: show all Roblox accounts linked by multiple Discord users.
+    Usage: !robloxdupes
+    """
+    duplicates = find_roblox_duplicates()
+    if not duplicates:
+        return await ctx.send("✅ No duplicated Roblox links found.")
+
+    desc_lines = []
+    for rid, discord_ids in duplicates.items():
+        mentions = " ".join(f"<@{did}>" for did in discord_ids)
+        desc_lines.append(f"**Roblox ID:** `{rid}`\nDiscord: {mentions}\n")
+
+    embed = discord.Embed(
+        title="⚠️ Duplicated Roblox Links",
+        description="\n".join(desc_lines),
+        color=discord.Color.orange()
+    )
+    await ctx.send(embed=embed)
 
 
 # ==============================================================
@@ -1472,7 +1545,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
         )
         return
 
-    # balance + fee
+    # balance + fee (20% penalty for gems via 1.2x)
     if wtype == "gems":
         fee_mult = WITHDRAW_GEMS_FEE
         balance = float(u.get("gems", 0))
@@ -1525,7 +1598,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
         ephemeral=True
     )
 
-    # owner DM
+    # owner DM (ALWAYS)
     await notify_owner(
         "New Withdraw Request",
         f"User {user.mention} created a {wtype} withdraw.",
@@ -1582,6 +1655,7 @@ async def finalize_deposit(interaction: discord.Interaction,
         ephemeral=True
     )
 
+    # owner DM (ALWAYS)
     await notify_owner(
         "New Deposit Request",
         f"User {user.mention} created a {dtype} deposit.",
@@ -1621,6 +1695,29 @@ class RobloxConfirmView(discord.ui.View):
             return False
         return True
 
+    async def _check_and_notify_duplicates(self):
+        """
+        After a user links a Roblox account, check if same roblox_id
+        is used by multiple Discord users and DM owner.
+        """
+        duplicates = find_roblox_duplicates()
+        if self.roblox_id not in duplicates:
+            return
+
+        dids = duplicates[self.roblox_id]
+        fields = []
+        mention_list = []
+        for did in dids:
+            mention_list.append(f"<@{did}> (`{did}`)")
+        fields.append(("Discord Users", "\n".join(mention_list), False))
+
+        await notify_owner(
+            "⚠️ Same Roblox Account Linked by Multiple Discord Users",
+            f"Roblox ID `{self.roblox_id}` / username `{self.username}` "
+            f"is linked to multiple Discord accounts.",
+            fields
+        )
+
     @discord.ui.button(label="✅ Yes, that's me", style=discord.ButtonStyle.success)
     async def yes_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # store link
@@ -1631,6 +1728,10 @@ class RobloxConfirmView(discord.ui.View):
             avatar_url=self.avatar_url
         )
 
+        # Check duplicates and notify owner if needed
+        await self._check_and_notify_duplicates()
+
+        # Continue flow
         if self.mode == "withdraw_gems":
             await finalize_withdraw(
                 interaction=interaction,
@@ -1696,20 +1797,22 @@ class WithdrawGemsModal(discord.ui.Modal, title="Gems Withdraw"):
         username = str(self.roblox_username.value).strip()
         amount_str = str(self.amount.value).strip()
 
-        # If we already have a stored link with same username, skip lookup
+        # Check if user is changing username vs stored one (for DM to owner)
         existing = get_roblox_link_for(self.target.id)
-        if existing and existing.get("username", "").lower() == username.lower():
-            # Directly finalize (no avatar popup again)
-            await finalize_withdraw(
-                interaction=interaction,
-                user=self.target,
-                wtype="gems",
-                amount_str=amount_str,
-                roblox_username=username
-            )
-            return
+        if existing:
+            old_username = existing.get("username", "")
+            if old_username and old_username.lower() != username.lower():
+                await notify_owner(
+                    "Roblox Username Changed (Withdraw)",
+                    f"{self.target.mention} used a DIFFERENT Roblox username in withdraw.",
+                    [
+                        ("User", f"{self.target.mention} (`{self.target.id}`)", False),
+                        ("Old Username", old_username, True),
+                        ("New Username", username, True),
+                    ],
+                )
 
-        # New username → lookup + avatar confirm
+        # ALWAYS do lookup and avatar confirm (even if same username)
         rid, display_name, avatar_url = await roblox_lookup(username)
         if not rid:
             return await interaction.response.send_message(
@@ -1720,10 +1823,10 @@ class WithdrawGemsModal(discord.ui.Modal, title="Gems Withdraw"):
         embed = discord.Embed(
             title="🔍 Roblox Account Check",
             description=(
-                f"Is this your Roblox account?\n\n"
+                f"Is this your Roblox account for **GEMS withdraw**?\n\n"
                 f"**Username:** `{display_name}`\n"
                 f"**ID:** `{rid}`\n\n"
-                f"If yes, I will link this account to your Discord for future gems withdraws/deposits."
+                f"If yes, this account will be linked to your Discord for gems withdraws/deposits."
             ),
             color=galaxy_color()
         )
@@ -1799,7 +1902,7 @@ async def withdraw(ctx):
         title="🏦 Withdraw Panel",
         description=(
             "Choose what you want to withdraw:\n\n"
-            "💎 **Gems** — 1.2x fee (remove 1.2x from your gems balance)\n"
+            "💎 **Gems** — 1.2x fee (20% penalty; remove 1.2x from your gems balance)\n"
             "⭐ **EXP** — 1.9x fee (remove 1.9x from your EXP balance)\n\n"
             "⚠ Only **one pending withdraw** at a time.\n"
             f"⚠ Max per 48h: **{fmt(WITHDRAW_GEMS_LIMIT_2D)} gems**, "
@@ -1838,17 +1941,22 @@ class DepositGemsModal(discord.ui.Modal, title="Gems Deposit"):
         username = str(self.roblox_username.value).strip()
         amount_str = str(self.amount.value).strip()
 
+        # Check if user is changing username vs stored one (DM owner)
         existing = get_roblox_link_for(self.target.id)
-        if existing and existing.get("username", "").lower() == username.lower():
-            await finalize_deposit(
-                interaction=interaction,
-                user=self.target,
-                dtype="gems",
-                amount_str=amount_str,
-                roblox_username=username
-            )
-            return
+        if existing:
+            old_username = existing.get("username", "")
+            if old_username and old_username.lower() != username.lower():
+                await notify_owner(
+                    "Roblox Username Changed (Deposit)",
+                    f"{self.target.mention} used a DIFFERENT Roblox username in deposit.",
+                    [
+                        ("User", f"{self.target.mention} (`{self.target.id}`)", False),
+                        ("Old Username", old_username, True),
+                        ("New Username", username, True),
+                    ],
+                )
 
+        # ALWAYS avatar lookup + confirm
         rid, display_name, avatar_url = await roblox_lookup(username)
         if not rid:
             return await interaction.response.send_message(
@@ -1862,7 +1970,7 @@ class DepositGemsModal(discord.ui.Modal, title="Gems Deposit"):
                 f"Is this your Roblox account for **GEMS deposit**?\n\n"
                 f"**Username:** `{display_name}`\n"
                 f"**ID:** `{rid}`\n\n"
-                f"If yes, I will link this account to your Discord for future gems operations."
+                f"If yes, this account will be linked to your Discord for gems operations."
             ),
             color=galaxy_color()
         )
@@ -1937,7 +2045,7 @@ async def deposit(ctx):
         title="🏦 Deposit Panel",
         description=(
             "Create a **pending** deposit request:\n\n"
-            "💎 **Gems** — Roblox username required (avatar check)\n"
+            "💎 **Gems** — Roblox username required (avatar check every time)\n"
             "⭐ **EXP** — No username here, staff uses panel side\n\n"
             "Deposits **do not change your balance automatically**.\n"
             "Staff accepts them in the admin panel and then adds the amount."
@@ -1978,7 +2086,6 @@ class WithdrawAdminView(discord.ui.View):
             )
 
         user_id = cur["user_id"]
-        user = self.ctx.guild.get_member(user_id)
 
         e = discord.Embed(
             title=f"🏦 Withdraw #{cur['id']} — {cur['type'].upper()}",
@@ -2274,6 +2381,8 @@ async def depositpanel(ctx):
 
     view = DepositAdminView(ctx, pending)
     await ctx.send(embed=view.make_embed(), view=view)
+
+
 
 
 
