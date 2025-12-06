@@ -845,6 +845,48 @@ save_data(data)
 
 
 
+# ==============================================================
+# 🔧 HARD PATCH — FIX OLD WITHDRAW/DEPOSIT ENTRIES (type/status)
+# ==============================================================
+
+changed = False
+
+# --- Fix withdrawals ---
+if not isinstance(data.get("withdrawals"), list):
+    data["withdrawals"] = []
+    changed = True
+
+for w in data["withdrawals"]:
+    if "type" not in w:
+        w["type"] = "gems"   # DEFAULT → gems
+        changed = True
+    if "status" not in w:
+        w["status"] = "pending"
+        changed = True
+    if "deducted" not in w:
+        w["deducted"] = w.get("amount", 0)
+        changed = True
+
+# --- Fix deposits ---
+if not isinstance(data.get("deposits"), list):
+    data["deposits"] = []
+    changed = True
+
+for d in data["deposits"]:
+    if "type" not in d:
+        d["type"] = "gems"
+        changed = True
+    if "status" not in d:
+        d["status"] = "pending"
+        changed = True
+
+if changed:
+    print("⚠️ Patched old withdraw/deposit entries automatically.")
+    save_data(data)
+
+
+
+
 
 
 #  ---------------------- BACKUP SYSTEM ---------------------- #
