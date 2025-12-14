@@ -325,9 +325,12 @@ class ConfirmRobloxView(View):
         entry = {
             "id": wid,
             "user_id": self.requester_id,
-            "currency": "gems",
+            # modern fields expected by admin panels
+            "type": "gems",
+            "currency": "gems",  # legacy name kept for compatibility
             "amount": self.amount,
             "cost": cost,
+            "deducted": cost,
             "roblox_username": self.roblox_username,
             "roblox_user_id": self.roblox_user_id,
             "avatar_url": self.avatar_url,
@@ -378,7 +381,9 @@ class ConfirmRobloxView(View):
         entry = {
             "id": did,
             "user_id": self.requester_id,
-            "currency": "gems",
+            # modern fields expected by admin panels
+            "type": "gems",
+            "currency": "gems",  # legacy name kept for compatibility
             "amount": self.amount,
             "roblox_username": self.roblox_username,
             "roblox_user_id": self.roblox_user_id,
