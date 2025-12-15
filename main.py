@@ -589,6 +589,14 @@ def _mark_withdraw_used(uid: str, kind: str, amount: int):
 
 FREE_SOURCES = {"daily", "work", "invite_reward", "admin_give", "dropbox"}
 GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack"}
+ACHIEVEMENT_DEFS = {
+    "first_loan": {"emoji": "🌌", "name": "First Loan"},
+    "paid_first_loan": {"emoji": "💎", "name": "Debt Crusher"},
+    "debt_free": {"emoji": "🏆", "name": "Debt-Free Voyager"},
+    "high_roller": {"emoji": "🔥", "name": "High Roller"},
+    "daily_streak_7": {"emoji": "🪐", "name": "7-Day Streak"},
+}
+HIGH_ROLLER_WAGER = 1_000_000_000
 
 
 def compute_gamble_ratio(user_id):
@@ -648,6 +656,46 @@ def galaxy_color():
     return random.choice(GALAXY_COLORS)
 
 
+def _loan_record(uid: str):
+    ensure_user(uid)
+    return data[str(uid)].get("loan")
+
+
+def _set_loan(uid: str, loan):
+    ensure_user(uid)
+    data[str(uid)]["loan"] = loan
+    save_data(data)
+
+
+def _loan_is_restricted(uid: str):
+    loan = _loan_record(uid)
+    if not loan:
+        return False
+    return loan.get("status") in {"active", "defaulted"}
+
+
+def grant_achievement(uid: str, key: str):
+    if key not in ACHIEVEMENT_DEFS:
+        return False
+    ensure_user(uid)
+    ach = data[str(uid)].setdefault("achievements", {})
+    if ach.get(key):
+        return False
+    ach[key] = True
+    save_data(data)
+    return True
+
+
+def _check_achievements(uid: str):
+    ensure_user(uid)
+    u = data[str(uid)]
+    if u.get("lifetime_wagered", 0) >= HIGH_ROLLER_WAGER:
+        grant_achievement(uid, "high_roller")
+    loan = u.get("loan")
+    if not loan or loan.get("status") == "paid":
+        grant_achievement(uid, "debt_free")
+
+
 def ensure_user(user_id):
     uid = str(user_id)
     if uid not in data:
@@ -661,6 +709,9 @@ def ensure_user(user_id):
     u.setdefault("curse_infinite", False)
     u.setdefault("bless_charges", 0)
     u.setdefault("curse_charges", 0)
+    u.setdefault("lifetime_wagered", 0)
+    u.setdefault("loan", None)
+    u.setdefault("achievements", {})
     save_data(data)
 
 
@@ -676,6 +727,8 @@ def add_history(user_id, entry):
         _quest_add_earn(uid, earned)
     if bet > 0 and game in GAMBLE_GAMES:
         _quest_add_wager(uid, bet)
+        data[uid]["lifetime_wagered"] = data[uid].get("lifetime_wagered", 0) + bet
+        _check_achievements(uid)
 
     hist = data[uid].get("history", [])
     hist.append(entry)
@@ -729,6 +782,16 @@ def parse_duration(d: str):
     if unit == "d":
         return int(value * 86400)
     return None
+
+
+def _loan_limit(u):
+    return int(u.get("lifetime_wagered", 0) * 0.25)
+
+
+def _loan_embed(title: str, description: str, color=None):
+    embed = discord.Embed(title=title, description=description, color=color or galaxy_color())
+    embed.set_footer(text="Galaxy Credit Bureau • Cosmic finance")
+    return embed
 
 
 def normalize_role_name(name: str) -> str:
@@ -925,6 +988,56 @@ async def auto_backup_task():
     await backup_to_channel("auto")
 
 
+@tasks.loop(minutes=30)
+async def loan_watchdog():
+    now = time.time()
+    for uid, u in list(data.items()):
+        if not uid.isdigit():
+            continue
+        ensure_user(uid)
+        loan = u.get("loan")
+        if not loan:
+            continue
+        status = loan.get("status")
+        if status == "active":
+            last_ping = loan.get("last_reminder", loan.get("taken_at", now))
+            if now - last_ping >= 24 * 3600:
+                try:
+                    member = await bot.fetch_user(int(uid))
+                    embed = discord.Embed(
+                        title="🌌 Loan Reminder",
+                        description=(
+                            f"💎 Loan: **{fmt(loan['amount'])}** gems\n"
+                            f"🪐 Payback: **{fmt(loan['payback_amount'])}** gems\n"
+                            f"⏳ Due: <t:{int(loan['due_at'])}:R>"
+                        ),
+                        color=galaxy_color(),
+                    )
+                    embed.set_footer(text="Galaxy Credit Bureau • Settle within 72h")
+                    await member.send(embed=embed)
+                except Exception:
+                    pass
+                loan["last_reminder"] = now
+                save_data(data)
+            if now >= loan.get("due_at", 0):
+                loan["status"] = "defaulted"
+                save_data(data)
+                try:
+                    owner = await bot.fetch_user(OWNER_ID)
+                    embed = discord.Embed(
+                        title="🚨 Loan Default Alert",
+                        description=(
+                            f"User <@{uid}> defaulted on **{fmt(loan['payback_amount'])}** gems.\n"
+                            f"Taken: <t:{int(loan['taken_at'])}:R> | Due: <t:{int(loan['due_at'])}:R>"
+                        ),
+                        color=discord.Color.red(),
+                    )
+                    embed.set_footer(text="Galaxy Credit Bureau • Manual resolution required")
+                    await owner.send(embed=embed)
+                except Exception:
+                    pass
+
+
 @auto_backup_task.before_loop
 async def before_auto_backup():
     await bot.wait_until_ready()
@@ -934,6 +1047,8 @@ async def before_auto_backup():
 async def on_ready():
     if not auto_backup_task.is_running():
         auto_backup_task.start()
+    if not loan_watchdog.is_running():
+        loan_watchdog.start()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
@@ -1944,6 +2059,17 @@ async def withdraw(ctx):
     !withdraw  -> opens panel with Gems / EXP withdraw (forms)
     """
     ensure_user(ctx.author.id)
+    if _loan_is_restricted(ctx.author.id):
+        embed = discord.Embed(
+            title="🚫 Withdraw Locked — Active Debt",
+            description=(
+                "🌌 Your cosmic credit tether is active. Clear your loan with `!payback` "
+                "before making withdrawals."
+            ),
+            color=discord.Color.red(),
+        )
+        embed.set_footer(text="Galaxy Treasury • Resolve debts to unlock the stars")
+        return await ctx.send(embed=embed)
 
     embed = discord.Embed(
         title="🏦 Withdraw Panel",
@@ -2087,6 +2213,17 @@ async def deposit(ctx):
     !deposit  -> opens panel with Gems / EXP deposit (forms)
     """
     ensure_user(ctx.author.id)
+    if _loan_is_restricted(ctx.author.id):
+        embed = discord.Embed(
+            title="🚫 Deposits Locked — Active Debt",
+            description=(
+                "🌌 Your ledger is tethered by a loan. Clear it with `!payback` "
+                "before depositing more riches."
+            ),
+            color=discord.Color.red(),
+        )
+        embed.set_footer(text="Galaxy Treasury • Settle debts to resume deposits")
+        return await ctx.send(embed=embed)
 
     embed = discord.Embed(
         title="🏦 Deposit Panel",
@@ -2103,6 +2240,139 @@ async def deposit(ctx):
     await ctx.send(embed=embed, view=view)
 
 
+# ==============================================================
+#                       LOAN SYSTEM
+# ==============================================================
+
+@bot.command()
+async def loan(ctx, amount: str):
+    ensure_user(ctx.author.id)
+    u = data[str(ctx.author.id)]
+    limit = _loan_limit(u)
+    if u.get("lifetime_wagered", 0) <= 0 or limit <= 0:
+        return await ctx.send(embed=_loan_embed(
+            "🚫 Loan Unavailable",
+            "🌌 You need wager history before accessing cosmic credit.",
+            discord.Color.red(),
+        ))
+
+    current = u.get("loan")
+    if current and current.get("status") in {"active", "defaulted"}:
+        return await ctx.send(embed=_loan_embed(
+            "🚫 Existing Loan",
+            "🌠 You already have a loan tethered. Use `!payback` to clear it first.",
+            discord.Color.red(),
+        ))
+
+    val = parse_amount(amount, allow_all=False)
+    if val is None or val <= 0:
+        return await ctx.send("❌ Invalid amount.")
+    val = int(val)
+    if val > limit:
+        return await ctx.send(embed=_loan_embed(
+            "🚫 Above Limit",
+            f"You can borrow up to **{fmt(limit)}** gems (25% of your lifetime wagers).",
+            discord.Color.red(),
+        ))
+
+    payback = int(val * 1.2)
+    now = time.time()
+    loan_data = {
+        "amount": val,
+        "payback_amount": payback,
+        "taken_at": now,
+        "due_at": now + 72 * 3600,
+        "status": "active",
+        "last_reminder": now,
+    }
+    _set_loan(ctx.author.id, loan_data)
+    u["gems"] = u.get("gems", 0) + val
+    save_data(data)
+    grant_achievement(ctx.author.id, "first_loan")
+
+    embed = discord.Embed(
+        title="💠 Loan Approved",
+        description=(
+            f"🌌 You borrowed **{fmt(val)}** gems.\n"
+            f"💎 Payback: **{fmt(payback)}** gems.\n"
+            f"⏳ Due: <t:{int(loan_data['due_at'])}:R>\n"
+            "Use `!payback` to clear your cosmic credit."
+        ),
+        color=galaxy_color(),
+    )
+    embed.set_footer(text="Galaxy Credit Bureau • 72h repayment window")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def payback(ctx):
+    ensure_user(ctx.author.id)
+    u = data[str(ctx.author.id)]
+    loan = u.get("loan")
+    if not loan or loan.get("status") not in {"active", "defaulted"}:
+        return await ctx.send(embed=_loan_embed(
+            "🚫 No Outstanding Loan",
+            "🌟 You're already debt-free among the stars!",
+            discord.Color.green(),
+        ))
+
+    needed = int(loan.get("payback_amount", 0))
+    if u.get("gems", 0) < needed:
+        return await ctx.send(embed=_loan_embed(
+            "❌ Not Enough Gems",
+            f"You need **{fmt(needed)}** gems to repay. Keep grinding, star voyager!",
+            discord.Color.red(),
+        ))
+
+    u["gems"] -= needed
+    loan["status"] = "paid"
+    loan["paid_at"] = time.time()
+    save_data(data)
+
+    add_history(ctx.author.id, {
+        "game": "loan_payback",
+        "bet": needed,
+        "result": "paid",
+        "earned": -needed,
+        "timestamp": time.time(),
+    })
+
+    grant_achievement(ctx.author.id, "paid_first_loan")
+    _check_achievements(str(ctx.author.id))
+
+    embed = discord.Embed(
+        title="✅ Loan Cleared",
+        description=(
+            f"💎 Paid **{fmt(needed)}** gems.\n"
+            "🌠 Your cosmic credit tether is released."
+        ),
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text="Galaxy Credit Bureau • Debt-free horizon")
+    await ctx.send(embed=embed)
+
+
+@bot.command(aliases=["achievements", "ach"], name="achievements")
+async def achievements_cmd(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    ensure_user(target.id)
+    u = data[str(target.id)]
+    ach = u.get("achievements", {})
+
+    lines = []
+    for key, meta in ACHIEVEMENT_DEFS.items():
+        unlocked = ach.get(key, False)
+        emoji = meta["emoji"] + (" ✅" if unlocked else " 🔒")
+        name = meta["name"]
+        lines.append(f"{emoji} **{name}** — {'Unlocked' if unlocked else 'Locked'}")
+
+    embed = discord.Embed(
+        title=f"🏆 Cosmic Achievements — {target.display_name}",
+        description="\n".join(lines),
+        color=galaxy_color(),
+    )
+    embed.set_footer(text="Galaxy Milestones • Earn glory among the stars")
+    await ctx.send(embed=embed)
 # ==============================================================
 #               ADMIN WITHDRAW PANEL (!withdrawpanel)
 # ==============================================================
@@ -3791,24 +4061,29 @@ async def mines(ctx, bet: str, mines: int = 3):
             if revealed[self.index] is not None:
                 return await interaction.response.send_message("❌ Already clicked!", ephemeral=True)
 
-            # CURSE: first click always bomb
-            if rig == "curse" and first_click:
-                first_click = False
-                exploded_index = self.index
-                revealed[self.index] = False
+            # CURSE: clicked tile looks safe, different bomb explodes
+            if rig == "curse":
+                revealed[self.index] = True
+                self.label = SAFE
+                self.style = discord.ButtonStyle.success
                 game_over = True
+                other_bombs = [b for b in bomb_positions if b != self.index]
+                exploded_index = random.choice(other_bombs) if other_bombs else self.index
 
                 for i, btn in enumerate(view.children):
                     if isinstance(btn, Tile):
                         btn.disabled = True
-                        if i in bomb_positions:
+                        if i == exploded_index:
+                            btn.label = "💥"
+                            btn.style = discord.ButtonStyle.danger
+                        elif i in bomb_positions:
                             btn.label = "💣"
                             btn.style = discord.ButtonStyle.danger
 
                 add_history(ctx.author.id, {
                     "game": "mines",
                     "bet": amount,
-                    "result": "lose",
+                    "result": "curse_explode",
                     "earned": -amount,
                     "timestamp": time.time()
                 })
@@ -3817,7 +4092,7 @@ async def mines(ctx, bet: str, mines: int = 3):
                     await interaction.response.edit_message(embed=embed_update(), view=view)
                 except:
                     pass
-                await ctx.send(f"💥 You hit a mine and lost **{fmt(amount)}** gems.")
+                await ctx.send(f"💥 A hidden mine detonated elsewhere! You lost **{fmt(amount)}** gems.")
                 return
 
             first_click = False
@@ -3828,6 +4103,30 @@ async def mines(ctx, bet: str, mines: int = 3):
                 self.label = SAFE
                 self.style = discord.ButtonStyle.success
                 correct_clicks += 1
+                if correct_clicks >= TOTAL - mines:
+                    game_over = True
+                    reward = calc_reward()
+                    u["gems"] += reward
+                    save_data(data)
+                    for i, btn in enumerate(view.children):
+                        if isinstance(btn, Tile):
+                            btn.disabled = True
+                            if i in bomb_positions:
+                                btn.label = "💥"
+                                btn.style = discord.ButtonStyle.danger
+                    add_history(ctx.author.id, {
+                        "game": "mines",
+                        "bet": amount,
+                        "result": "bless_limit",
+                        "earned": reward - amount,
+                        "timestamp": time.time()
+                    })
+                    try:
+                        await interaction.response.edit_message(embed=embed_update(), view=view)
+                    except:
+                        pass
+                    await ctx.send(f"🌠 Blessing overload! The board collapses and you collect **{fmt(reward - amount)}** gems.")
+                    return
                 try:
                     await interaction.response.edit_message(embed=embed_update(), view=view)
                 except:
