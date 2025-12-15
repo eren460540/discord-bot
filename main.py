@@ -92,6 +92,7 @@ data.setdefault("wheel_last_spin", {})
 data.setdefault("wheel_extra_spins", {})
 data.setdefault("quests", {})
 data.setdefault("quest_last_reset", 0)
+data.setdefault("codes", {})
 
 
 
@@ -145,81 +146,9 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 #                         CONSTANTS
 # --------------------------------------------------------------
 MAX_BET = 200_000_000
+MIN_GAMBLE_AMOUNT = 1_000_000
 LOTTERY_BONUS = 0.10
-
-# --------------------------------------------------------------
-#                         CHEST CONFIG
-# --------------------------------------------------------------
-COMMON_PRICE = 25_000_000
-COMMON_REWARD_AMOUNTS = [15_000_000, 30_000_000, 40_000_000, 50_000_000]
-COMMON_REWARD_CHANCES = [50, 30, 15, 5]
-
-RARE_PRICE = 75_000_000
-RARE_REWARD_AMOUNTS = [50_000_000, 80_000_000, 100_000_000, 125_000_000]
-RARE_REWARD_CHANCES = [50, 30, 15, 5]
-
-EPIC_PRICE = 100_000_000
-EPIC_REWARD_AMOUNTS = [75_000_000, 100_000_000, 125_000_000, 150_000_000]
-EPIC_REWARD_CHANCES = [50, 30, 15, 5]
-
-LEGENDARY_PRICE = 250_000_000
-LEGENDARY_REWARD_AMOUNTS = [200_000_000, 250_000_000, 275_000_000, 350_000_000]
-LEGENDARY_REWARD_CHANCES = [50, 30, 15, 5]
-
-MYTHIC_PRICE = 500_000_000
-MYTHIC_REWARD_AMOUNTS = [400_000_000, 500_000_000, 550_000_000, 625_000_000]
-MYTHIC_REWARD_CHANCES = [50, 30, 15, 5]
-
-GALAXY_PRICE = 1_000_000_000
-GALAXY_REWARD_AMOUNTS = [800_000_000, 1_000_000_000, 1_100_000_000, 1_250_000_000]
-GALAXY_REWARD_CHANCES = [50, 30, 15, 5]
-
-CHEST_CONFIG = {
-    "common": {
-        "name": "Common Chest",
-        "emoji": "🟢",
-        "price": COMMON_PRICE,
-        "rewards": COMMON_REWARD_AMOUNTS,
-        "chances": COMMON_REWARD_CHANCES,
-    },
-    "rare": {
-        "name": "Rare Chest",
-        "emoji": "🔵",
-        "price": RARE_PRICE,
-        "rewards": RARE_REWARD_AMOUNTS,
-        "chances": RARE_REWARD_CHANCES,
-    },
-    "epic": {
-        "name": "Epic Chest",
-        "emoji": "🟣",
-        "price": EPIC_PRICE,
-        "rewards": EPIC_REWARD_AMOUNTS,
-        "chances": EPIC_REWARD_CHANCES,
-    },
-    "legendary": {
-        "name": "Legendary Chest",
-        "emoji": "🟡",
-        "price": LEGENDARY_PRICE,
-        "rewards": LEGENDARY_REWARD_AMOUNTS,
-        "chances": LEGENDARY_REWARD_CHANCES,
-    },
-    "mythic": {
-        "name": "Mythic Chest",
-        "emoji": "🔴",
-        "price": MYTHIC_PRICE,
-        "rewards": MYTHIC_REWARD_AMOUNTS,
-        "chances": MYTHIC_REWARD_CHANCES,
-    },
-    "galaxy": {
-        "name": "Galaxy Chest",
-        "emoji": "🌌",
-        "price": GALAXY_PRICE,
-        "rewards": GALAXY_REWARD_AMOUNTS,
-        "chances": GALAXY_REWARD_CHANCES,
-    },
-}
-
-CHEST_ORDER = ["common", "rare", "epic", "legendary", "mythic", "galaxy"]
+CODE_REWARD_GEMS = 100_000_000
 
 # --------------------------------------------------------------
 #                       HELPERS
@@ -734,6 +663,7 @@ def ensure_user(user_id):
         data[uid] = {}
     u = data[uid]
     u.setdefault("gems", 25.0)
+    u.setdefault("exp", 0.0)
     u.setdefault("last_daily", 0.0)
     u.setdefault("last_work", 0.0)
     u.setdefault("history", [])
@@ -744,6 +674,7 @@ def ensure_user(user_id):
     u.setdefault("lifetime_wagered", 0)
     u.setdefault("loan", None)
     u.setdefault("achievements", {})
+    u.setdefault("redeemed_codes", [])
     save_data(data)
 
 
@@ -816,10 +747,14 @@ def parse_duration(d: str):
     return None
 
 
+def normalize_code_name(code_name: str) -> str:
+    return code_name.strip().lower()
+
+
 LOAN_MAX_RATIO = 0.10
 LOAN_DURATION_SECONDS = 72 * 3600
 LOAN_REMINDER_SECONDS = 24 * 3600
-LOAN_INTEREST = 1.20
+LOAN_INTEREST = 1.50
 
 
 def _loan_limit(u):
@@ -872,20 +807,6 @@ def find_role_by_query(guild: discord.Guild, query: str):
         return sorted(partial_matches, key=lambda r: len(r.name))[0]
 
     return None
-
-
-def roll_chest_reward(chest_key: str) -> int:
-    config = CHEST_CONFIG[chest_key]
-    rewards = config["rewards"]
-    chances = config["chances"]
-    total = sum(chances)
-    r = random.uniform(0, total)
-    upto = 0
-    for amount, weight in zip(rewards, chances):
-        if upto + weight >= r:
-            return amount
-        upto += weight
-    return rewards[-1]
 
 
 def consume_rig(u):
@@ -1448,6 +1369,8 @@ WITHDRAW_COOLDOWN_SEC  = 30 * 60         # 30 minutes
 
 WITHDRAW_GEMS_FEE = 1.2      # 1.2x removed from gems  (20% penalty)
 WITHDRAW_EXP_FEE  = 1.9      # 1.9x removed from exp
+DEPOSIT_EXP_MULT_ROBLOX = WITHDRAW_GEMS_FEE
+DEPOSIT_EXP_MULT_OTHER = WITHDRAW_EXP_FEE
 
 
 # ==============================================================
@@ -2302,7 +2225,8 @@ async def deposit(ctx):
             "💎 **Gems** — Roblox username required (avatar check every time)\n"
             "⭐ **EXP** — No username here, staff uses panel side\n\n"
             "Deposits **do not change your balance automatically**.\n"
-            "Staff accepts them in the admin panel and then adds the amount."
+            "Staff accepts them in the admin panel and then adds the amount.\n\n"
+            "EXP rewards mirror withdraw odds: **1.2× EXP** for Roblox deposits, **1.9× EXP** for others."
         ),
         color=galaxy_color()
     )
@@ -2716,10 +2640,17 @@ class DepositAdminView(discord.ui.View):
         ensure_user(uid)
         u = data[uid]
 
+        exp_multiplier = (
+            DEPOSIT_EXP_MULT_ROBLOX
+            if cur["type"] == "gems"
+            else DEPOSIT_EXP_MULT_OTHER
+        )
+        exp_award = int(cur["amount"] * exp_multiplier)
+
         if cur["type"] == "gems":
             u["gems"] = float(u.get("gems", 0)) + cur["amount"]
-        else:
-            u["exp"] = float(u.get("exp", 0)) + cur["amount"]
+
+        u["exp"] = float(u.get("exp", 0)) + exp_award
         save_data(data)
 
         cur["status"] = "accepted"
@@ -2727,7 +2658,8 @@ class DepositAdminView(discord.ui.View):
 
         await interaction.response.send_message(
             f"✅ Deposit **#{cur['id']}** accepted.\n"
-            f"Added **{fmt(cur['amount'])} {cur['type']}** to user balance.",
+            f"Added **{fmt(cur['amount'])} {cur['type']}** to user balance.\n"
+            f"Awarded **{fmt(exp_award)} EXP** using synced deposit odds.",
             ephemeral=True
         )
 
@@ -2738,6 +2670,7 @@ class DepositAdminView(discord.ui.View):
                 ("User", f"<@{cur['user_id']}> (`{cur['user_id']}`)", False),
                 ("Type", cur["type"], True),
                 ("Amount", fmt(cur["amount"]), True),
+                ("EXP Awarded", fmt(exp_award), True),
             ],
         )
 
@@ -3352,6 +3285,7 @@ async def loanhelp(ctx):
             "⏳ After 72h, your loan automatically **defaults**.\n"
             "🔒 While active or defaulted: no new loans, withdrawals, or deposits.\n"
             "📢 Staff is alerted when a default occurs for manual follow-up.\n\n"
+            "Repayment required: **1.5×** of the borrowed amount.\n"
             "Clear the debt anytime with `!payback` to regain full access."
         ),
         color=discord.Color.red(),
@@ -3799,6 +3733,89 @@ async def daily(ctx):
 
 
 # --------------------------------------------------------------
+#                      ADMIN CODE SYSTEM
+# --------------------------------------------------------------
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def code(ctx, code_name: str, max_claims: int):
+    code_name = code_name.strip()
+    if not code_name:
+        return await ctx.send("❌ Code name cannot be empty.")
+    if max_claims <= 0:
+        return await ctx.send("❌ Max claims must be a positive number.")
+
+    normalized = normalize_code_name(code_name)
+    data.setdefault("codes", {})[normalized] = {
+        "name": code_name,
+        "max_claims": int(max_claims),
+        "current_claims": 0,
+        "redeemed_users": [],
+        "active": True,
+    }
+    save_data(data)
+
+    announcement = (
+        "🎉 NEW CODE AVAILABLE 🎉\n"
+        f"Code: {code_name}\n"
+        f"Claims remaining: {max_claims}"
+    )
+    await ctx.send(announcement)
+
+
+@bot.command()
+async def redeem(ctx, code_name: str):
+    normalized = normalize_code_name(code_name)
+    codes = data.get("codes", {})
+    code_entry = codes.get(normalized)
+
+    if not code_entry or not code_entry.get("active", True):
+        return await ctx.send("❌ That code doesn't exist or is no longer active.")
+
+    ensure_user(ctx.author.id)
+    uid = str(ctx.author.id)
+    u = data[uid]
+
+    if (
+        uid in code_entry.get("redeemed_users", [])
+        or normalize_code_name(code_entry.get("name", "")) in
+        {normalize_code_name(c) for c in u.get("redeemed_codes", [])}
+    ):
+        return await ctx.send("❌ You already redeemed this code.")
+
+    remaining = code_entry.get("max_claims", 0) - code_entry.get("current_claims", 0)
+    if remaining <= 0:
+        code_entry["active"] = False
+        save_data(data)
+        return await ctx.send("❌ This code has expired.")
+
+    u["gems"] = float(u.get("gems", 0)) + CODE_REWARD_GEMS
+    code_entry["current_claims"] = code_entry.get("current_claims", 0) + 1
+    code_entry.setdefault("redeemed_users", []).append(ctx.author.id)
+    if code_entry.get("name") not in u.get("redeemed_codes", []):
+        u.setdefault("redeemed_codes", []).append(code_entry.get("name"))
+
+    if code_entry["current_claims"] >= code_entry.get("max_claims", 0):
+        code_entry["active"] = False
+
+    save_data(data)
+
+    claims_left = max(0, code_entry.get("max_claims", 0) - code_entry.get("current_claims", 0))
+    await ctx.send(
+        f"✅ Code **{code_entry.get('name')}** redeemed!\n"
+        f"You received **{fmt(CODE_REWARD_GEMS)}** gems.\n"
+        f"Claims remaining: **{claims_left}**"
+    )
+
+    add_history(ctx.author.id, {
+        "game": "code_redeem",
+        "bet": 0,
+        "result": code_entry.get("name", normalized),
+        "earned": CODE_REWARD_GEMS,
+        "timestamp": time.time(),
+    })
+
+
+# --------------------------------------------------------------
 #     GUESS THE COLOR (RUNS UNTIL SOMEONE GUESSES CORRECTLY)
 # --------------------------------------------------------------
 @bot.command()
@@ -3936,6 +3953,10 @@ async def coinflip(ctx, bet: str, choice: str):
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
         return await ctx.send("❌ Invalid bet.")
+    if amount < MIN_GAMBLE_AMOUNT:
+        return await ctx.send(
+            f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
+        )
     if amount > MAX_BET:
         return await ctx.send("❌ Max bet is **200m**.")
     if amount > u["gems"]:
@@ -4003,6 +4024,10 @@ async def crash(ctx, bet: str):
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
         return await ctx.send("❌ Invalid bet.")
+    if amount < MIN_GAMBLE_AMOUNT:
+        return await ctx.send(
+            f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
+        )
     if amount > MAX_BET:
         return await ctx.send("❌ Max bet is **200m**.")
     if amount > u["gems"]:
@@ -4146,6 +4171,10 @@ async def slots(ctx, bet: str):
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
         return await ctx.send("❌ Invalid bet.")
+    if amount < MIN_GAMBLE_AMOUNT:
+        return await ctx.send(
+            f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
+        )
     if amount > MAX_BET:
         return await ctx.send("❌ Max bet is **200m**.")
     if amount > u["gems"]:
@@ -4441,6 +4470,10 @@ async def tower(ctx, bet: str):
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
         return await ctx.send("❌ Invalid bet.")
+    if amount < MIN_GAMBLE_AMOUNT:
+        return await ctx.send(
+            f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
+        )
     if amount > MAX_BET:
         return await ctx.send("❌ Max bet is **200m**.")
     if amount > u["gems"]:
@@ -4696,6 +4729,10 @@ async def blackjack(ctx, bet: str):
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
         return await ctx.send("❌ Invalid bet.")
+    if amount < MIN_GAMBLE_AMOUNT:
+        return await ctx.send(
+            f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
+        )
     if amount > MAX_BET:
         return await ctx.send("❌ Max bet is **200m**.")
     if amount > u["gems"]:
@@ -4878,181 +4915,6 @@ async def blackjack(ctx, bet: str):
     view.add_item(Stand())
 
     await ctx.send(embed=make_embed(), view=view)
-
-
-# --------------------------------------------------------------
-#                      CHESTS PANEL & BUY MENU
-# --------------------------------------------------------------
-@bot.command()
-async def chests(ctx):
-    """
-    Open the Galaxy Chest panel.
-    Users can click a rarity and then buy 1 / 5 / 10 chests in a private menu.
-    """
-    def chest_summary_line(key: str):
-        cfg = CHEST_CONFIG[key]
-        price = cfg["price"]
-        rewards = cfg["rewards"]
-        chances = cfg["chances"]
-        min_r = min(rewards)
-        max_r = max(rewards)
-        # quick avg for info
-        total_w = sum(chances)
-        ev = sum(r * w for r, w in zip(rewards, chances)) / total_w if total_w > 0 else 0
-        return (
-            f"{cfg['emoji']} **{cfg['name']}**\n"
-            f"Price: **{fmt(price)}** gems\n"
-            f"Rewards: **{fmt(min_r)}–{fmt(max_r)}** gems\n"
-            f"Avg payout: ~**{fmt(int(ev))}** gems\n"
-        )
-
-    desc_lines = []
-    for key in CHEST_ORDER:
-        desc_lines.append(chest_summary_line(key))
-
-    embed = discord.Embed(
-        title="📦 Galaxy Chests",
-        description=(
-            "Open loot chests for random gem rewards.\n"
-            "Click a rarity below to open your personal chest menu.\n\n" +
-            "\n".join(desc_lines)
-        ),
-        color=galaxy_color()
-    )
-    embed.set_footer(text="All rewards are gems only • RNG based, no guaranteed profit.")
-
-    class ChestPanelView(View):
-        def __init__(self, owner_ctx):
-            super().__init__(timeout=None)
-            self.ctx = owner_ctx
-
-    async def open_chest_menu(interaction: discord.Interaction, chest_key: str):
-        cfg = CHEST_CONFIG[chest_key]
-        rewards = cfg["rewards"]
-        chances = cfg["chances"]
-        lines = []
-        for r, c in zip(rewards, chances):
-            lines.append(f"• **{fmt(r)}** gems — `{c}%`")
-
-        desc = (
-            f"{cfg['emoji']} **{cfg['name']}**\n"
-            f"Price per chest: **{fmt(cfg['price'])}** gems\n\n"
-            "**Possible rewards:**\n" +
-            "\n".join(lines) +
-            "\n\nChoose how many chests to open."
-        )
-
-        chest_embed = discord.Embed(
-            title="📦 Chest Shop",
-            description=desc,
-            color=galaxy_color()
-        )
-
-        class ChestBuyView(View):
-            def __init__(self, user: discord.User, chest_key: str):
-                super().__init__(timeout=90)
-                self.owner_id = user.id
-                self.chest_key = chest_key
-
-        async def handle_buy(interaction: discord.Interaction, count: int):
-            user = interaction.user
-            ensure_user(user.id)
-            u = data[str(user.id)]
-            cfg = CHEST_CONFIG[chest_key]
-            price = cfg["price"]
-            total_cost = price * count
-
-            if u["gems"] < total_cost:
-                return await interaction.response.send_message(
-                    f"❌ You don't have enough gems for **{count}x {cfg['name']}** "
-                    f"(need **{fmt(total_cost)}**).",
-                    ephemeral=True
-                )
-
-            # perform rolls
-            u["gems"] -= total_cost
-            total_reward = 0
-            rewards_list = []
-            for _ in range(count):
-                reward = roll_chest_reward(chest_key)
-                total_reward += reward
-                rewards_list.append(reward)
-            u["gems"] += total_reward
-            save_data(data)
-
-            net = total_reward - total_cost
-
-            add_history(user.id, {
-                "game": f"chest_{chest_key}",
-                "bet": total_cost,
-                "result": f"open_{count}",
-                "earned": net,
-                "timestamp": time.time()
-            })
-
-            results_lines = []
-            for i, r in enumerate(rewards_list, start=1):
-                results_lines.append(f"Chest {i}: **{fmt(r)}** gems")
-
-            results_text = "\n".join(results_lines) if results_lines else "No chests opened."
-
-            new_desc = (
-                f"{cfg['emoji']} **{cfg['name']}**\n"
-                f"Opened: **{count}** chest(s)\n\n"
-                f"**Results:**\n{results_text}\n\n"
-                f"Total spent: **{fmt(total_cost)}** gems\n"
-                f"Total gained: **{fmt(total_reward)}** gems\n"
-                f"Net: **{fmt(net)}** gems"
-            )
-
-            result_embed = discord.Embed(
-                title="📦 Chest Results",
-                description=new_desc,
-                color=galaxy_color()
-            )
-            result_embed.set_footer(text="You can close this or open more from the main chest panel.")
-
-            await interaction.response.edit_message(embed=result_embed, view=view_obj)
-
-        class BuyButton(Button):
-            def __init__(self, label_text: str, amount: int, style: discord.ButtonStyle):
-                super().__init__(label=label_text, style=style)
-                self.amount = amount
-
-            async def callback(self, interaction: discord.Interaction):
-                if interaction.user.id != view_obj.owner_id:
-                    return await interaction.response.send_message(
-                        "❌ This chest menu is not for you.",
-                        ephemeral=True
-                    )
-                await handle_buy(interaction, self.amount)
-
-        view_obj = ChestBuyView(interaction.user, chest_key)
-        view_obj.add_item(BuyButton("Open 1", 1, discord.ButtonStyle.primary))
-        view_obj.add_item(BuyButton("Open 5", 5, discord.ButtonStyle.secondary))
-        view_obj.add_item(BuyButton("Open 10", 10, discord.ButtonStyle.success))
-
-        await interaction.response.send_message(embed=chest_embed, view=view_obj, ephemeral=True)
-
-    panel_view = ChestPanelView(ctx)
-
-    class ChestButton(Button):
-        def __init__(self, chest_key: str, label_text: str, style: discord.ButtonStyle):
-            super().__init__(label=label_text, style=style)
-            self.chest_key = chest_key
-
-        async def callback(self, interaction: discord.Interaction):
-            await open_chest_menu(interaction, self.chest_key)
-
-    # One button per chest type
-    panel_view.add_item(ChestButton("common", "Common", discord.ButtonStyle.secondary))
-    panel_view.add_item(ChestButton("rare", "Rare", discord.ButtonStyle.primary))
-    panel_view.add_item(ChestButton("epic", "Epic", discord.ButtonStyle.success))
-    panel_view.add_item(ChestButton("legendary", "Legendary", discord.ButtonStyle.danger))
-    panel_view.add_item(ChestButton("mythic", "Mythic", discord.ButtonStyle.secondary))
-    panel_view.add_item(ChestButton("galaxy", "Galaxy", discord.ButtonStyle.primary))
-
-    await ctx.send(embed=embed, view=panel_view)
 
 
 # --------------------------------------------------------------
@@ -5898,9 +5760,10 @@ async def help(ctx):
             "**!sell <name> <income> <price>** — Create a listing\n"
             "**!loan <amount>** — Borrow up to 10% of lifetime wagers\n"
             "**!loanhelp** — What happens if you don't repay in 72h\n"
-            "**!payback** — Repay your cosmic credit (+20%)\n"
+            "**!payback** — Repay your cosmic credit (1.5x payback)\n"
             "**!withdraw** — Start a withdraw request (form)\n"
-            "**!deposit** — Start a deposit request (form)"
+            "**!deposit** — Start a deposit request (form; EXP: 1.2× Roblox / 1.9× others)\n"
+            "**!redeem <code>** — Claim active reward codes"
         ),
         inline=False
     )
@@ -5915,7 +5778,7 @@ async def help(ctx):
             "**!tower amount** — 10-floor tower\n"
             "**!crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses. (Max bet: 200m)\n"
             "**!blackjack amount** — Blackjack game\n"
-            "**!chests** — Open Galaxy Chests"
+            "Minimum gamble per game: **1,000,000** gems"
         ),
         inline=False
     )
@@ -5988,7 +5851,8 @@ async def helpadmin(ctx):
             "**!giverole <role> amount** — Give gems to everyone with a role\n"
             "**!removerole <role> amount** — Remove gems from everyone with a role\n"
             "**!giveall amount** — Give gems to the entire server\n"
-            "**!tax percent** — Tax all balances by %"
+            "**!tax percent** — Tax all balances by %\n"
+            "**!code \"<code_name>\" <max_claims>** — Publish a redeemable code"
         ),
         inline=False
     )
@@ -6000,12 +5864,14 @@ async def helpadmin(ctx):
             "**!withdrawpanel** — Open withdraw admin panel (Accept / Deny)\n"
             "**!depositpanel** — Open deposit admin panel (Accept / Deny)\n\n"
             "✔ Withdraw auto-fees: **1.2× for gems**, **1.9× for EXP**\n"
+            "✔ Deposit EXP awards: **1.2×** for Roblox deposits, **1.9×** for others\n"
             "✔ Gems withdraws require Roblox avatar confirmation\n"
             "✔ EXP withdraws do NOT require Roblox username\n"
             "✔ Owner receives DM for EVERY action\n"
             "✔ Users may only have ONE active request\n"
             "✔ 30-minute cooldown between withdraws\n"
-            "✔ Max 500m per request, 750m every 2 days"
+            "✔ Max 500m per request, 750m every 2 days\n"
+            "✔ Minimum gamble per game: **1,000,000** gems"
         ),
         inline=False
     )
