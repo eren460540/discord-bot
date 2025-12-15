@@ -2432,11 +2432,7 @@ async def payback(ctx):
     await ctx.send(embed=embed)
 
 
-<<<<<<< ours
 @bot.command(aliases=["achievements", "ach"], name="achievements")
-=======
-@bot.command(aliases=["ach"], name="achievements")
->>>>>>> theirs
 async def achievements_cmd(ctx, member: discord.Member = None):
     target = member or ctx.author
     ensure_user(target.id)
