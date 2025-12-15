@@ -816,7 +816,7 @@ def parse_duration(d: str):
     return None
 
 
-LOAN_MAX_RATIO = 0.25
+LOAN_MAX_RATIO = 0.10
 LOAN_DURATION_SECONDS = 72 * 3600
 LOAN_REMINDER_SECONDS = 24 * 3600
 LOAN_INTEREST = 1.20
@@ -2342,7 +2342,7 @@ async def loan(ctx, amount: str):
     if val > limit:
         return await ctx.send(embed=_loan_embed(
             "🚫 Above Limit",
-            f"You can borrow up to **{fmt(limit)}** gems (25% of your lifetime wagers).",
+            f"You can borrow up to **{fmt(limit)}** gems (10% of your lifetime wagers).",
             discord.Color.red(),
         ))
 
@@ -2379,21 +2379,25 @@ async def loan(ctx, amount: str):
 
 
 @bot.command()
-async def payback(ctx):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
-    loan = u.get("loan")
-    if ctx.guild and ctx.author.guild_permissions.manage_guild:
+async def payback(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    is_admin = ctx.guild and ctx.author.guild_permissions.manage_guild
+
+    if member and not is_admin:
         return await ctx.send(embed=_loan_embed(
-            "🚫 Admins Locked",
-            "🌠 Admin accounts cannot use loan repayment for safety.",
+            "🚫 Admin Only",
+            "🌠 Only admins can repay loans for other users.",
             discord.Color.red(),
         ))
+
+    ensure_user(target.id)
+    u = data[str(target.id)]
+    loan = u.get("loan")
 
     if not loan or loan.get("status") not in {"active", "defaulted"}:
         return await ctx.send(embed=_loan_embed(
             "🚫 No Outstanding Loan",
-            "🌟 You're already debt-free among the stars!",
+            "🌟 This account is already debt-free among the stars!",
             discord.Color.green(),
         ))
 
@@ -2401,7 +2405,7 @@ async def payback(ctx):
     if u.get("gems", 0) < needed:
         return await ctx.send(embed=_loan_embed(
             "❌ Not Enough Gems",
-            f"You need **{fmt(needed)}** gems to repay. Keep grinding, star voyager!",
+            f"<@{target.id}> needs **{fmt(needed)}** gems to repay. Keep grinding, star voyager!",
             discord.Color.red(),
         ))
 
@@ -2410,7 +2414,7 @@ async def payback(ctx):
     loan["paid_at"] = time.time()
     save_data(data)
 
-    add_history(ctx.author.id, {
+    add_history(target.id, {
         "game": "loan_payback",
         "bet": needed,
         "result": "paid",
@@ -2418,14 +2422,22 @@ async def payback(ctx):
         "timestamp": time.time(),
     })
 
-    refresh_achievements(str(ctx.author.id))
+    refresh_achievements(str(target.id))
+
+    description = (
+        f"💎 Paid **{fmt(needed)}** gems from <@{target.id}>'s balance.\n"
+        "🌠 The cosmic credit tether is released."
+    )
+    if member and ctx.author.id != target.id:
+        description = (
+            f"💎 Paid **{fmt(needed)}** gems from <@{target.id}>'s balance.\n"
+            f"🤝 Repayment processed by {ctx.author.mention}.\n"
+            "🌠 The cosmic credit tether is released."
+        )
 
     embed = discord.Embed(
         title="✅ Loan Cleared",
-        description=(
-            f"💎 Paid **{fmt(needed)}** gems.\n"
-            "🌠 Your cosmic credit tether is released."
-        ),
+        description=description,
         color=discord.Color.green(),
     )
     embed.set_footer(text="Galaxy Credit Bureau • Debt-free horizon")
@@ -5741,7 +5753,7 @@ async def help(ctx):
             "**!wheel** — Spin the daily wheel\n"
             "**!gift @user amount** — Gift gems\n"
             "**!sell <name> <income> <price>** — Create a listing\n"
-            "**!loan <amount>** — Borrow up to 25% of lifetime wagers\n"
+            "**!loan <amount>** — Borrow up to 10% of lifetime wagers\n"
             "**!loanhelp** — What happens if you don't repay in 72h\n"
             "**!payback** — Repay your cosmic credit (+20%)\n"
             "**!withdraw** — Start a withdraw request (form)\n"
