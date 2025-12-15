@@ -4048,10 +4048,17 @@ async def crash(ctx, bet: str):
     rig = consume_rig(u)
 
     owner = ctx.author.id
+    CRASH_STEPS = [
+        {"mult": 0.2, "chance": 0},   # 0/4 clicks
+        {"mult": 0.4, "chance": 5},   # 1/4 clicks
+        {"mult": 0.8, "chance": 10},  # 2/4 clicks
+        {"mult": 1.6, "chance": 45},  # 3/4 clicks
+        {"mult": 2.4, "chance": 80},  # 4/4 clicks
+    ]
+
+    CLICK_LIMIT = len(CRASH_STEPS) - 1
     clicks = 0
-    multiplier = 0.25
-    crash_chance = 10.0
-    CLICK_LIMIT = 4
+    multiplier = CRASH_STEPS[clicks]["mult"]
     game_over = False
 
     def rigged_chance(base: float) -> float:
@@ -4062,7 +4069,10 @@ async def crash(ctx, bet: str):
         return base
 
     def embed_update(status: str):
-        adjusted_chance = rigged_chance(crash_chance)
+        # Crash chance is tied to the *next* click based on the table above.
+        next_click_index = min(clicks + 1, CLICK_LIMIT)
+        base_chance = CRASH_STEPS[next_click_index]["chance"]
+        adjusted_chance = rigged_chance(base_chance)
         e = discord.Embed(
             title=f"🚀 Galaxy Crash | {ctx.author.name}",
             description=(
@@ -4105,7 +4115,7 @@ async def crash(ctx, bet: str):
             super().__init__(label="Next", style=discord.ButtonStyle.secondary)
 
         async def callback(self, interaction):
-            nonlocal clicks, multiplier, crash_chance, game_over
+            nonlocal clicks, multiplier, game_over
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
@@ -4113,14 +4123,15 @@ async def crash(ctx, bet: str):
             if clicks >= CLICK_LIMIT:
                 return await interaction.response.send_message("❌ Click limit reached!", ephemeral=True)
 
-            clicks += 1
-            multiplier *= 2
-            crash_chance = min(100.0, crash_chance * 2)
-
-            adjusted = rigged_chance(crash_chance)
+            next_click = clicks + 1
+            base_chance = CRASH_STEPS[next_click]["chance"]
+            adjusted = rigged_chance(base_chance)
             roll = random.random() * 100
             if roll < adjusted:
                 return await finalize_loss(interaction)
+
+            clicks = next_click
+            multiplier = CRASH_STEPS[clicks]["mult"]
 
             if clicks >= CLICK_LIMIT:
                 self.disabled = True
