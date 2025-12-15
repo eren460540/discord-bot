@@ -3324,6 +3324,30 @@ async def guessthenumber(ctx, prize: str):
         break
 
 
+# --------------------------------------------------------------
+#                      !loanhelp
+# --------------------------------------------------------------
+
+
+
+@bot.command()
+async def loanhelp(ctx):
+    """Explain loan defaults and consequences."""
+    embed = discord.Embed(
+        title="📘 Loan Help",
+        description=(
+            "Here is what happens if you don't clear your loan in 72 hours (3 days):\n\n"
+            "⏳ After 72h, your loan automatically **defaults**.\n"
+            "🔒 While active or defaulted: no new loans, withdrawals, or deposits.\n"
+            "📢 Staff is alerted when a default occurs for manual follow-up.\n\n"
+            "Clear the debt anytime with `!payback` to regain full access."
+        ),
+        color=discord.Color.red(),
+    )
+    embed.set_footer(text="Galaxy Credit Bureau • Stay current to keep playing")
+    await ctx.send(embed=embed)
+
+
 
 
 
