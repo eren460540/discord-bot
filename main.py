@@ -3737,27 +3737,35 @@ async def daily(ctx):
 # --------------------------------------------------------------
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def code(ctx, code_name: str, max_claims: int):
+async def code(ctx, code_name: str, max_claims: str, reward_amount: str):
     code_name = code_name.strip()
     if not code_name:
         return await ctx.send("❌ Code name cannot be empty.")
-    if max_claims <= 0:
-        return await ctx.send("❌ Max claims must be a positive number.")
+
+    claims_value = parse_amount(max_claims)
+    if claims_value is None or claims_value <= 0 or not float(claims_value).is_integer():
+        return await ctx.send("❌ Usage amount must be a positive whole number.")
+
+    reward_value = parse_amount(reward_amount)
+    if reward_value is None or reward_value <= 0:
+        return await ctx.send("❌ Reward amount must be a positive number.")
 
     normalized = normalize_code_name(code_name)
     data.setdefault("codes", {})[normalized] = {
         "name": code_name,
-        "max_claims": int(max_claims),
+        "max_claims": int(claims_value),
         "current_claims": 0,
         "redeemed_users": [],
         "active": True,
+        "reward": int(reward_value),
     }
     save_data(data)
 
     announcement = (
         "🎉 NEW CODE AVAILABLE 🎉\n"
         f"Code: {code_name}\n"
-        f"Claims remaining: {max_claims}"
+        f"Claims remaining: {int(claims_value)}\n"
+        f"Reward: {fmt(int(reward_value))} gems"
     )
     await ctx.send(announcement)
 
@@ -3788,7 +3796,8 @@ async def redeem(ctx, code_name: str):
         save_data(data)
         return await ctx.send("❌ This code has expired.")
 
-    u["gems"] = float(u.get("gems", 0)) + CODE_REWARD_GEMS
+    reward_amount = int(code_entry.get("reward", CODE_REWARD_GEMS))
+    u["gems"] = float(u.get("gems", 0)) + reward_amount
     code_entry["current_claims"] = code_entry.get("current_claims", 0) + 1
     code_entry.setdefault("redeemed_users", []).append(ctx.author.id)
     if code_entry.get("name") not in u.get("redeemed_codes", []):
@@ -3802,7 +3811,7 @@ async def redeem(ctx, code_name: str):
     claims_left = max(0, code_entry.get("max_claims", 0) - code_entry.get("current_claims", 0))
     await ctx.send(
         f"✅ Code **{code_entry.get('name')}** redeemed!\n"
-        f"You received **{fmt(CODE_REWARD_GEMS)}** gems.\n"
+        f"You received **{fmt(reward_amount)}** gems.\n"
         f"Claims remaining: **{claims_left}**"
     )
 
@@ -3810,7 +3819,7 @@ async def redeem(ctx, code_name: str):
         "game": "code_redeem",
         "bet": 0,
         "result": code_entry.get("name", normalized),
-        "earned": CODE_REWARD_GEMS,
+        "earned": reward_amount,
         "timestamp": time.time(),
     })
 
@@ -5852,7 +5861,7 @@ async def helpadmin(ctx):
             "**!removerole <role> amount** — Remove gems from everyone with a role\n"
             "**!giveall amount** — Give gems to the entire server\n"
             "**!tax percent** — Tax all balances by %\n"
-            "**!code \"<code_name>\" <max_claims>** — Publish a redeemable code"
+            "**!code \"<code_name>\" <usage_amount> <reward>** — Publish a redeemable code"
         ),
         inline=False
     )
