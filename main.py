@@ -5742,6 +5742,7 @@ async def help(ctx):
             "**!gift @user amount** — Gift gems\n"
             "**!sell <name> <income> <price>** — Create a listing\n"
             "**!loan <amount>** — Borrow up to 25% of lifetime wagers\n"
+            "**!loanhelp** — What happens if you don't repay in 72h\n"
             "**!payback** — Repay your cosmic credit (+20%)\n"
             "**!withdraw** — Start a withdraw request (form)\n"
             "**!deposit** — Start a deposit request (form)"
