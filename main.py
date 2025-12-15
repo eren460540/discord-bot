@@ -946,6 +946,36 @@ async def backup_to_channel(reason: str = "auto"):
         pass
 
 
+def apply_restored_data(new_data: dict):
+    """Replace global data store from a backup while keeping defaults intact."""
+    if not isinstance(new_data, dict):
+        raise ValueError("Backup JSON must be a JSON object.")
+
+    global data, device_fp
+    data = new_data
+
+    # Re-apply required defaults so existing commands don't crash after a restore.
+    data.setdefault("next_deposit_id", 1)
+    data.setdefault("next_withdraw_id", 1)
+    data.setdefault("deposits", [])
+    data.setdefault("withdrawals", [])
+    data.setdefault("deposit_bonuses", {})
+    data.setdefault("wheel_last_spin", {})
+    data.setdefault("wheel_extra_spins", {})
+    data.setdefault("quests", {})
+    data.setdefault("quest_last_reset", 0)
+    data.setdefault("codes", {})
+    data.setdefault("withdraw_history", {})
+    data.setdefault("withdraw_last_time", {})
+    data.setdefault("roblox_links", {})
+    data.setdefault("_device_fingerprints", {})
+
+    # Refresh derived references that other helpers rely on.
+    device_fp = data["_device_fingerprints"]
+
+    save_data(data)
+
+
 @tasks.loop(minutes=10)
 async def auto_backup_task():
     await backup_to_channel("auto")
@@ -5539,9 +5569,10 @@ async def restorelatest(ctx):
     except Exception:
         return await ctx.send("❌ Failed to load backup file (invalid JSON).")
 
-    global data
-    data = new_data
-    save_data(data)
+    try:
+        apply_restored_data(new_data)
+    except ValueError:
+        return await ctx.send("❌ Backup file must be a JSON object at the root level.")
 
     embed = discord.Embed(
         title="✅ Restore Complete",
@@ -5568,9 +5599,10 @@ async def restorebackup(ctx):
     except Exception:
         return await ctx.send("❌ Failed to read or parse the attached file.")
 
-    global data
-    data = new_data
-    save_data(data)
+    try:
+        apply_restored_data(new_data)
+    except ValueError:
+        return await ctx.send("❌ Backup file must be a JSON object at the root level.")
 
     embed = discord.Embed(
         title="✅ Manual Restore Complete",
