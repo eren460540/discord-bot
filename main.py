@@ -25,7 +25,7 @@ DISABLED_CATEGORIES = {1431610646654488661}
 # Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
 
-GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack"]
+GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack", "crash"]
 
 
 
@@ -588,7 +588,7 @@ def _mark_withdraw_used(uid: str, kind: str, amount: int):
 
 
 FREE_SOURCES = {"daily", "work", "invite_reward", "admin_give", "dropbox"}
-GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack"}
+GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack", "crash"}
 ACHIEVEMENT_DEFS = {
     "first_loan": {
         "emoji": "🌌",
@@ -3993,6 +3993,149 @@ async def coinflip(ctx, bet: str, choice: str):
 
 
 # --------------------------------------------------------------
+#                      CRASH (rig-aware)
+# --------------------------------------------------------------
+@bot.command()
+async def crash(ctx, bet: str):
+    ensure_user(ctx.author.id)
+    u = data[str(ctx.author.id)]
+
+    amount = parse_amount(bet, u["gems"], allow_all=True)
+    if amount is None or amount <= 0:
+        return await ctx.send("❌ Invalid bet.")
+    if amount > MAX_BET:
+        return await ctx.send("❌ Max bet is **200m**.")
+    if amount > u["gems"]:
+        return await ctx.send("❌ You don't have enough gems.")
+
+    u["gems"] -= amount
+    save_data(data)
+
+    rig = consume_rig(u)
+
+    owner = ctx.author.id
+    clicks = 0
+    multiplier = 0.25
+    crash_chance = 10.0
+    CLICK_LIMIT = 4
+    game_over = False
+
+    def rigged_chance(base: float) -> float:
+        if rig == "bless":
+            return max(0.0, base * 0.5)
+        if rig == "curse":
+            return min(100.0, base * 2)
+        return base
+
+    def embed_update(status: str):
+        adjusted_chance = rigged_chance(crash_chance)
+        e = discord.Embed(
+            title=f"🚀 Galaxy Crash | {ctx.author.name}",
+            description=(
+                f"💵 Bet: **{fmt(amount)}**\n"
+                f"🧮 Multiplier: **{multiplier:.2f}x**\n"
+                f"💥 Crash chance: **{adjusted_chance:.0f}%**\n"
+                f"🔢 Clicks: **{clicks}/{CLICK_LIMIT}**\n"
+                f"📌 Status: {status}"
+            ),
+            color=galaxy_color(),
+        )
+        if rig in ("bless", "curse"):
+            e.set_footer(text=f"Rigged: {rig.title()} active — crash chance adjusted")
+        else:
+            e.set_footer(text="Galaxy Crash • Cash out before the galaxy collapses!")
+        return e
+
+    view = View(timeout=None)
+
+    async def finalize_loss(interaction):
+        nonlocal game_over
+        game_over = True
+        for child in view.children:
+            child.disabled = True
+        add_history(ctx.author.id, {
+            "game": "crash",
+            "bet": amount,
+            "result": "crash",
+            "earned": -amount,
+            "timestamp": time.time(),
+        })
+        try:
+            await interaction.response.edit_message(embed=embed_update("💥 Crashed! You lost."), view=view)
+        except Exception:
+            pass
+        await ctx.send(f"☠️ The ship exploded! You lost **{fmt(amount)}** gems.")
+
+    class Next(Button):
+        def __init__(self):
+            super().__init__(label="Next", style=discord.ButtonStyle.secondary)
+
+        async def callback(self, interaction):
+            nonlocal clicks, multiplier, crash_chance, game_over
+            if interaction.user.id != owner:
+                return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+            if game_over:
+                return await interaction.response.send_message("❌ Game ended!", ephemeral=True)
+            if clicks >= CLICK_LIMIT:
+                return await interaction.response.send_message("❌ Click limit reached!", ephemeral=True)
+
+            clicks += 1
+            multiplier *= 2
+            crash_chance = min(100.0, crash_chance * 2)
+
+            adjusted = rigged_chance(crash_chance)
+            roll = random.random() * 100
+            if roll < adjusted:
+                return await finalize_loss(interaction)
+
+            if clicks >= CLICK_LIMIT:
+                self.disabled = True
+
+            try:
+                await interaction.response.edit_message(embed=embed_update("🟢 Safe... for now."), view=view)
+            except Exception:
+                pass
+
+    class CashOut(Button):
+        def __init__(self):
+            super().__init__(label="Cash Out", style=discord.ButtonStyle.success)
+
+        async def callback(self, interaction):
+            nonlocal game_over
+            if interaction.user.id != owner:
+                return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+            if game_over:
+                return await interaction.response.send_message("❌ Game ended!", ephemeral=True)
+
+            game_over = True
+            reward = int(amount * multiplier)
+            profit = reward - amount
+            u["gems"] += reward
+            save_data(data)
+            for child in view.children:
+                child.disabled = True
+
+            add_history(ctx.author.id, {
+                "game": "crash",
+                "bet": amount,
+                "result": "cashout",
+                "earned": profit,
+                "timestamp": time.time(),
+            })
+
+            try:
+                await interaction.response.edit_message(embed=embed_update("💰 Cashed out!"), view=view)
+            except Exception:
+                pass
+            await ctx.send(f"💰 You cashed out at **{multiplier:.2f}x** for **{fmt(profit)}** gems!")
+
+    view.add_item(Next())
+    view.add_item(CashOut())
+
+    await ctx.send(embed=embed_update("🟣 Active"), view=view)
+
+
+# --------------------------------------------------------------
 #                      SLOTS (3x4, rig-aware, 2x max)
 # --------------------------------------------------------------
 @bot.command()
@@ -5199,7 +5342,7 @@ async def check(ctx, member: discord.Member = None):
     embed.add_field(
         name="🎲 Total Gambled",
         value=f"**{fmt(int(gambled_total))}** gems\n"
-              f"Games: coinflip, slots, mines, tower, blackjack",
+              f"Games: coinflip, slots, mines, tower, blackjack, crash",
         inline=False
     )
 
@@ -5770,6 +5913,7 @@ async def help(ctx):
             "**!slots amount** — Slot machine\n"
             "**!mines amount [mines]** — Mines game\n"
             "**!tower amount** — 10-floor tower\n"
+            "**!crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses. (Max bet: 200m)\n"
             "**!blackjack amount** — Blackjack game\n"
             "**!chests** — Open Galaxy Chests"
         ),
