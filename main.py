@@ -590,11 +590,31 @@ def _mark_withdraw_used(uid: str, kind: str, amount: int):
 FREE_SOURCES = {"daily", "work", "invite_reward", "admin_give", "dropbox"}
 GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack"}
 ACHIEVEMENT_DEFS = {
-    "first_loan": {"emoji": "🌌", "name": "First Loan"},
-    "paid_first_loan": {"emoji": "💎", "name": "Debt Crusher"},
-    "debt_free": {"emoji": "🏆", "name": "Debt-Free Voyager"},
-    "high_roller": {"emoji": "🔥", "name": "High Roller"},
-    "daily_streak_7": {"emoji": "🪐", "name": "7-Day Streak"},
+    "first_loan": {
+        "emoji": "🌌",
+        "name": "First Loan",
+        "desc": "Open a line of cosmic credit for the first time."
+    },
+    "paid_first_loan": {
+        "emoji": "💎",
+        "name": "Debt Crusher",
+        "desc": "Repay your first loan in full."
+    },
+    "debt_free": {
+        "emoji": "🏆",
+        "name": "Debt-Free Voyager",
+        "desc": "Maintain a clean ledger with no active debts."
+    },
+    "high_roller": {
+        "emoji": "🔥",
+        "name": "High Roller",
+        "desc": "Wager 1,000,000,000+ gems over your lifetime."
+    },
+    "daily_streak_7": {
+        "emoji": "🪐",
+        "name": "7-Day Streak",
+        "desc": "Claim dailies seven days in a row."
+    },
 }
 HIGH_ROLLER_WAGER = 1_000_000_000
 
@@ -674,11 +694,15 @@ def _loan_is_restricted(uid: str):
     return loan.get("status") in {"active", "defaulted"}
 
 
-def grant_achievement(uid: str, key: str):
+def achievement_record(uid: str):
+    ensure_user(uid)
+    return data[str(uid)].setdefault("achievements", {})
+
+
+def grant_achievement(uid: str, key: str) -> bool:
     if key not in ACHIEVEMENT_DEFS:
         return False
-    ensure_user(uid)
-    ach = data[str(uid)].setdefault("achievements", {})
+    ach = achievement_record(uid)
     if ach.get(key):
         return False
     ach[key] = True
@@ -686,14 +710,22 @@ def grant_achievement(uid: str, key: str):
     return True
 
 
-def _check_achievements(uid: str):
+def refresh_achievements(uid: str):
     ensure_user(uid)
     u = data[str(uid)]
+
     if u.get("lifetime_wagered", 0) >= HIGH_ROLLER_WAGER:
         grant_achievement(uid, "high_roller")
+
     loan = u.get("loan")
+    if loan and loan.get("status") == "paid":
+        grant_achievement(uid, "paid_first_loan")
     if not loan or loan.get("status") == "paid":
         grant_achievement(uid, "debt_free")
+
+    # Daily streak achievement is optional; only award if a streak counter exists.
+    if "daily_streak" in u and u.get("daily_streak", 0) >= 7:
+        grant_achievement(uid, "daily_streak_7")
 
 
 def ensure_user(user_id):
@@ -728,7 +760,7 @@ def add_history(user_id, entry):
     if bet > 0 and game in GAMBLE_GAMES:
         _quest_add_wager(uid, bet)
         data[uid]["lifetime_wagered"] = data[uid].get("lifetime_wagered", 0) + bet
-        _check_achievements(uid)
+        refresh_achievements(uid)
 
     hist = data[uid].get("history", [])
     hist.append(entry)
@@ -784,8 +816,18 @@ def parse_duration(d: str):
     return None
 
 
+LOAN_MAX_RATIO = 0.25
+LOAN_DURATION_SECONDS = 72 * 3600
+LOAN_REMINDER_SECONDS = 24 * 3600
+LOAN_INTEREST = 1.20
+
+
 def _loan_limit(u):
-    return int(u.get("lifetime_wagered", 0) * 0.25)
+    return max(0, int(u.get("lifetime_wagered", 0) * LOAN_MAX_RATIO))
+
+
+def _loan_payback_amount(amount: int) -> int:
+    return int(round(amount * LOAN_INTEREST))
 
 
 def _loan_embed(title: str, description: str, color=None):
@@ -988,54 +1030,82 @@ async def auto_backup_task():
     await backup_to_channel("auto")
 
 
+async def _dm_loan_reminder(uid: str, loan: dict):
+    try:
+        member = await bot.fetch_user(int(uid))
+    except Exception:
+        return
+
+    embed = discord.Embed(
+        title="🌌 Loan Reminder",
+        description=(
+            f"💎 Principal: **{fmt(loan['amount'])}** gems\n"
+            f"🪐 Payback: **{fmt(loan['payback_amount'])}** gems\n"
+            f"⏳ Due: <t:{int(loan['due_at'])}:R> — pay with `!payback`"
+        ),
+        color=galaxy_color(),
+    )
+    embed.set_footer(text="Galaxy Credit Bureau • 72h repayment window")
+    try:
+        await member.send(embed=embed)
+    except Exception:
+        pass
+
+
+async def _dm_loan_default(uid: str, loan: dict):
+    try:
+        owner = await bot.fetch_user(OWNER_ID)
+    except Exception:
+        return
+
+    embed = discord.Embed(
+        title="🚨 Loan Default Alert",
+        description=(
+            f"User <@{uid}> defaulted on **{fmt(loan['payback_amount'])}** gems.\n"
+            f"Taken: <t:{int(loan['taken_at'])}:R> | Due: <t:{int(loan['due_at'])}:R>"
+        ),
+        color=discord.Color.red(),
+    )
+    embed.set_footer(text="Galaxy Credit Bureau • Manual resolution required")
+    try:
+        await owner.send(embed=embed)
+    except Exception:
+        pass
+
+
 @tasks.loop(minutes=30)
 async def loan_watchdog():
     now = time.time()
+    dirty = False
+
     for uid, u in list(data.items()):
         if not uid.isdigit():
             continue
+
         ensure_user(uid)
         loan = u.get("loan")
         if not loan:
             continue
+
         status = loan.get("status")
         if status == "active":
             last_ping = loan.get("last_reminder", loan.get("taken_at", now))
-            if now - last_ping >= 24 * 3600:
-                try:
-                    member = await bot.fetch_user(int(uid))
-                    embed = discord.Embed(
-                        title="🌌 Loan Reminder",
-                        description=(
-                            f"💎 Loan: **{fmt(loan['amount'])}** gems\n"
-                            f"🪐 Payback: **{fmt(loan['payback_amount'])}** gems\n"
-                            f"⏳ Due: <t:{int(loan['due_at'])}:R>"
-                        ),
-                        color=galaxy_color(),
-                    )
-                    embed.set_footer(text="Galaxy Credit Bureau • Settle within 72h")
-                    await member.send(embed=embed)
-                except Exception:
-                    pass
+            if now - last_ping >= LOAN_REMINDER_SECONDS:
+                await _dm_loan_reminder(uid, loan)
                 loan["last_reminder"] = now
-                save_data(data)
+                dirty = True
+
             if now >= loan.get("due_at", 0):
                 loan["status"] = "defaulted"
-                save_data(data)
-                try:
-                    owner = await bot.fetch_user(OWNER_ID)
-                    embed = discord.Embed(
-                        title="🚨 Loan Default Alert",
-                        description=(
-                            f"User <@{uid}> defaulted on **{fmt(loan['payback_amount'])}** gems.\n"
-                            f"Taken: <t:{int(loan['taken_at'])}:R> | Due: <t:{int(loan['due_at'])}:R>"
-                        ),
-                        color=discord.Color.red(),
-                    )
-                    embed.set_footer(text="Galaxy Credit Bureau • Manual resolution required")
-                    await owner.send(embed=embed)
-                except Exception:
-                    pass
+                dirty = True
+                await _dm_loan_default(uid, loan)
+
+        elif status == "defaulted":
+            # No automatic recovery; admins must resolve.
+            continue
+
+    if dirty:
+        save_data(data)
 
 
 @auto_backup_task.before_loop
@@ -2252,7 +2322,7 @@ async def loan(ctx, amount: str):
     if u.get("lifetime_wagered", 0) <= 0 or limit <= 0:
         return await ctx.send(embed=_loan_embed(
             "🚫 Loan Unavailable",
-            "🌌 You need wager history before accessing cosmic credit.",
+            "🌌 You need wagering history before the bureau opens your cosmic credit line.",
             discord.Color.red(),
         ))
 
@@ -2267,6 +2337,7 @@ async def loan(ctx, amount: str):
     val = parse_amount(amount, allow_all=False)
     if val is None or val <= 0:
         return await ctx.send("❌ Invalid amount.")
+
     val = int(val)
     if val > limit:
         return await ctx.send(embed=_loan_embed(
@@ -2275,20 +2346,23 @@ async def loan(ctx, amount: str):
             discord.Color.red(),
         ))
 
-    payback = int(val * 1.2)
     now = time.time()
+    payback = _loan_payback_amount(val)
     loan_data = {
         "amount": val,
         "payback_amount": payback,
         "taken_at": now,
-        "due_at": now + 72 * 3600,
+        "due_at": now + LOAN_DURATION_SECONDS,
         "status": "active",
         "last_reminder": now,
     }
+
     _set_loan(ctx.author.id, loan_data)
     u["gems"] = u.get("gems", 0) + val
     save_data(data)
+
     grant_achievement(ctx.author.id, "first_loan")
+    refresh_achievements(ctx.author.id)
 
     embed = discord.Embed(
         title="💠 Loan Approved",
@@ -2309,6 +2383,13 @@ async def payback(ctx):
     ensure_user(ctx.author.id)
     u = data[str(ctx.author.id)]
     loan = u.get("loan")
+    if ctx.guild and ctx.author.guild_permissions.manage_guild:
+        return await ctx.send(embed=_loan_embed(
+            "🚫 Admins Locked",
+            "🌠 Admin accounts cannot use loan repayment for safety.",
+            discord.Color.red(),
+        ))
+
     if not loan or loan.get("status") not in {"active", "defaulted"}:
         return await ctx.send(embed=_loan_embed(
             "🚫 No Outstanding Loan",
@@ -2337,8 +2418,7 @@ async def payback(ctx):
         "timestamp": time.time(),
     })
 
-    grant_achievement(ctx.author.id, "paid_first_loan")
-    _check_achievements(str(ctx.author.id))
+    refresh_achievements(str(ctx.author.id))
 
     embed = discord.Embed(
         title="✅ Loan Cleared",
@@ -2360,22 +2440,24 @@ async def payback(ctx):
 async def achievements_cmd(ctx, member: discord.Member = None):
     target = member or ctx.author
     ensure_user(target.id)
-    u = data[str(target.id)]
-    ach = u.get("achievements", {})
+    refresh_achievements(target.id)
+    ach = achievement_record(target.id)
 
     lines = []
     for key, meta in ACHIEVEMENT_DEFS.items():
         unlocked = ach.get(key, False)
-        emoji = meta["emoji"] + (" ✅" if unlocked else " 🔒")
-        name = meta["name"]
-        lines.append(f"{emoji} **{name}** — {'Unlocked' if unlocked else 'Locked'}")
+        status_emoji = "✅" if unlocked else "🔒"
+        lines.append(
+            f"{meta['emoji']} {status_emoji} **{meta['name']}** — "
+            f"{meta['desc']}"
+        )
 
     embed = discord.Embed(
         title=f"🏆 Cosmic Achievements — {target.display_name}",
         description="\n".join(lines),
         color=galaxy_color(),
     )
-    embed.set_footer(text="Galaxy Milestones • Earn glory among the stars")
+    embed.set_footer(text="Galaxy Milestones • 🌌 Track your legend")
     await ctx.send(embed=embed)
 # ==============================================================
 #               ADMIN WITHDRAW PANEL (!withdrawpanel)
@@ -4013,246 +4095,166 @@ async def mines(ctx, bet: str, mines: int = 3):
     save_data(data)
 
     rig = consume_rig(u)  # 'bless', 'curse', or None
-
     owner = ctx.author.id
-    game_over = False
-    correct_clicks = 0
-    first_click = True
 
     TOTAL = 24
     ROW_SLOTS = 5
-    SAFE = "✅"
-    BOMB = "💥"
+    SAFE_TILE_TARGET = TOTAL - mines
 
-    revealed = [None] * TOTAL
-    bomb_positions = random.sample(range(TOTAL), mines)
+    revealed_safe = set()
+    bomb_positions = set(random.sample(range(TOTAL), mines))
     exploded_index = None
+    game_over = False
+    reward_on_end = 0
 
     def calc_multiplier():
-        return (1.025 + mines / 50) ** correct_clicks
+        return (1.025 + mines / 50) ** len(revealed_safe)
 
     def calc_reward():
         return amount * calc_multiplier()
 
+    def finalize_board(explosion: int | None = None):
+        nonlocal exploded_index
+        exploded_index = explosion
+        for i, btn in enumerate(view.children):
+            if not isinstance(btn, Tile):
+                continue
+            btn.disabled = True
+            if i in bomb_positions:
+                btn.label = "💣"
+                btn.style = discord.ButtonStyle.danger
+            if explosion is not None and i == explosion:
+                btn.label = "💥"
+                btn.style = discord.ButtonStyle.danger
+
     def embed_update():
-        reward = 0 if exploded_index is not None else calc_reward()
+        reward_display = reward_on_end if game_over else calc_reward()
         e = discord.Embed(
             title=f"💣 Galaxy Mines | {ctx.author.name}",
             description=(
                 f"💵 Bet: **{fmt(amount)}**\n"
-                f"💰 Current: **{fmt(reward)}**\n"
+                f"💰 Current: **{fmt(reward_display)}**\n"
                 f"🔥 Multiplier: **{calc_multiplier():.2f}x**"
             ),
-            color=galaxy_color()
+            color=galaxy_color(),
         )
-        e.set_footer(text=f"Mines: {mines} • Tiles: {TOTAL}")
+        e.set_footer(text=f"Mines: {mines} • Safe tiles: {SAFE_TILE_TARGET}")
         return e
 
     view = View(timeout=None)
 
+    async def handle_loss(interaction, reason: str, explosion_index: int):
+        nonlocal game_over, reward_on_end
+        game_over = True
+        reward_on_end = 0
+        finalize_board(explosion_index)
+        add_history(ctx.author.id, {
+            "game": "mines",
+            "bet": amount,
+            "result": reason,
+            "earned": -amount,
+            "timestamp": time.time()
+        })
+        try:
+            await interaction.response.edit_message(embed=embed_update(), view=view)
+        except Exception:
+            pass
+        await ctx.send(f"💥 A mine detonated! You lost **{fmt(amount)}** gems.")
+
+    async def handle_win(interaction, reason: str):
+        nonlocal game_over, reward_on_end
+        game_over = True
+        reward_on_end = calc_reward()
+        u["gems"] += reward_on_end
+        save_data(data)
+        finalize_board(random.choice(list(bomb_positions)) if bomb_positions else None)
+        add_history(ctx.author.id, {
+            "game": "mines",
+            "bet": amount,
+            "result": reason,
+            "earned": reward_on_end - amount,
+            "timestamp": time.time(),
+        })
+        try:
+            await interaction.response.edit_message(embed=embed_update(), view=view)
+        except Exception:
+            pass
+        await ctx.send(f"🌠 You secured **{fmt(reward_on_end - amount)}** gems from the cosmic field!")
+
     class Tile(Button):
         def __init__(self, index):
-            super().__init__(label=str(index + 1), style=discord.ButtonStyle.secondary)
+            super().__init__(label=str(index + 1), style=discord.ButtonStyle.secondary, row=index // ROW_SLOTS)
             self.index = index
 
         async def callback(self, interaction):
-            nonlocal correct_clicks, game_over, exploded_index, first_click
+            nonlocal game_over
 
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
                 return await interaction.response.send_message("❌ Game already ended!", ephemeral=True)
-            if revealed[self.index] is not None:
+            if self.index in revealed_safe:
                 return await interaction.response.send_message("❌ Already clicked!", ephemeral=True)
 
-            # CURSE: clicked tile looks safe, different bomb explodes
+            # CURSE: show this tile as safe but detonate a different bomb
             if rig == "curse":
-                revealed[self.index] = True
-                self.label = SAFE
+                revealed_safe.add(self.index)
+                self.label = "✅"
                 self.style = discord.ButtonStyle.success
-                game_over = True
-                other_bombs = [b for b in bomb_positions if b != self.index]
-                exploded_index = random.choice(other_bombs) if other_bombs else self.index
+                remaining_bombs = list(bomb_positions - {self.index}) or list(bomb_positions)
+                explosion = random.choice(remaining_bombs)
+                return await handle_loss(interaction, "curse_explode", explosion)
 
-                for i, btn in enumerate(view.children):
-                    if isinstance(btn, Tile):
-                        btn.disabled = True
-                        if i == exploded_index:
-                            btn.label = "💥"
-                            btn.style = discord.ButtonStyle.danger
-                        elif i in bomb_positions:
-                            btn.label = "💣"
-                            btn.style = discord.ButtonStyle.danger
-
-                add_history(ctx.author.id, {
-                    "game": "mines",
-                    "bet": amount,
-                    "result": "curse_explode",
-                    "earned": -amount,
-                    "timestamp": time.time()
-                })
-
-                try:
-                    await interaction.response.edit_message(embed=embed_update(), view=view)
-                except:
-                    pass
-                await ctx.send(f"💥 A hidden mine detonated elsewhere! You lost **{fmt(amount)}** gems.")
-                return
-
-            first_click = False
-
-            # BLESS: every tile treated as safe
+            # BLESS: every tile is safe
             if rig == "bless":
-                revealed[self.index] = True
-                self.label = SAFE
+                revealed_safe.add(self.index)
+                self.label = "✅"
                 self.style = discord.ButtonStyle.success
-                correct_clicks += 1
-                if correct_clicks >= TOTAL - mines:
-                    game_over = True
-                    reward = calc_reward()
-                    u["gems"] += reward
-                    save_data(data)
-                    for i, btn in enumerate(view.children):
-                        if isinstance(btn, Tile):
-                            btn.disabled = True
-                            if i in bomb_positions:
-                                btn.label = "💥"
-                                btn.style = discord.ButtonStyle.danger
-                    add_history(ctx.author.id, {
-                        "game": "mines",
-                        "bet": amount,
-                        "result": "bless_limit",
-                        "earned": reward - amount,
-                        "timestamp": time.time()
-                    })
-                    try:
-                        await interaction.response.edit_message(embed=embed_update(), view=view)
-                    except:
-                        pass
-                    await ctx.send(f"🌠 Blessing overload! The board collapses and you collect **{fmt(reward - amount)}** gems.")
-                    return
+                if len(revealed_safe) >= SAFE_TILE_TARGET:
+                    return await handle_win(interaction, "bless_clear")
                 try:
                     await interaction.response.edit_message(embed=embed_update(), view=view)
-                except:
+                except Exception:
                     pass
                 return
 
-            # NORMAL
+            # NORMAL flow
             if self.index in bomb_positions:
-                exploded_index = self.index
-                revealed[self.index] = False
-                game_over = True
-                for i, btn in enumerate(view.children):
-                    if isinstance(btn, Tile):
-                        btn.disabled = True
-                        if i in bomb_positions:
-                            btn.label = "💣"
-                            btn.style = discord.ButtonStyle.danger
+                return await handle_loss(interaction, "lose", self.index)
 
-                add_history(ctx.author.id, {
-                    "game": "mines",
-                    "bet": amount,
-                    "result": "lose",
-                    "earned": -amount,
-                    "timestamp": time.time()
-                })
-
-                try:
-                    await interaction.response.edit_message(embed=embed_update(), view=view)
-                except:
-                    pass
-                await ctx.send(f"💥 You hit a mine and lost **{fmt(amount)}** gems.")
-                return
-
-            revealed[self.index] = True
-            self.label = SAFE
+            revealed_safe.add(self.index)
+            self.label = "✅"
             self.style = discord.ButtonStyle.success
-            correct_clicks += 1
-
             try:
                 await interaction.response.edit_message(embed=embed_update(), view=view)
-            except:
+            except Exception:
                 pass
 
     for i in range(TOTAL):
-        btn = Tile(i)
-        btn.row = i // ROW_SLOTS
-        view.add_item(btn)
+        view.add_item(Tile(i))
 
     class Cashout(Button):
         def __init__(self):
             super().__init__(label="💰 Cashout", style=discord.ButtonStyle.primary, row=4)
 
         async def callback(self, interaction):
-            nonlocal game_over, exploded_index, correct_clicks
-
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
                 return await interaction.response.send_message("❌ Game already ended!", ephemeral=True)
 
-            # CURSE: cashout still loses full amount
             if rig == "curse":
-                game_over = True
-                exploded_index = 0  # mark as exploded so reward shows 0
-                for i, btn in enumerate(view.children):
-                    if isinstance(btn, Tile):
-                        btn.disabled = True
-                        if i in bomb_positions:
-                            btn.label = "💣"
-                            btn.style = discord.ButtonStyle.danger
+                explosion = random.choice(list(bomb_positions))
+                return await handle_loss(interaction, "curse_cashout", explosion)
 
-                add_history(ctx.author.id, {
-                    "game": "mines",
-                    "bet": amount,
-                    "result": "lose_cashout",
-                    "earned": -amount,
-                    "timestamp": time.time()
-                })
+            # BLESS: allow instant profit without extra clicks
+            if rig == "bless" and len(revealed_safe) == 0:
+                revealed_safe.add(random.randrange(TOTAL))
 
-                try:
-                    await interaction.response.edit_message(embed=embed_update(), view=view)
-                except:
-                    pass
-
-                await ctx.send(f"💥 You panicked and lost **{fmt(amount)}** gems.")
-                return
-
-            # BLESS: ensure at least some profit even if they cashout instantly
-            if rig == "bless" and correct_clicks == 0:
-                correct_clicks = 1
-
-            game_over = True
-            reward = calc_reward()
-            u["gems"] += reward
-            save_data(data)
-
-            for i, btn in enumerate(view.children):
-                if isinstance(btn, Tile):
-                    btn.disabled = True
-                    if i in bomb_positions:
-                        btn.label = "💣"
-                        btn.style = discord.ButtonStyle.danger
-
-            add_history(ctx.author.id, {
-                "game": "mines",
-                "bet": amount,
-                "result": "cashout",
-                "earned": reward - amount,
-                "timestamp": time.time()
-            })
-
-            try:
-                await interaction.response.edit_message(embed=embed_update(), view=view)
-            except:
-                pass
-
-            await ctx.send(f"💰 You cashed out **{fmt(reward - amount)}** gems!")
+            return await handle_win(interaction, "cashout")
 
     view.add_item(Cashout())
     await ctx.send(embed=embed_update(), view=view)
-
-
 # --------------------------------------------------------------
 #                      TOWER (rig-aware)
 # --------------------------------------------------------------
@@ -5719,6 +5721,8 @@ async def help(ctx):
             "**!wheel** — Spin the daily wheel\n"
             "**!gift @user amount** — Gift gems\n"
             "**!sell <name> <income> <price>** — Create a listing\n"
+            "**!loan <amount>** — Borrow up to 25% of lifetime wagers\n"
+            "**!payback** — Repay your cosmic credit (+20%)\n"
             "**!withdraw** — Start a withdraw request (form)\n"
             "**!deposit** — Start a deposit request (form)"
         ),
@@ -5735,6 +5739,15 @@ async def help(ctx):
             "**!tower amount** — 10-floor tower\n"
             "**!blackjack amount** — Blackjack game\n"
             "**!chests** — Open Galaxy Chests"
+        ),
+        inline=False
+    )
+
+    # ---------------- Progress ----------------
+    embed.add_field(
+        name="🏆 Progress",
+        value=(
+            "**!achievements [@user]** — View unlocked galaxy milestones"
         ),
         inline=False
     )
