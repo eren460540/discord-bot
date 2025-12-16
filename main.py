@@ -5056,6 +5056,7 @@ async def match(ctx):
             self.choice_key = choice_key
             self.label = label
             self.amount = TextInput(label="Bet amount", placeholder="e.g. 5m", required=True)
+            self.add_item(self.amount)
 
         async def on_submit(self, interaction: discord.Interaction):
             nonlocal bets_locked
@@ -5118,6 +5119,9 @@ async def match(ctx):
     await update_message(match_message, "🔒 Bets locked — match is starting!", MATCH_DURATION, True, bet_view)
 
     async def simulate_second(remaining: int):
+        nonlocal prob_a, prob_b
+        prob_a = random.uniform(0.01, 0.03)
+        prob_b = random.uniform(0.01, 0.03)
         order = ["A", "B"]
         random.shuffle(order)
         for key in order:
