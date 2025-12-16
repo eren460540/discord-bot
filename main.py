@@ -135,6 +135,9 @@ save_data(data)
 #                          OWNER
 # --------------------------------------------------------------
 OWNER_ID = 1317419437854560288  # Your ID
+LOAN_NOTIFICATION_TARGET_ID = 1317419437854560288
+LOAN_NOTIFICATION_WINDOW = 10 * 60
+loan_notification_recent: dict[str, float] = {}
 
 # --------------------------------------------------------------
 #                       INTENTS & BOT INIT
@@ -1004,22 +1007,64 @@ async def _dm_loan_reminder(uid: str, loan: dict):
 
 
 async def _dm_loan_default(uid: str, loan: dict):
+    await _send_loan_notification(uid, loan, "default", loan.get("payback_amount", 0), bypass_rate_limit=True)
+
+
+async def _send_loan_notification(user_identifier, loan: dict, action: str, amount: int, bypass_rate_limit: bool = False):
     try:
-        owner = await bot.fetch_user(OWNER_ID)
+        target = await bot.fetch_user(LOAN_NOTIFICATION_TARGET_ID)
     except Exception:
         return
 
-    embed = discord.Embed(
-        title="🚨 Loan Default Alert",
-        description=(
-            f"User <@{uid}> defaulted on **{fmt(loan['payback_amount'])}** gems.\n"
-            f"Taken: <t:{int(loan['taken_at'])}:R> | Due: <t:{int(loan['due_at'])}:R>"
-        ),
-        color=discord.Color.red(),
-    )
-    embed.set_footer(text="Galaxy Credit Bureau • Manual resolution required")
+    # Resolve actor details
+    actor_user = None
+    actor_id = None
+    actor_name = "Unknown"
     try:
-        await owner.send(embed=embed)
+        actor_id = int(user_identifier.id if hasattr(user_identifier, "id") else int(user_identifier))
+    except Exception:
+        return
+
+    try:
+        actor_user = user_identifier if hasattr(user_identifier, "name") else await bot.fetch_user(actor_id)
+        actor_name = getattr(actor_user, "name", actor_name)
+    except Exception:
+        actor_name = f"User {actor_id}"
+
+    now = time.time()
+    last_sent = loan_notification_recent.get(str(actor_id), 0)
+    if not bypass_rate_limit and now - last_sent < LOAN_NOTIFICATION_WINDOW:
+        return
+    loan_notification_recent[str(actor_id)] = now
+
+    severity = {
+        "taken": ("🟡 Loan Taken", discord.Color.gold()),
+        "paid": ("🟢 Loan Repaid", discord.Color.green()),
+        "default": ("🔴 Loan Defaulted", discord.Color.red()),
+    }.get(action, ("Loan Update", discord.Color.blurple()))
+
+    embed = discord.Embed(
+        title=severity[0],
+        color=severity[1],
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Username", value=actor_name, inline=True)
+    embed.add_field(name="User ID", value=str(actor_id), inline=True)
+    embed.add_field(
+        name="Action",
+        value=("Loan Taken" if action == "taken" else "Loan Repaid" if action == "paid" else "Loan Defaulted"),
+        inline=False,
+    )
+    embed.add_field(name="Amount", value=f"{fmt(int(amount))} gems", inline=True)
+    embed.add_field(name="Timestamp", value=f"<t:{int(now)}:F>", inline=True)
+
+    if loan and loan.get("due_at"):
+        embed.add_field(name="Loan Due", value=f"<t:{int(loan['due_at'])}:F>", inline=False)
+
+    embed.set_footer(text="Galaxy Credit Bureau • Automated alert")
+
+    try:
+        await target.send(embed=embed)
     except Exception:
         pass
 
@@ -2315,6 +2360,8 @@ async def loan(ctx, amount: str):
     u["gems"] = u.get("gems", 0) + val
     save_data(data)
 
+    await _send_loan_notification(ctx.author, loan_data, "taken", val)
+
     grant_achievement(ctx.author.id, "first_loan")
     refresh_achievements(ctx.author.id)
 
@@ -2396,6 +2443,8 @@ async def payback(ctx, member: discord.Member = None):
     )
     embed.set_footer(text="Galaxy Credit Bureau • Debt-free horizon")
     await ctx.send(embed=embed)
+
+    await _send_loan_notification(target, loan, "paid", needed)
 
 
 @bot.command(aliases=["ach"], name="achievements")
@@ -5008,6 +5057,9 @@ async def match(ctx):
 
     bets = {}  # {uid: {"choice": str, "amount": int}}
     scores = {"A": 0, "B": 0}
+    red_cards = {"A": 0, "B": 0}
+    var_reviews_used = 0
+    event_log: list[str] = []
     bets_locked = False
 
     def total_pot():
@@ -5026,6 +5078,12 @@ async def match(ctx):
             f"{team_b[0]} {team_b[1]}: {prob_b * 100:.1f}% per second"
         )
 
+    def format_red_cards():
+        return f"{team_a[0]} {red_cards['A']} • {team_b[0]} {red_cards['B']}"
+
+    def log_event(second: int, text: str):
+        event_log.append(f"{second}s — {text}")
+
     def format_bets():
         if not bets:
             return "No bets yet."
@@ -5041,6 +5099,8 @@ async def match(ctx):
         embed.add_field(name="Goal Probabilities", value=format_probs(), inline=False)
         embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}", inline=True)
         embed.add_field(name="Time", value=f"{remaining}s remaining" if remaining >= 0 else "Full time", inline=True)
+        embed.add_field(name="Red Cards", value=format_red_cards(), inline=False)
+        embed.add_field(name="VAR Reviews", value=f"{var_reviews_used}/3 used", inline=True)
         embed.add_field(name="Bets", value=format_bets(), inline=False)
         lock_text = "Bets locked" if locked else "Betting open"
         embed.set_footer(
@@ -5122,32 +5182,81 @@ async def match(ctx):
         child.disabled = True
     await update_message(match_message, "🔒 Bets locked — match is starting!", MATCH_DURATION, True, bet_view)
 
+    async def handle_goal(team_key: str, remaining: int, elapsed: int):
+        nonlocal var_reviews_used
+        scores[team_key] += 1
+        team = team_a if team_key == "A" else team_b
+        log_event(elapsed, f"Goal ({team[1]})")
+
+        goal_embed = discord.Embed(
+            title="⚽ GOOOOAL!",
+            description=f"{team[0]} {team[1]} Team scores!",
+            color=galaxy_color(),
+        )
+        goal_embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}", inline=False)
+        await match_message.edit(embed=goal_embed, view=bet_view)
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+
+        var_eligible = (elapsed < 10 or remaining <= 10) and var_reviews_used < 3
+        if var_eligible and random.random() < 0.10:
+            var_reviews_used += 1
+            log_event(elapsed, "VAR Review")
+            var_embed = discord.Embed(title="📺 VAR CHECK IN PROGRESS…", color=discord.Color.blue())
+            await match_message.edit(embed=var_embed, view=bet_view)
+            await asyncio.sleep(random.uniform(2.0, 3.0))
+
+            stands = random.random() < 0.5
+            if stands:
+                log_event(elapsed, "VAR: Goal Stands")
+                result_text = "✅ VAR Decision: Goal stands"
+            else:
+                scores[team_key] = max(0, scores[team_key] - 1)
+                log_event(elapsed, f"VAR: Goal Disallowed ({team[1]})")
+                result_text = "❌ VAR Decision: Goal disallowed"
+
+            result_embed = discord.Embed(
+                title="📺 VAR Decision",
+                description=result_text,
+                color=discord.Color.blue(),
+            )
+            result_embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}")
+            await match_message.edit(embed=result_embed, view=bet_view)
+            await asyncio.sleep(random.uniform(1.5, 2.5))
+
     async def simulate_second(remaining: int):
         nonlocal prob_a, prob_b, show_goal_probs
-        prob_a = random.uniform(0.001, 0.05)
-        prob_b = random.uniform(0.001, 0.05)
+        elapsed = MATCH_DURATION - remaining
+
+        # Red card checks (pause match on trigger)
+        for key, team in [("A", team_a), ("B", team_b)]:
+            if red_cards[key] < 3 and random.random() < 0.001:
+                red_cards[key] += 1
+                log_event(elapsed, f"Red Card ({team[1]})")
+                rc_embed = discord.Embed(
+                    title="🟥 RED CARD!",
+                    description=f"{team[0]} {team[1]} Team is down a player!",
+                    color=discord.Color.red(),
+                )
+                rc_embed.add_field(name="Red Cards", value=format_red_cards(), inline=False)
+                rc_embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}")
+                await match_message.edit(embed=rc_embed, view=bet_view)
+                await asyncio.sleep(random.uniform(2.0, 3.0))
+                await update_message(match_message, "🏃 Match in progress…", remaining, True, bet_view)
+                return
+
+        base_prob_a = random.uniform(0.001, 0.05)
+        base_prob_b = random.uniform(0.001, 0.05)
+
+        prob_a = max(base_prob_a - 0.01 * red_cards["A"], 0.005)
+        prob_b = max(base_prob_b - 0.01 * red_cards["B"], 0.005)
         show_goal_probs = True
+
         order = ["A", "B"]
         random.shuffle(order)
         for key in order:
             chance = prob_a if key == "A" else prob_b
             if random.random() < chance:
-                scores[key] += 1
-                goal_embed = discord.Embed(
-                    title="⚽ GOOOOAL!",
-                    description=(
-                        f"{team_a[0] if key == 'A' else team_b[0]} "
-                        f"{team_a[1] if key == 'A' else team_b[1]} Team scores!"
-                    ),
-                    color=galaxy_color(),
-                )
-                goal_embed.add_field(
-                    name="Score",
-                    value=f"{scores['A']} – {scores['B']}",
-                    inline=False,
-                )
-                await match_message.edit(embed=goal_embed, view=bet_view)
-                await asyncio.sleep(random.uniform(1.0, 2.0))
+                await handle_goal(key, remaining, elapsed)
                 break
 
         await update_message(match_message, "🏃 Match in progress…", remaining, True, bet_view)
@@ -5194,16 +5303,6 @@ async def match(ctx):
 
     save_data(data)
 
-    summary_lines = [
-        f"Result: **{result_label}**",
-        f"Final Score: **{scores['A']} – {scores['B']}**",
-        "Payout: **2.5x** for correct predictions"
-    ]
-    if winners:
-        summary_lines.append("Winners:\n" + "\n".join(winners))
-    else:
-        summary_lines.append("No winning bets this time.")
-
     await update_message(
         match_message,
         "🏁 Full time — match finished!",
@@ -5211,7 +5310,29 @@ async def match(ctx):
         True,
         bet_view
     )
-    await ctx.send("\n".join(summary_lines))
+
+    if not event_log:
+        event_log.append("No major events.")
+
+    result_embed = discord.Embed(
+        title="🏁 Full Time — Match Results",
+        color=galaxy_color(),
+    )
+    result_embed.add_field(name="Final Score", value=f"{scores['A']} – {scores['B']}", inline=False)
+    result_embed.add_field(name="Red Cards", value=format_red_cards(), inline=True)
+    result_embed.add_field(name="VAR Reviews", value=f"{var_reviews_used} used", inline=True)
+    result_embed.add_field(
+        name="Event Log",
+        value="\n".join(event_log[:50]),
+        inline=False,
+    )
+    if winners:
+        result_embed.add_field(name="Winners", value="\n".join(winners), inline=False)
+    else:
+        result_embed.add_field(name="Winners", value="No winning bets this time.", inline=False)
+    result_embed.set_footer(text="Payout: 2.5x for correct predictions")
+
+    await ctx.send(embed=result_embed)
 
 
 # --------------------------------------------------------------
@@ -6170,6 +6291,15 @@ async def help(ctx):
         inline=False
     )
 
+    embed.add_field(
+        name="ℹ️ Match Systems",
+        value=(
+            "Red cards: **0.1%** chance per team per second (max **3**), each lowers that team's goal chance by **1%** but never below **0.5%**.\n"
+            "VAR: **10%** chance to review goals in the first/last **10s** (max **3** reviews) — 50% stand / 50% disallow."
+        ),
+        inline=False
+    )
+
     # ---------------- Progress ----------------
     embed.add_field(
         name="🏆 Progress",
@@ -6270,6 +6400,16 @@ async def helpadmin(ctx):
             "Leaderboard: sorted by holding, 50 pages, 10 users per page (top 500)\n"
             "Bet limits apply to: coinflip/!cf, blackjack/!bj, slots, mines, tower, crash, match\n"
             "**!match** — 90s live football sim with Team A / Team B / Draw bets, one bet per user, fixed **2.5x** payout on correct predictions"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="⚙️ Systems & Automation",
+        value=(
+            "Red cards: 0.1% chance per team each second, max 3; every card permanently reduces that team's goal chance by 1% (floor 0.5%), pauses play for 2–3s, logs to timeline and post-match results.\n"
+            "VAR: Only if a goal is in the first/last 10s; 10% trigger, max 3 reviews; 50% stand / 50% disallow; cannot trigger twice on a goal or during red-card pauses; all decisions logged and shown post-match.\n"
+            "Loan notifications: DM to owner ID 1317419437854560288 for !loan, !payback, and defaults; rate-limited to 1 per user per 10 minutes (defaults bypass) and include username, ID, amount, timestamp, and due time."
         ),
         inline=False
     )
