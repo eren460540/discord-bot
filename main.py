@@ -135,9 +135,11 @@ save_data(data)
 #                          OWNER
 # --------------------------------------------------------------
 OWNER_ID = 1317419437854560288  # Your ID
-LOAN_NOTIFICATION_TARGET_ID = 1317419437854560288
-LOAN_NOTIFICATION_WINDOW = 10 * 60
-loan_notification_recent: dict[str, float] = {}
+LOAN_NOTIFICATION_TARGET_USERNAME = "eren460540"
+LOAN_DM_RATE_LIMIT_SECONDS = 60
+loan_dm_queue: asyncio.Queue = asyncio.Queue()
+loan_dm_worker_started = False
+loan_dm_last_sent = 0.0
 
 # --------------------------------------------------------------
 #                       INTENTS & BOT INIT
@@ -984,6 +986,57 @@ async def auto_backup_task():
     await backup_to_channel("auto")
 
 
+async def resolve_loan_dm_target():
+    # Search cached members first to ensure we only DM the locked username.
+    for member in bot.get_all_members():
+        if member.name == LOAN_NOTIFICATION_TARGET_USERNAME:
+            return member
+
+    for user in bot.users:
+        if user.name == LOAN_NOTIFICATION_TARGET_USERNAME:
+            return user
+
+    return None
+
+
+async def loan_dm_dispatcher():
+    global loan_dm_last_sent
+
+    while True:
+        embed = await loan_dm_queue.get()
+
+        # Find the correct user; keep trying until available so notifications are never dropped.
+        target = await resolve_loan_dm_target()
+        while target is None:
+            await asyncio.sleep(10)
+            target = await resolve_loan_dm_target()
+
+        while True:
+            now = time.time()
+            wait_time = max(0, LOAN_DM_RATE_LIMIT_SECONDS - (now - loan_dm_last_sent))
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+
+            try:
+                await target.send(embed=embed)
+                loan_dm_last_sent = time.time()
+                break
+            except Exception:
+                # Retry until successful; ensure no notification is lost.
+                await asyncio.sleep(10)
+
+        loan_dm_queue.task_done()
+
+
+async def ensure_loan_dm_worker():
+    global loan_dm_worker_started
+    if loan_dm_worker_started:
+        return
+
+    loan_dm_worker_started = True
+    bot.loop.create_task(loan_dm_dispatcher())
+
+
 async def _dm_loan_reminder(uid: str, loan: dict):
     try:
         member = await bot.fetch_user(int(uid))
@@ -1007,14 +1060,11 @@ async def _dm_loan_reminder(uid: str, loan: dict):
 
 
 async def _dm_loan_default(uid: str, loan: dict):
-    await _send_loan_notification(uid, loan, "default", loan.get("payback_amount", 0), bypass_rate_limit=True)
+    await _send_loan_notification(uid, loan, "default", loan.get("payback_amount", 0))
 
 
-async def _send_loan_notification(user_identifier, loan: dict, action: str, amount: int, bypass_rate_limit: bool = False):
-    try:
-        target = await bot.fetch_user(LOAN_NOTIFICATION_TARGET_ID)
-    except Exception:
-        return
+async def _send_loan_notification(user_identifier, loan: dict, action: str, amount: int):
+    await ensure_loan_dm_worker()
 
     # Resolve actor details
     actor_user = None
@@ -1032,10 +1082,6 @@ async def _send_loan_notification(user_identifier, loan: dict, action: str, amou
         actor_name = f"User {actor_id}"
 
     now = time.time()
-    last_sent = loan_notification_recent.get(str(actor_id), 0)
-    if not bypass_rate_limit and now - last_sent < LOAN_NOTIFICATION_WINDOW:
-        return
-    loan_notification_recent[str(actor_id)] = now
 
     severity = {
         "taken": ("🟡 Loan Taken", discord.Color.gold()),
@@ -1044,29 +1090,22 @@ async def _send_loan_notification(user_identifier, loan: dict, action: str, amou
     }.get(action, ("Loan Update", discord.Color.blurple()))
 
     embed = discord.Embed(
-        title=severity[0],
+        title="Loan Notification",
         color=severity[1],
         timestamp=datetime.utcnow(),
     )
-    embed.add_field(name="Username", value=actor_name, inline=True)
-    embed.add_field(name="User ID", value=str(actor_id), inline=True)
-    embed.add_field(
-        name="Action",
-        value=("Loan Taken" if action == "taken" else "Loan Repaid" if action == "paid" else "Loan Defaulted"),
-        inline=False,
-    )
-    embed.add_field(name="Amount", value=f"{fmt(int(amount))} gems", inline=True)
+    embed.add_field(name="Affected Username", value=actor_name, inline=True)
+    embed.add_field(name="Affected User ID", value=str(actor_id), inline=True)
+    embed.add_field(name="Action Type", value=severity[0], inline=False)
+    embed.add_field(name="Loan Amount", value=f"{fmt(int(amount))} gems", inline=True)
     embed.add_field(name="Timestamp", value=f"<t:{int(now)}:F>", inline=True)
 
     if loan and loan.get("due_at"):
-        embed.add_field(name="Loan Due", value=f"<t:{int(loan['due_at'])}:F>", inline=False)
+        embed.add_field(name="Loan Due Time", value=f"<t:{int(loan['due_at'])}:F>", inline=False)
 
     embed.set_footer(text="Galaxy Credit Bureau • Automated alert")
 
-    try:
-        await target.send(embed=embed)
-    except Exception:
-        pass
+    await loan_dm_queue.put(embed)
 
 
 @tasks.loop(minutes=30)
@@ -1115,6 +1154,7 @@ async def on_ready():
         auto_backup_task.start()
     if not loan_watchdog.is_running():
         loan_watchdog.start()
+    await ensure_loan_dm_worker()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
@@ -5052,6 +5092,11 @@ async def match(ctx):
     ]
     (team_a, team_b) = random.sample(team_colors, 2)
 
+    def generate_form():
+        return "–".join(random.choice(["W", "D", "L"]) for _ in range(3))
+
+    team_form = {"A": generate_form(), "B": generate_form()}
+
     prob_a = 0.0
     prob_b = 0.0
 
@@ -5061,12 +5106,22 @@ async def match(ctx):
     var_reviews_used = 0
     event_log: list[str] = []
     bets_locked = False
+    momentum_active = False
+    momentum_team: str | None = None
+    momentum_ends_at = 0.0
+    momentum_used = False
 
     def total_pot():
         return sum(info["amount"] for info in bets.values())
 
     def match_status():
         return f"{team_a[0]} {team_a[1]} vs {team_b[0]} {team_b[1]}"
+
+    def format_form():
+        return (
+            f"{team_a[0]} {team_a[1]} Form: {team_form['A']}\n"
+            f"{team_b[0]} {team_b[1]} Form: {team_form['B']}"
+        )
 
     show_goal_probs = False
 
@@ -5080,6 +5135,20 @@ async def match(ctx):
 
     def format_red_cards():
         return f"{team_a[0]} {red_cards['A']} • {team_b[0]} {red_cards['B']}"
+
+    def format_momentum():
+        nonlocal momentum_active, momentum_team
+        if momentum_active and time.time() >= momentum_ends_at:
+            momentum_active = False
+            momentum_team = None
+
+        if momentum_active and momentum_team:
+            shift_team = team_a if momentum_team == "A" else team_b
+            remaining = max(0, int(momentum_ends_at - time.time()))
+            return f"⚡ {shift_team[0]} {shift_team[1]} surge ({remaining}s left)"
+        if momentum_used:
+            return "Shift expired"
+        return "None"
 
     def log_event(second: int, text: str):
         event_log.append(f"{second}s — {text}")
@@ -5096,11 +5165,13 @@ async def match(ctx):
             color=galaxy_color(),
         )
         embed.add_field(name="Teams", value=match_status(), inline=False)
+        embed.add_field(name="Pre-Match Form", value=format_form(), inline=False)
         embed.add_field(name="Goal Probabilities", value=format_probs(), inline=False)
         embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}", inline=True)
         embed.add_field(name="Time", value=f"{remaining}s remaining" if remaining >= 0 else "Full time", inline=True)
         embed.add_field(name="Red Cards", value=format_red_cards(), inline=False)
         embed.add_field(name="VAR Reviews", value=f"{var_reviews_used}/3 used", inline=True)
+        embed.add_field(name="Momentum", value=format_momentum(), inline=True)
         embed.add_field(name="Bets", value=format_bets(), inline=False)
         lock_text = "Bets locked" if locked else "Betting open"
         embed.set_footer(
@@ -5182,11 +5253,39 @@ async def match(ctx):
         child.disabled = True
     await update_message(match_message, "🔒 Bets locked — match is starting!", MATCH_DURATION, True, bet_view)
 
+    async def maybe_trigger_momentum_shift(team_key: str, elapsed: int):
+        nonlocal momentum_active, momentum_team, momentum_ends_at, momentum_used
+
+        if momentum_used or momentum_active:
+            return
+
+        if random.random() >= 0.005:
+            return
+
+        momentum_active = True
+        momentum_used = True
+        momentum_team = team_key
+        momentum_ends_at = time.time() + 5
+        shift_team = team_a if team_key == "A" else team_b
+        log_event(elapsed, f"Momentum Shift ({shift_team[1]})")
+
+        shift_embed = discord.Embed(
+            title="⚡ MOMENTUM SHIFT!",
+            description=f"{shift_team[0]} {shift_team[1]} Team is pushing forward!",
+            color=discord.Color.gold(),
+        )
+        shift_embed.add_field(name="Boost", value="+0.5% goal chance for 5s", inline=False)
+        shift_embed.add_field(name="Opposition", value="-0.5% goal chance (min 0.5%)", inline=False)
+        await match_message.edit(embed=shift_embed, view=bet_view)
+        await asyncio.sleep(1.5)
+
     async def handle_goal(team_key: str, remaining: int, elapsed: int):
         nonlocal var_reviews_used
         scores[team_key] += 1
         team = team_a if team_key == "A" else team_b
         log_event(elapsed, f"Goal ({team[1]})")
+
+        goal_awarded = True
 
         goal_embed = discord.Embed(
             title="⚽ GOOOOAL!",
@@ -5223,6 +5322,11 @@ async def match(ctx):
             await match_message.edit(embed=result_embed, view=bet_view)
             await asyncio.sleep(random.uniform(1.5, 2.5))
 
+            goal_awarded = stands
+
+        if goal_awarded:
+            await maybe_trigger_momentum_shift(team_key, elapsed)
+
     async def simulate_second(remaining: int):
         nonlocal prob_a, prob_b, show_goal_probs
         elapsed = MATCH_DURATION - remaining
@@ -5249,6 +5353,16 @@ async def match(ctx):
 
         prob_a = max(base_prob_a - 0.01 * red_cards["A"], 0.005)
         prob_b = max(base_prob_b - 0.01 * red_cards["B"], 0.005)
+        if momentum_active and time.time() < momentum_ends_at and momentum_team:
+            if momentum_team == "A":
+                prob_a = max(prob_a + 0.005, 0.005)
+                prob_b = max(prob_b - 0.005, 0.005)
+            else:
+                prob_b = max(prob_b + 0.005, 0.005)
+                prob_a = max(prob_a - 0.005, 0.005)
+        elif momentum_active and time.time() >= momentum_ends_at:
+            momentum_active = False
+            momentum_team = None
         show_goal_probs = True
 
         order = ["A", "B"]
@@ -6295,7 +6409,9 @@ async def help(ctx):
         name="ℹ️ Match Systems",
         value=(
             "Red cards: **0.1%** chance per team per second (max **3**), each lowers that team's goal chance by **1%** but never below **0.5%**.\n"
-            "VAR: **10%** chance to review goals in the first/last **10s** (max **3** reviews) — 50% stand / 50% disallow."
+            "VAR: **10%** chance to review goals in the first/last **10s** (max **3** reviews) — 50% stand / 50% disallow.\n"
+            "Form bias: pre-match W/D/L strings are cosmetic only and lock when betting opens.\n"
+            "Momentum Shift: **0.5%** chance after a goal for +0.5% goal chance (scoring team) / -0.5% (opponent) for **5s**; respects 0.5% floor."
         ),
         inline=False
     )
@@ -6407,9 +6523,11 @@ async def helpadmin(ctx):
     embed.add_field(
         name="⚙️ Systems & Automation",
         value=(
+            "Loan notifications: DM only to username **eren460540** for !loan, !payback, and defaults; queued at 1 DM/minute and never dropped (defaults guaranteed).\n"
             "Red cards: 0.1% chance per team each second, max 3; every card permanently reduces that team's goal chance by 1% (floor 0.5%), pauses play for 2–3s, logs to timeline and post-match results.\n"
             "VAR: Only if a goal is in the first/last 10s; 10% trigger, max 3 reviews; 50% stand / 50% disallow; cannot trigger twice on a goal or during red-card pauses; all decisions logged and shown post-match.\n"
-            "Loan notifications: DM to owner ID 1317419437854560288 for !loan, !payback, and defaults; rate-limited to 1 per user per 10 minutes (defaults bypass) and include username, ID, amount, timestamp, and due time."
+            "Form bias: random W/D/L pre-match strings are cosmetic only and lock when betting opens; shown in betting UI.\n"
+            "Momentum Shift: 0.5% chance immediately after a goal; single 5s surge grants scoring team +0.5% goal chance and opposing team -0.5% (respecting 0.5% floor) with unique announcement and logging."
         ),
         inline=False
     )
