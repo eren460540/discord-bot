@@ -135,11 +135,9 @@ save_data(data)
 #                          OWNER
 # --------------------------------------------------------------
 OWNER_ID = 1317419437854560288  # Your ID
-LOAN_NOTIFICATION_TARGET_USERNAME = "eren460540"
-LOAN_DM_RATE_LIMIT_SECONDS = 60
-loan_dm_queue: asyncio.Queue = asyncio.Queue()
-loan_dm_worker_started = False
-loan_dm_last_sent = 0.0
+LOAN_LOG_CHANNEL_ID = 1440730206187950122
+loan_log_queue: asyncio.Queue = asyncio.Queue()
+loan_log_worker_started = False
 
 # --------------------------------------------------------------
 #                       INTENTS & BOT INIT
@@ -986,55 +984,45 @@ async def auto_backup_task():
     await backup_to_channel("auto")
 
 
-async def resolve_loan_dm_target():
-    # Search cached members first to ensure we only DM the locked username.
-    for member in bot.get_all_members():
-        if member.name == LOAN_NOTIFICATION_TARGET_USERNAME:
-            return member
+async def resolve_loan_log_channel():
+    channel = bot.get_channel(LOAN_LOG_CHANNEL_ID)
+    if channel:
+        return channel
 
-    for user in bot.users:
-        if user.name == LOAN_NOTIFICATION_TARGET_USERNAME:
-            return user
-
-    return None
+    try:
+        return await bot.fetch_channel(LOAN_LOG_CHANNEL_ID)
+    except Exception:
+        return None
 
 
-async def loan_dm_dispatcher():
-    global loan_dm_last_sent
-
+async def loan_log_dispatcher():
     while True:
-        embed = await loan_dm_queue.get()
+        embed = await loan_log_queue.get()
 
-        # Find the correct user; keep trying until available so notifications are never dropped.
-        target = await resolve_loan_dm_target()
+        # Find the correct channel; keep trying until available so notifications are never dropped.
+        target = await resolve_loan_log_channel()
         while target is None:
             await asyncio.sleep(10)
-            target = await resolve_loan_dm_target()
+            target = await resolve_loan_log_channel()
 
         while True:
-            now = time.time()
-            wait_time = max(0, LOAN_DM_RATE_LIMIT_SECONDS - (now - loan_dm_last_sent))
-            if wait_time > 0:
-                await asyncio.sleep(wait_time)
-
             try:
                 await target.send(embed=embed)
-                loan_dm_last_sent = time.time()
                 break
             except Exception:
                 # Retry until successful; ensure no notification is lost.
                 await asyncio.sleep(10)
 
-        loan_dm_queue.task_done()
+        loan_log_queue.task_done()
 
 
-async def ensure_loan_dm_worker():
-    global loan_dm_worker_started
-    if loan_dm_worker_started:
+async def ensure_loan_log_worker():
+    global loan_log_worker_started
+    if loan_log_worker_started:
         return
 
-    loan_dm_worker_started = True
-    bot.loop.create_task(loan_dm_dispatcher())
+    loan_log_worker_started = True
+    bot.loop.create_task(loan_log_dispatcher())
 
 
 async def _dm_loan_reminder(uid: str, loan: dict):
@@ -1064,7 +1052,7 @@ async def _dm_loan_default(uid: str, loan: dict):
 
 
 async def _send_loan_notification(user_identifier, loan: dict, action: str, amount: int):
-    await ensure_loan_dm_worker()
+    await ensure_loan_log_worker()
 
     # Resolve actor details
     actor_user = None
@@ -1105,7 +1093,7 @@ async def _send_loan_notification(user_identifier, loan: dict, action: str, amou
 
     embed.set_footer(text="Galaxy Credit Bureau • Automated alert")
 
-    await loan_dm_queue.put(embed)
+    await loan_log_queue.put(embed)
 
 
 @tasks.loop(minutes=30)
@@ -1132,12 +1120,16 @@ async def loan_watchdog():
 
             if now >= loan.get("due_at", 0):
                 loan["status"] = "defaulted"
+                loan["last_default_log"] = now
                 dirty = True
                 await _dm_loan_default(uid, loan)
 
         elif status == "defaulted":
-            # No automatic recovery; admins must resolve.
-            continue
+            last_default_log = loan.get("last_default_log", loan.get("due_at", now))
+            if now - last_default_log >= LOAN_REMINDER_SECONDS:
+                loan["last_default_log"] = now
+                dirty = True
+                await _dm_loan_default(uid, loan)
 
     if dirty:
         save_data(data)
@@ -1154,7 +1146,7 @@ async def on_ready():
         auto_backup_task.start()
     if not loan_watchdog.is_running():
         loan_watchdog.start()
-    await ensure_loan_dm_worker()
+    await ensure_loan_log_worker()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
@@ -6523,7 +6515,7 @@ async def helpadmin(ctx):
     embed.add_field(
         name="⚙️ Systems & Automation",
         value=(
-            "Loan notifications: DM only to username **eren460540** for !loan, !payback, and defaults; queued at 1 DM/minute and never dropped (defaults guaranteed).\n"
+            "Loan notifications: posted in <#1440730206187950122> for !loan, !payback, defaults, and daily overdue reminders; queued with retries and no rate limit.\n"
             "Red cards: 0.1% chance per team each second, max 3; every card permanently reduces that team's goal chance by 1% (floor 0.5%), pauses play for 2–3s, logs to timeline and post-match results.\n"
             "VAR: Only if a goal is in the first/last 10s; 10% trigger, max 3 reviews; 50% stand / 50% disallow; cannot trigger twice on a goal or during red-card pauses; all decisions logged and shown post-match.\n"
             "Form bias: random W/D/L pre-match strings are cosmetic only and lock when betting opens; shown in betting UI.\n"
