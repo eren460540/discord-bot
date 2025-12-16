@@ -5003,8 +5003,8 @@ async def match(ctx):
     ]
     (team_a, team_b) = random.sample(team_colors, 2)
 
-    prob_a = random.uniform(0.01, 0.03)
-    prob_b = random.uniform(0.01, 0.03)
+    prob_a = 0.0
+    prob_b = 0.0
 
     bets = {}  # {uid: {"choice": str, "amount": int}}
     scores = {"A": 0, "B": 0}
@@ -5016,7 +5016,11 @@ async def match(ctx):
     def match_status():
         return f"{team_a[0]} {team_a[1]} vs {team_b[0]} {team_b[1]}"
 
+    show_goal_probs = False
+
     def format_probs():
+        if not show_goal_probs:
+            return "Goal probabilities will be revealed at kickoff."
         return (
             f"{team_a[0]} {team_a[1]}: {prob_a * 100:.1f}% per second\n"
             f"{team_b[0]} {team_b[1]}: {prob_b * 100:.1f}% per second"
@@ -5119,20 +5123,30 @@ async def match(ctx):
     await update_message(match_message, "🔒 Bets locked — match is starting!", MATCH_DURATION, True, bet_view)
 
     async def simulate_second(remaining: int):
-        nonlocal prob_a, prob_b
-        prob_a = random.uniform(0.01, 0.03)
-        prob_b = random.uniform(0.01, 0.03)
+        nonlocal prob_a, prob_b, show_goal_probs
+        prob_a = random.uniform(0.001, 0.05)
+        prob_b = random.uniform(0.001, 0.05)
+        show_goal_probs = True
         order = ["A", "B"]
         random.shuffle(order)
         for key in order:
             chance = prob_a if key == "A" else prob_b
             if random.random() < chance:
                 scores[key] += 1
-                await ctx.send(
-                    f"⚽ GOOOOAL! {team_a[0] if key == 'A' else team_b[0]} "
-                    f"{team_a[1] if key == 'A' else team_b[1]} Team scores! "
-                    f"({scores['A']}–{scores['B']})"
+                goal_embed = discord.Embed(
+                    title="⚽ GOOOOAL!",
+                    description=(
+                        f"{team_a[0] if key == 'A' else team_b[0]} "
+                        f"{team_a[1] if key == 'A' else team_b[1]} Team scores!"
+                    ),
+                    color=galaxy_color(),
                 )
+                goal_embed.add_field(
+                    name="Score",
+                    value=f"{scores['A']} – {scores['B']}",
+                    inline=False,
+                )
+                await match_message.edit(embed=goal_embed, view=bet_view)
                 await asyncio.sleep(random.uniform(1.0, 2.0))
                 break
 
