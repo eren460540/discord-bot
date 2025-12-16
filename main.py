@@ -4450,14 +4450,9 @@ async def mines(ctx, bet: str, mines: int = 3):
             if self.index in revealed_safe:
                 return await interaction.response.send_message("❌ Already clicked!", ephemeral=True)
 
-            # CURSE: show this tile as safe but detonate a different bomb
+            # CURSE: immediately explode the clicked tile
             if rig == "curse":
-                revealed_safe.add(self.index)
-                self.label = "✅"
-                self.style = discord.ButtonStyle.success
-                remaining_bombs = list(bomb_positions - {self.index}) or list(bomb_positions)
-                explosion = random.choice(remaining_bombs)
-                return await handle_loss(interaction, "curse_explode", explosion)
+                return await handle_loss(interaction, "curse_explode", self.index)
 
             # BLESS: every tile is safe
             if rig == "bless":
