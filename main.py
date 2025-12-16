@@ -4401,6 +4401,15 @@ async def mines(ctx, bet: str, mines: int = 3):
         nonlocal game_over, reward_on_end
         game_over = True
         reward_on_end = 0
+
+        # When cursed, ensure the exploded tile is counted as a bomb visually by
+        # swapping it with an existing bomb instead of simply adding another.
+        if explosion_index not in bomb_positions:
+            replace = random.choice(list(bomb_positions)) if bomb_positions else None
+            if replace is not None:
+                bomb_positions.remove(replace)
+                bomb_positions.add(explosion_index)
+
         finalize_board(explosion_index)
         add_history(ctx.author.id, {
             "game": "mines",
