@@ -25,7 +25,7 @@ DISABLED_CATEGORIES = {1431610646654488661}
 # Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
 
-GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack", "crash"]
+GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack", "crash", "match"]
 
 
 
@@ -517,7 +517,7 @@ def _mark_withdraw_used(uid: str, kind: str, amount: int):
 
 
 FREE_SOURCES = {"daily", "work", "invite_reward", "admin_give", "dropbox"}
-GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack", "crash"}
+GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack", "crash", "match"}
 ACHIEVEMENT_DEFS = {
     "first_loan": {
         "emoji": "🌌",
@@ -3985,7 +3985,7 @@ async def gift(ctx, member: discord.Member, amount: str):
 # --------------------------------------------------------------
 #                      COINFLIP
 # --------------------------------------------------------------
-@bot.command()
+@bot.command(aliases=["cf"])
 async def coinflip(ctx, bet: str, choice: str):
     ensure_user(ctx.author.id)
     u = data[str(ctx.author.id)]
@@ -3997,7 +3997,9 @@ async def coinflip(ctx, bet: str, choice: str):
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send("❌ Max bet is **200m**.")
+        return await ctx.send(
+            f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
+        )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
@@ -4068,7 +4070,9 @@ async def crash(ctx, bet: str):
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send("❌ Max bet is **200m**.")
+        return await ctx.send(
+            f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
+        )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
@@ -4226,7 +4230,9 @@ async def slots(ctx, bet: str):
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send("❌ Max bet is **200m**.")
+        return await ctx.send(
+            f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
+        )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
@@ -4338,8 +4344,14 @@ async def mines(ctx, bet: str, mines: int = 3):
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
         return await ctx.send("❌ Invalid bet!")
+    if amount < MIN_GAMBLE_AMOUNT:
+        return await ctx.send(
+            f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
+        )
     if amount > MAX_BET:
-        return await ctx.send("❌ Max bet is **200m**.")
+        return await ctx.send(
+            f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
+        )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
     if not 1 <= mines <= 15:
@@ -4529,7 +4541,9 @@ async def tower(ctx, bet: str):
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send("❌ Max bet is **200m**.")
+        return await ctx.send(
+            f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
+        )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
@@ -4775,7 +4789,7 @@ def hand_value(hand):
     return total
 
 
-@bot.command()
+@bot.command(aliases=["bj"])
 async def blackjack(ctx, bet: str):
     ensure_user(ctx.author.id)
     u = data[str(ctx.author.id)]
@@ -4788,7 +4802,9 @@ async def blackjack(ctx, bet: str):
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send("❌ Max bet is **200m**.")
+        return await ctx.send(
+            f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
+        )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
@@ -4969,6 +4985,215 @@ async def blackjack(ctx, bet: str):
     view.add_item(Stand())
 
     await ctx.send(embed=make_embed(), view=view)
+
+
+# --------------------------------------------------------------
+#                      MATCH (live football)
+# --------------------------------------------------------------
+@bot.command()
+async def match(ctx):
+    ensure_user(ctx.author.id)
+
+    BETTING_WINDOW = 20
+    MATCH_DURATION = 90
+
+    team_colors = [
+        ("🔴", "Red"), ("🔵", "Blue"), ("🟢", "Green"), ("🟡", "Yellow"),
+        ("🟣", "Purple"), ("🟠", "Orange"), ("⚫", "Black"), ("⚪", "White"),
+    ]
+    (team_a, team_b) = random.sample(team_colors, 2)
+
+    prob_a = random.uniform(0.01, 0.03)
+    prob_b = random.uniform(0.01, 0.03)
+
+    bets = {}  # {uid: {"choice": str, "amount": int}}
+    scores = {"A": 0, "B": 0}
+    bets_locked = False
+
+    def total_pot():
+        return sum(info["amount"] for info in bets.values())
+
+    def match_status():
+        return f"{team_a[0]} {team_a[1]} vs {team_b[0]} {team_b[1]}"
+
+    def format_probs():
+        return (
+            f"{team_a[0]} {team_a[1]}: {prob_a * 100:.1f}% per second\n"
+            f"{team_b[0]} {team_b[1]}: {prob_b * 100:.1f}% per second"
+        )
+
+    def format_bets():
+        if not bets:
+            return "No bets yet."
+        return f"Bettors: **{len(bets)}** • Pot: **{fmt(total_pot())}**"
+
+    def build_embed(status: str, remaining: int, locked: bool):
+        embed = discord.Embed(
+            title="⚽ Galaxy Match",
+            description=status,
+            color=galaxy_color(),
+        )
+        embed.add_field(name="Teams", value=match_status(), inline=False)
+        embed.add_field(name="Goal Probabilities", value=format_probs(), inline=False)
+        embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}", inline=True)
+        embed.add_field(name="Time", value=f"{remaining}s remaining" if remaining >= 0 else "Full time", inline=True)
+        embed.add_field(name="Bets", value=format_bets(), inline=False)
+        lock_text = "Bets locked" if locked else "Betting open"
+        embed.set_footer(
+            text=f"{lock_text} • Min {fmt(MIN_GAMBLE_AMOUNT)} | Max {fmt(MAX_BET)}"
+        )
+        return embed
+
+    async def update_message(msg: discord.Message, status: str, remaining: int, locked: bool, view):
+        try:
+            await msg.edit(embed=build_embed(status, remaining, locked), view=view)
+        except Exception:
+            pass
+
+    class BetModal(Modal):
+        def __init__(self, choice_key: str, label: str):
+            super().__init__(title=f"Bet on {label}")
+            self.choice_key = choice_key
+            self.label = label
+            self.amount = TextInput(label="Bet amount", placeholder="e.g. 5m", required=True)
+
+        async def on_submit(self, interaction: discord.Interaction):
+            nonlocal bets_locked
+            if bets_locked:
+                return await interaction.response.send_message("❌ Bets are locked for this match.", ephemeral=True)
+
+            ensure_user(interaction.user.id)
+            uid = str(interaction.user.id)
+            if uid in bets:
+                return await interaction.response.send_message("❌ You already placed a bet for this match.", ephemeral=True)
+
+            u = data[uid]
+            amount = parse_amount(str(self.amount.value), u.get("gems", 0), allow_all=True)
+            if amount is None or amount <= 0:
+                return await interaction.response.send_message("❌ Invalid bet.", ephemeral=True)
+            if amount < MIN_GAMBLE_AMOUNT:
+                return await interaction.response.send_message(
+                    f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems.",
+                    ephemeral=True
+                )
+            if amount > MAX_BET:
+                return await interaction.response.send_message(
+                    f"❌ Maximum bet is **{fmt(MAX_BET)}** gems.",
+                    ephemeral=True
+                )
+            if amount > u.get("gems", 0):
+                return await interaction.response.send_message("❌ You don't have enough gems.", ephemeral=True)
+
+            u["gems"] -= amount
+            save_data(data)
+
+            bets[uid] = {"choice": self.choice_key, "amount": int(amount)}
+            await interaction.response.send_message(
+                f"✅ Bet confirmed: **{fmt(int(amount))}** on **{self.label}**.",
+                ephemeral=True
+            )
+
+            await update_message(match_message, "⚽ Betting open — choose an outcome!", BETTING_WINDOW, False, bet_view)
+
+    class BetButton(Button):
+        def __init__(self, label: str, choice_key: str, style=discord.ButtonStyle.primary):
+            super().__init__(label=label, style=style)
+            self.choice_key = choice_key
+            self.label_text = label
+
+        async def callback(self, interaction: discord.Interaction):
+            await interaction.response.send_modal(BetModal(self.choice_key, self.label_text))
+
+    bet_view = View(timeout=None)
+    bet_view.add_item(BetButton(f"{team_a[0]} {team_a[1]} Win", "A", discord.ButtonStyle.danger))
+    bet_view.add_item(BetButton(f"{team_b[0]} {team_b[1]} Win", "B", discord.ButtonStyle.primary))
+    bet_view.add_item(BetButton("⚪ Draw", "D", discord.ButtonStyle.secondary))
+
+    match_message = await ctx.send(embed=build_embed("⚽ Betting open — choose an outcome!", BETTING_WINDOW, False), view=bet_view)
+
+    await asyncio.sleep(BETTING_WINDOW)
+    bets_locked = True
+    for child in bet_view.children:
+        child.disabled = True
+    await update_message(match_message, "🔒 Bets locked — match is starting!", MATCH_DURATION, True, bet_view)
+
+    async def simulate_second(remaining: int):
+        order = ["A", "B"]
+        random.shuffle(order)
+        for key in order:
+            chance = prob_a if key == "A" else prob_b
+            if random.random() < chance:
+                scores[key] += 1
+                await ctx.send(
+                    f"⚽ GOOOOAL! {team_a[0] if key == 'A' else team_b[0]} "
+                    f"{team_a[1] if key == 'A' else team_b[1]} Team scores! "
+                    f"({scores['A']}–{scores['B']})"
+                )
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+                break
+
+        await update_message(match_message, "🏃 Match in progress…", remaining, True, bet_view)
+
+    for remaining in range(MATCH_DURATION, 0, -1):
+        await simulate_second(remaining)
+        await asyncio.sleep(1)
+
+    result_label = "Draw"
+    if scores["A"] > scores["B"]:
+        result_label = f"{team_a[0]} {team_a[1]} Win"
+        winning_key = "A"
+    elif scores["B"] > scores["A"]:
+        result_label = f"{team_b[0]} {team_b[1]} Win"
+        winning_key = "B"
+    else:
+        winning_key = "D"
+
+    winners = []
+    for uid, info in bets.items():
+        ensure_user(uid)
+        u = data[str(uid)]
+        bet_amount = info["amount"]
+
+        if info["choice"] == winning_key:
+            reward = int(bet_amount * 2.5)
+            profit = reward - bet_amount
+            u["gems"] += reward
+            outcome = f"WIN +{fmt(profit)}"
+        else:
+            profit = -bet_amount
+            outcome = f"LOSS -{fmt(bet_amount)}"
+
+        add_history(uid, {
+            "game": "match",
+            "bet": bet_amount,
+            "result": result_label,
+            "earned": profit,
+            "timestamp": time.time()
+        })
+
+        if profit > 0:
+            winners.append(f"<@{uid}> — {fmt(profit)}")
+
+    save_data(data)
+
+    summary_lines = [
+        f"Result: **{result_label}**",
+        f"Final Score: **{scores['A']} – {scores['B']}**",
+        "Payout: **2.5x** for correct predictions"
+    ]
+    if winners:
+        summary_lines.append("Winners:\n" + "\n".join(winners))
+    else:
+        summary_lines.append("No winning bets this time.")
+
+    await update_message(
+        match_message,
+        "🏁 Full time — match finished!",
+        0,
+        True,
+        bet_view
+    )
+    await ctx.send("\n".join(summary_lines))
 
 
 # --------------------------------------------------------------
@@ -5165,34 +5390,121 @@ async def lottery(ctx, ticket_price: str, duration: str):
 # --------------------------------------------------------------
 #                      LEADERBOARD
 # --------------------------------------------------------------
-@bot.command()
-async def leaderboard(ctx):
-    lb = []
-    for user_id, info in data.items():
-        if not user_id.isdigit():
-            continue
-        lb.append((int(user_id), info.get("gems", 0)))
-    lb.sort(key=lambda x: x[1], reverse=True)
+@bot.command(aliases=["lb"])
+async def leaderboard(ctx, page: int | None = None):
+    requested_page = 1 if page is None else page
+    if requested_page < 1 or requested_page > 50:
+        return await ctx.send("❌ Invalid page. Choose a page between **1** and **50**.")
 
-    embed = discord.Embed(
-        title="🏆 Galaxy Leaderboard",
-        color=galaxy_color()
-    )
+    def build_leaderboard():
+        entries = []
+        for user_id, info in data.items():
+            if not str(user_id).isdigit():
+                continue
+            holding = int(info.get("gems", 0))
+            history = info.get("history", [])
+            total_games = len(history)
+            total_wagered = int(info.get("lifetime_wagered", 0))
+            wins = sum(1 for e in history if (e.get("earned", 0) or 0) > 0)
+            losses = sum(1 for e in history if (e.get("earned", 0) or 0) < 0)
+            net = int(sum(int(e.get("earned", 0) or 0) for e in history))
 
-    if not lb:
-        embed.add_field(name="Nobody yet!", value="No players found.")
-        return await ctx.send(embed=embed)
+            entries.append({
+                "user_id": int(user_id),
+                "holding": holding,
+                "wagered": total_wagered,
+                "wins": wins,
+                "losses": losses,
+                "net": net,
+                "games": total_games
+            })
 
-    for i, (user_id, gems) in enumerate(lb[:10], start=1):
-        try:
-            user_obj = await bot.fetch_user(user_id)
-            name = user_obj.name
-        except Exception:
-            name = f"User {user_id}"
-        embed.add_field(name=f"#{i} — {name}", value=f"💎 {fmt(gems)} gems", inline=False)
+        entries.sort(key=lambda x: x["holding"], reverse=True)
+        return entries[:500]
 
-    embed.set_footer(text="Top 10 richest players in the galaxy 💰")
-    await ctx.send(embed=embed)
+    def make_entry_text(rank: int, name: str, entry: dict):
+        net_prefix = "+" if entry["net"] >= 0 else ""
+        return (
+            f"#{rank} | {name}\n"
+            f"Holding: {fmt(entry['holding'])}\n"
+            f"Wagered: {fmt(entry['wagered'])}\n"
+            f"Wins/Losses: {entry['wins']} / {entry['losses']}\n"
+            f"Net P/L: {net_prefix}{fmt(entry['net'])}\n"
+            f"Games Played: {entry['games']}"
+        )
+
+    async def build_embed(page_number: int):
+        entries = build_leaderboard()
+        total_pages = max(1, min(50, (len(entries) + 9) // 10))
+        if page_number < 1 or page_number > total_pages:
+            return None, total_pages
+
+        start = (page_number - 1) * 10
+        page_entries = entries[start:start + 10]
+        lines = []
+        for rank, entry in enumerate(page_entries, start=start + 1):
+            try:
+                user_obj = await bot.fetch_user(entry["user_id"])
+                name = user_obj.name
+            except Exception:
+                name = f"User {entry['user_id']}"
+            lines.append(make_entry_text(rank, name, entry))
+
+        embed = discord.Embed(
+            title="🏆 Galaxy Leaderboard",
+            description="\n\n".join(lines) if lines else "No players found.",
+            color=galaxy_color()
+        )
+        embed.set_footer(text=f"Page {page_number}/{total_pages} • Sorted by holding (top 500)")
+        return embed, total_pages
+
+    embed, total_pages = await build_embed(requested_page)
+    if embed is None:
+        return await ctx.send("❌ That page has no data yet.")
+
+    class LBView(View):
+        def __init__(self, current_page: int, max_pages: int):
+            super().__init__(timeout=120)
+            self.page = current_page
+            self.max_pages = max_pages
+            self.update_buttons()
+
+        def update_buttons(self):
+            for child in self.children:
+                if child.custom_id == "prev":
+                    child.disabled = self.page <= 1
+                if child.custom_id == "next":
+                    child.disabled = self.page >= self.max_pages or self.page >= 50
+
+        async def change_page(self, interaction: discord.Interaction, delta: int):
+            new_page = self.page + delta
+            if new_page < 1 or new_page > 50:
+                return await interaction.response.send_message(
+                    "❌ Invalid page. Choose a page between **1** and **50**.",
+                    ephemeral=True
+                )
+
+            new_embed, new_total = await build_embed(new_page)
+            if new_embed is None:
+                return await interaction.response.send_message(
+                    "❌ That page has no data yet.", ephemeral=True
+                )
+
+            self.page = new_page
+            self.max_pages = new_total
+            self.update_buttons()
+            await interaction.response.edit_message(embed=new_embed, view=self)
+
+        @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, custom_id="prev")
+        async def previous(self, interaction: discord.Interaction, button):
+            await self.change_page(interaction, -1)
+
+        @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, custom_id="next")
+        async def next(self, interaction: discord.Interaction, button):
+            await self.change_page(interaction, 1)
+
+    view = LBView(requested_page, total_pages)
+    await ctx.send(embed=embed, view=view)
 
 
 # --------------------------------------------------------------
@@ -5828,13 +6140,14 @@ async def help(ctx):
     embed.add_field(
         name="🎮 Games",
         value=(
-            "**!coinflip amount heads/tails** — 50/50 game\n"
+            "**!coinflip/!cf amount heads/tails** — 50/50 game\n"
+            "**!blackjack/!bj amount** — Blackjack game\n"
             "**!slots amount** — Slot machine\n"
             "**!mines amount [mines]** — Mines game\n"
             "**!tower amount** — 10-floor tower\n"
-            "**!crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses. (Max bet: 200m)\n"
-            "**!blackjack amount** — Blackjack game\n"
-            "Minimum gamble per game: **1,000,000** gems"
+            "**!crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses.\n"
+            "**!match** — 90-second live football match with Team A / Team B / Draw bets (2.5x payout on correct picks)\n"
+            "Minimum bet: **1,000,000** gems • Maximum bet: **200,000,000** gems"
         ),
         inline=False
     )
@@ -5864,7 +6177,7 @@ async def help(ctx):
         value=(
             "**!history** — Last 10 games\n"
             "**!stats** — Player stats\n"
-            "**!leaderboard** — Top richest players\n"
+            "**!leaderboard / !lb** — Top richest players\n"
             "**!membercount** — Server statistics"
         ),
         inline=False
@@ -5927,7 +6240,18 @@ async def helpadmin(ctx):
             "✔ Users may only have ONE active request\n"
             "✔ 30-minute cooldown between withdraws\n"
             "✔ Max 500m per request, 750m every 2 days\n"
-            "✔ Minimum gamble per game: **1,000,000** gems"
+            "✔ Global bets: min **1,000,000** gems / max **200,000,000** gems"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🎮 Games & Leaderboard",
+        value=(
+            "Aliases: **!bj** (blackjack), **!cf** (coinflip), **!lb** (leaderboard)\n"
+            "Leaderboard: sorted by holding, 50 pages, 10 users per page (top 500)\n"
+            "Bet limits apply to: coinflip/!cf, blackjack/!bj, slots, mines, tower, crash, match\n"
+            "**!match** — 90s live football sim with Team A / Team B / Draw bets, one bet per user, fixed **2.5x** payout on correct predictions"
         ),
         inline=False
     )
