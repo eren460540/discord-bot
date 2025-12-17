@@ -751,11 +751,9 @@ def play_again_enabled(game_key: str) -> bool:
     return game_key not in PLAY_AGAIN_DISABLED_GAMES
 
 
-async def send_play_again(ctx, game_key: str, bet_amount: float, restart_callable):
+def create_play_again_button(ctx, game_key: str, bet_amount: float, restart_callable):
     if not play_again_enabled(game_key):
-        return
-
-    view = View(timeout=None)
+        return None
 
     class PlayAgain(Button):
         def __init__(self):
@@ -768,22 +766,30 @@ async def send_play_again(ctx, game_key: str, bet_amount: float, restart_callabl
             user = data[str(interaction.user.id)]
             if user.get("gems", 0) < bet_amount:
                 try:
-                    await interaction.response.edit_message(view=view)
+                    await interaction.response.edit_message(view=self.view)
                 except Exception:
                     pass
                 return
 
-            for child in view.children:
+            for child in self.view.children:
                 child.disabled = True
             try:
-                await interaction.response.edit_message(view=view)
+                await interaction.response.edit_message(view=self.view)
             except Exception:
                 pass
 
             await restart_callable()
 
-    view.add_item(PlayAgain())
-    await ctx.send(content=ctx.author.mention, view=view)
+    return PlayAgain()
+
+
+def build_play_again_view(ctx, game_key: str, bet_amount: float, restart_callable):
+    button = create_play_again_button(ctx, game_key, bet_amount, restart_callable)
+    if not button:
+        return None
+    view = View(timeout=None)
+    view.add_item(button)
+    return view
 
 
 def parse_amount(text, user_gems=None, allow_all=False):
@@ -4455,7 +4461,8 @@ async def crash(ctx, bet: str):
                 f"🧮 Multiplier: **{multiplier:.2f}x**\n"
                 f"💥 Crash chance: **{adjusted_chance:.0f}%**\n"
                 f"🔢 Clicks: **{clicks}/{CLICK_LIMIT}**\n"
-                f"📌 Status: {status}"
+                f"📌 Status: {status}\n"
+                f"📶 Ping: **{round(bot.latency * 1000)}ms**"
             ),
             color=galaxy_color(),
         )
@@ -4479,12 +4486,14 @@ async def crash(ctx, bet: str):
             "earned": -amount,
             "timestamp": time.time(),
         })
+        play_again_view = build_play_again_view(ctx, "crash", amount, lambda: crash(ctx, bet))
         try:
-            await interaction.response.edit_message(embed=embed_update("💥 Crashed! You lost."), view=view)
+            await interaction.response.edit_message(
+                embed=embed_update(f"💥 Crashed! Lost **{fmt(amount)}** gems."),
+                view=play_again_view,
+            )
         except Exception:
             pass
-        await ctx.send(f"☠️ The ship exploded! You lost **{fmt(amount)}** gems.")
-        await send_play_again(ctx, "crash", amount, lambda: crash(ctx, bet))
 
     class Next(Button):
         def __init__(self):
@@ -4544,12 +4553,14 @@ async def crash(ctx, bet: str):
                 "timestamp": time.time(),
             })
 
+            play_again_view = build_play_again_view(ctx, "crash", amount, lambda: crash(ctx, bet))
             try:
-                await interaction.response.edit_message(embed=embed_update("💰 Cashed out!"), view=view)
+                await interaction.response.edit_message(
+                    embed=embed_update(f"💰 Cashed out at **{multiplier:.2f}x** | Profit **{fmt(profit)}** gems."),
+                    view=play_again_view,
+                )
             except Exception:
                 pass
-            await ctx.send(f"💰 You cashed out at **{multiplier:.2f}x** for **{fmt(profit)}** gems!")
-            await send_play_again(ctx, "crash", amount, lambda: crash(ctx, bet))
 
     view.add_item(Next())
     view.add_item(CashOut())
@@ -4659,13 +4670,15 @@ async def slots(ctx, bet: str):
             f"**Bet:** {fmt(amount)}\n"
             f"**Multiplier:** {multiplier:.2f}x\n"
             f"**Result:** {result_text}\n"
-            f"**Net:** {fmt(profit)} gems"
+            f"**Profit:** {fmt(profit)} gems\n"
+            f"📶 Ping: **{round(bot.latency * 1000)}ms**"
         ),
         color=galaxy_color()
     )
     embed.add_field(name="Reels", value=f"```{grid}```", inline=False)
     embed.set_footer(text="Galaxy Slots • Spin among the stars 🌌")
-    await ctx.send(embed=embed)
+    play_again_view = build_play_again_view(ctx, "slots", amount, lambda: slots(ctx, bet))
+    await ctx.send(embed=embed, view=play_again_view)
 
     add_history(ctx.author.id, {
         "game": "slots",
@@ -4675,7 +4688,6 @@ async def slots(ctx, bet: str):
         "timestamp": time.time()
     })
 
-    await send_play_again(ctx, "slots", amount, lambda: slots(ctx, bet))
 
 
 # --------------------------------------------------------------
@@ -4711,6 +4723,7 @@ async def mines(ctx, bet: str, mines: int = 3):
     TOTAL = 24
     ROW_SLOTS = 5
     SAFE_TILE_TARGET = TOTAL - mines
+    status_text = "🟣 Active"
 
     revealed_safe = set()
     bomb_positions = set(random.sample(range(TOTAL), mines))
@@ -4745,7 +4758,9 @@ async def mines(ctx, bet: str, mines: int = 3):
             description=(
                 f"💵 Bet: **{fmt(amount)}**\n"
                 f"💰 Current: **{fmt(reward_display)}**\n"
-                f"🔥 Multiplier: **{calc_multiplier():.2f}x**"
+                f"🔥 Multiplier: **{calc_multiplier():.2f}x**\n"
+                f"📌 Status: {status_text}\n"
+                f"📶 Ping: **{round(bot.latency * 1000)}ms**"
             ),
             color=galaxy_color(),
         )
@@ -4753,11 +4768,31 @@ async def mines(ctx, bet: str, mines: int = 3):
         return e
 
     view = View(timeout=None)
+    cashout_button = None
+
+    def attach_play_again():
+        nonlocal cashout_button
+        play_again = create_play_again_button(
+            ctx, "mines", amount, lambda: globals()["mines"](ctx, bet, mines)
+        )
+        if not play_again:
+            return
+        if cashout_button:
+            try:
+                view.remove_item(cashout_button)
+            except Exception:
+                pass
+            cashout_button = None
+        try:
+            view.add_item(play_again)
+        except Exception:
+            pass
 
     async def handle_loss(interaction, reason: str, explosion_index: int):
-        nonlocal game_over, reward_on_end
+        nonlocal game_over, reward_on_end, status_text
         game_over = True
         reward_on_end = 0
+        status_text = f"💥 A mine detonated! Lost **{fmt(amount)}** gems."
 
         # When cursed, ensure the exploded tile is counted as a bomb visually by
         # swapping it with an existing bomb instead of simply adding another.
@@ -4775,15 +4810,14 @@ async def mines(ctx, bet: str, mines: int = 3):
             "earned": -amount,
             "timestamp": time.time()
         })
+        attach_play_again()
         try:
             await interaction.response.edit_message(embed=embed_update(), view=view)
         except Exception:
             pass
-        await ctx.send(f"💥 A mine detonated! You lost **{fmt(amount)}** gems.")
-        await send_play_again(ctx, "mines", amount, lambda: globals()["mines"](ctx, bet, mines))
 
     async def handle_win(interaction, reason: str):
-        nonlocal game_over, reward_on_end
+        nonlocal game_over, reward_on_end, status_text
         game_over = True
         reward_on_end = calc_reward()
         u["gems"] += reward_on_end
@@ -4796,12 +4830,12 @@ async def mines(ctx, bet: str, mines: int = 3):
             "earned": reward_on_end - amount,
             "timestamp": time.time(),
         })
+        status_text = f"🌠 Profit: **{fmt(reward_on_end - amount)}** gems."
+        attach_play_again()
         try:
             await interaction.response.edit_message(embed=embed_update(), view=view)
         except Exception:
             pass
-        await ctx.send(f"🌠 You secured **{fmt(reward_on_end - amount)}** gems from the cosmic field!")
-        await send_play_again(ctx, "mines", amount, lambda: globals()["mines"](ctx, bet, mines))
 
     class Tile(Button):
         def __init__(self, index):
@@ -4870,7 +4904,8 @@ async def mines(ctx, bet: str, mines: int = 3):
 
             return await handle_win(interaction, "cashout")
 
-    view.add_item(Cashout())
+    cashout_button = Cashout()
+    view.add_item(cashout_button)
     await ctx.send(embed=embed_update(), view=view)
 # --------------------------------------------------------------
 #                      TOWER (rig-aware)
@@ -4904,6 +4939,7 @@ async def tower(ctx, bet: str):
     correct_count = 0
     game_over = False
     owner = ctx.author.id
+    status_text = "🟣 Active"
 
     SAFE = "✅"
     BOMB = "💣"
@@ -4930,6 +4966,8 @@ async def tower(ctx, bet: str):
         e.add_field(name="Earned", value=fmt(earned))
         e.add_field(name="Row", value=f"{current_row}/{TOTAL_ROWS}")
         e.add_field(name="Multiplier", value=f"{calc_multiplier():.2f}x")
+        e.add_field(name="Status", value=status_text, inline=False)
+        e.add_field(name="Ping", value=f"{round(bot.latency * 1000)}ms", inline=True)
 
         lines = []
         for r in reversed(range(TOTAL_ROWS)):
@@ -4959,6 +4997,18 @@ async def tower(ctx, bet: str):
         return e
 
     view = View(timeout=None)
+    play_again_button = None
+
+    def attach_play_again():
+        nonlocal play_again_button
+        if play_again_button:
+            return
+        play_again_button = create_play_again_button(ctx, "tower", amount, lambda: tower(ctx, bet))
+        if play_again_button:
+            try:
+                view.add_item(play_again_button)
+            except Exception:
+                pass
 
     class Choice(Button):
         def __init__(self, pos):
@@ -4992,6 +5042,7 @@ async def tower(ctx, bet: str):
                 exploded_cell = (current_row, self.pos)
                 game_over = True
                 earned_on_end = 0
+                status_text = f"💥 BOOM! Lost **{fmt(amount)}** gems."
 
                 for r in range(TOTAL_ROWS):
                     bc = bomb_positions[r]
@@ -5007,9 +5058,8 @@ async def tower(ctx, bet: str):
                     "earned": -amount,
                     "timestamp": time.time()
                 })
+                attach_play_again()
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
-                await ctx.send(f"💥 BOOM! You lost **{fmt(amount)}** gems!")
-                await send_play_again(ctx, "tower", amount, lambda: tower(ctx, bet))
                 return
 
             grid[current_row][self.pos] = True
@@ -5022,6 +5072,7 @@ async def tower(ctx, bet: str):
                 earned_on_end = reward
                 u["gems"] += reward
                 save_data(data)
+                status_text = f"🏆 Cleared all rows! Profit **{fmt(reward - amount)}** gems."
 
                 for r in range(TOTAL_ROWS):
                     bc = bomb_positions[r]
@@ -5038,9 +5089,8 @@ async def tower(ctx, bet: str):
                     "earned": reward - amount,
                     "timestamp": time.time()
                 })
+                attach_play_again()
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
-                await ctx.send(f"🏆 Cleared all rows! **+{fmt(reward - amount)}** gems!")
-                await send_play_again(ctx, "tower", amount, lambda: tower(ctx, bet))
                 return
 
             await interaction.response.edit_message(embed=embed_update(False), view=view)
@@ -5061,6 +5111,7 @@ async def tower(ctx, bet: str):
             if rig == "curse":
                 game_over = True
                 earned_on_end = 0
+                status_text = f"💥 BOOM! Lost **{fmt(amount)}** gems."
 
                 for r in range(TOTAL_ROWS):
                     bc = bomb_positions[r]
@@ -5076,9 +5127,8 @@ async def tower(ctx, bet: str):
                     "earned": -amount,
                     "timestamp": time.time()
                 })
+                attach_play_again()
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
-                await ctx.send(f"💥 BOOM! You lost **{fmt(amount)}** gems!")
-                await send_play_again(ctx, "tower", amount, lambda: tower(ctx, bet))
                 return
 
             # BLESS: guarantee at least one safe row worth of profit
@@ -5090,6 +5140,7 @@ async def tower(ctx, bet: str):
             earned_on_end = reward
             u["gems"] += reward
             save_data(data)
+            status_text = f"💰 Cashed out **{fmt(reward - amount)}** gems."
 
             for r in range(TOTAL_ROWS):
                 for c in range(3):
@@ -5106,9 +5157,8 @@ async def tower(ctx, bet: str):
                 "earned": reward - amount,
                 "timestamp": time.time()
             })
+            attach_play_again()
             await interaction.response.edit_message(embed=embed_update(True), view=view)
-            await ctx.send(f"💰 Cashed out **{fmt(reward - amount)}** gems!")
-            await send_play_again(ctx, "tower", amount, lambda: tower(ctx, bet))
 
     view.add_item(Choice(0))
     view.add_item(Choice(1))
@@ -5165,15 +5215,6 @@ async def blackjack(ctx, bet: str):
     u["gems"] -= amount
     save_data(data)
 
-    play_again_sent = False
-
-    async def prompt_play_again():
-        nonlocal play_again_sent
-        if play_again_sent:
-            return
-        play_again_sent = True
-        await send_play_again(ctx, "blackjack", amount, lambda: blackjack(ctx, bet))
-
     # Rigged: instant-looking game
     if rig in ("bless", "curse"):
         def random_hand(target_min, target_max):
@@ -5210,7 +5251,8 @@ async def blackjack(ctx, bet: str):
         desc = (
             f"🧑 Your hand: {' '.join(player)} (Total: **{pv}**)\n"
             f"🂠 Dealer hand: {' '.join(dealer)} (Total: **{dv}**)\n\n"
-            f"{result_text}\n**Net:** {fmt(profit)} gems"
+            f"{result_text}\n**Profit:** {fmt(profit)} gems\n"
+            f"📶 Ping: **{round(bot.latency * 1000)}ms**"
         )
         embed = discord.Embed(
             title="🃏 Galaxy Blackjack",
@@ -5218,7 +5260,8 @@ async def blackjack(ctx, bet: str):
             color=galaxy_color()
         )
         embed.set_footer(text="Galaxy Blackjack • Game finished.")
-        await ctx.send(embed=embed)
+        play_again_view = build_play_again_view(ctx, "blackjack", amount, lambda: blackjack(ctx, bet))
+        await ctx.send(embed=embed, view=play_again_view)
 
         add_history(ctx.author.id, {
             "game": "blackjack",
@@ -5227,7 +5270,6 @@ async def blackjack(ctx, bet: str):
             "earned": profit,
             "timestamp": time.time()
         })
-        await prompt_play_again()
         return
 
     # Normal interactive blackjack
@@ -5243,17 +5285,17 @@ async def blackjack(ctx, bet: str):
         )
         if extra_msg:
             desc += f"\n\n{extra_msg}"
+        desc += f"\n\n📶 Ping: **{round(bot.latency * 1000)}ms**"
         e = discord.Embed(
             title="🃏 Galaxy Blackjack",
             description=desc,
-            color=galaxy_color()
+            color=galaxy_color(),
         )
         if final:
             e.set_footer(text="Game finished.")
         else:
             e.set_footer(text="Hit or Stand?")
         return e
-
     view = View(timeout=40)
 
     async def finish_game(interaction=None):
@@ -5312,12 +5354,12 @@ async def blackjack(ctx, bet: str):
             "timestamp": time.time()
         })
 
-        final_embed = make_embed(show_dealer=True, final=True, extra_msg=f"{text}\n**Net:** {fmt(profit)} gems")
+        final_embed = make_embed(show_dealer=True, final=True, extra_msg=f"{text}\n**Profit:** {fmt(profit)} gems")
+        play_again_view = build_play_again_view(ctx, "blackjack", amount, lambda: blackjack(ctx, bet))
         if interaction:
-            await interaction.response.edit_message(embed=final_embed, view=None)
+            await interaction.response.edit_message(embed=final_embed, view=play_again_view)
         else:
-            await ctx.send(embed=final_embed)
-        await prompt_play_again()
+            await ctx.send(embed=final_embed, view=play_again_view)
 
     class Hit(Button):
         def __init__(self):
