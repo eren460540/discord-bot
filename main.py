@@ -4258,119 +4258,139 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
     class PvPCoinflipView(View):
         def __init__(self):
             super().__init__(timeout=300)
-            self.message = None
+            self.message: discord.Message | None = None
+            self.requester_id = ctx.author.id
+
+        def _set_disabled(self, disabled: bool):
+            for child in self.children:
+                child.disabled = disabled
+
+        async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+            if interaction.user.id == self.requester_id:
+                await interaction.response.send_message(
+                    "❌ You can't join your own PvP coinflip. Ask a friend to join.",
+                    ephemeral=True,
+                )
+                return False
+            return True
 
         async def on_timeout(self):
-            for child in self.children:
-                child.disabled = True
+            self._set_disabled(True)
             if self.message:
                 try:
                     await self.message.edit(view=self)
                 except Exception:
                     pass
 
-    view = PvPCoinflipView()
-    join_button = Button(label="Join Coinflip", style=discord.ButtonStyle.primary)
+        async def finalize_match(self, interaction: discord.Interaction, joiner_id: int):
+            requester_user = data[str(ctx.author.id)]
+            joiner_user = data[str(joiner_id)]
 
-    async def finalize_match(interaction, joiner_id: int):
-        requester_user = data[str(ctx.author.id)]
-        joiner_user = data[str(joiner_id)]
+            if requester_user["gems"] < bet_amount:
+                self._set_disabled(False)
+                if self.message:
+                    try:
+                        await self.message.edit(view=self)
+                    except Exception:
+                        pass
+                try:
+                    await interaction.response.send_message("❌ Requester lacks funds now.", ephemeral=True)
+                except Exception:
+                    pass
+                return
+            if joiner_user["gems"] < bet_amount:
+                self._set_disabled(False)
+                if self.message:
+                    try:
+                        await self.message.edit(view=self)
+                    except Exception:
+                        pass
+                return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
 
-        if requester_user["gems"] < bet_amount:
-            for child in view.children:
-                child.disabled = False
+            requester_user["gems"] -= bet_amount
+            joiner_user["gems"] -= bet_amount
+            save_data(data)
+
+            result = random.choice(["heads", "tails"])
+            requester_side = chosen_side
+            joiner_side = opposite
+
+            if result == requester_side:
+                winner_id = ctx.author.id
+                loser_id = joiner_id
+                winner_side = requester_side
+            else:
+                winner_id = joiner_id
+                loser_id = ctx.author.id
+                winner_side = joiner_side
+
+            data[str(winner_id)]["gems"] += bet_amount * 2
+            save_data(data)
+
+            add_history(ctx.author.id, {
+                "game": "pvp_coinflip",
+                "bet": bet_amount,
+                "result": "win" if winner_id == ctx.author.id else "loss",
+                "earned": bet_amount if winner_id == ctx.author.id else -bet_amount,
+                "timestamp": time.time(),
+                "side": requester_side,
+            })
+
+            add_history(joiner_id, {
+                "game": "pvp_coinflip",
+                "bet": bet_amount,
+                "result": "win" if winner_id == joiner_id else "loss",
+                "earned": bet_amount if winner_id == joiner_id else -bet_amount,
+                "timestamp": time.time(),
+                "side": joiner_side,
+            })
+
+            self._set_disabled(True)
+
+            result_embed = discord.Embed(
+                title="🪙 PvP Coinflip Result",
+                description=(
+                    f"🌀 Coin landed on **{result.title()}**!\n"
+                    f"🏆 Winner: <@{winner_id}>\n"
+                    f"💔 Loser: <@{loser_id}>\n"
+                    f"💰 Total Pot: **{fmt(bet_amount * 2)}**"
+                ),
+                color=discord.Color.green() if winner_id == ctx.author.id else discord.Color.blue(),
+            )
+            result_embed.add_field(
+                name="Sides",
+                value=(
+                    f"{ctx.author.mention}: **{requester_side.title()}**\n"
+                    f"<@{joiner_id}>: **{joiner_side.title()}**"
+                ),
+                inline=False,
+            )
+
             try:
-                await interaction.response.send_message("❌ Requester lacks funds now.", ephemeral=True)
-                await interaction.message.edit(view=view)
+                await interaction.response.edit_message(embed=result_embed, view=self)
             except Exception:
                 pass
-            return
-        if joiner_user["gems"] < bet_amount:
-            return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
 
-        requester_user["gems"] -= bet_amount
-        joiner_user["gems"] -= bet_amount
-        save_data(data)
+        @discord.ui.button(label="Join Coinflip", style=discord.ButtonStyle.primary)
+        async def join_button(self, interaction: discord.Interaction, button: Button):
+            if any(getattr(child, "disabled", False) for child in self.children):
+                return await interaction.response.send_message("❌ This match is already taken.", ephemeral=True)
 
-        result = random.choice(["heads", "tails"])
-        requester_side = chosen_side
-        joiner_side = opposite
+            ensure_user(interaction.user.id)
+            joiner_data = data[str(interaction.user.id)]
+            if joiner_data.get("gems", 0) < bet_amount:
+                return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
 
-        if result == requester_side:
-            winner_id = ctx.author.id
-            loser_id = joiner_id
-            winner_side = requester_side
-        else:
-            winner_id = joiner_id
-            loser_id = ctx.author.id
-            winner_side = joiner_side
+            self._set_disabled(True)
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except Exception:
+                    pass
 
-        data[str(winner_id)]["gems"] += bet_amount * 2
-        save_data(data)
+            await self.finalize_match(interaction, interaction.user.id)
 
-        add_history(ctx.author.id, {
-            "game": "pvp_coinflip",
-            "bet": bet_amount,
-            "result": "win" if winner_id == ctx.author.id else "loss",
-            "earned": bet_amount if winner_id == ctx.author.id else -bet_amount,
-            "timestamp": time.time(),
-            "side": requester_side,
-        })
-
-        add_history(joiner_id, {
-            "game": "pvp_coinflip",
-            "bet": bet_amount,
-            "result": "win" if winner_id == joiner_id else "loss",
-            "earned": bet_amount if winner_id == joiner_id else -bet_amount,
-            "timestamp": time.time(),
-            "side": joiner_side,
-        })
-
-        for child in view.children:
-            child.disabled = True
-
-        result_embed = discord.Embed(
-            title="🪙 PvP Coinflip Result",
-            description=(
-                f"🌀 Coin landed on **{result.title()}**!\n"
-                f"🏆 Winner: <@{winner_id}>\n"
-                f"💔 Loser: <@{loser_id}>\n"
-                f"💰 Total Pot: **{fmt(bet_amount * 2)}**"
-            ),
-            color=discord.Color.green() if winner_id == ctx.author.id else discord.Color.blue(),
-        )
-        result_embed.add_field(
-            name="Sides",
-            value=(
-                f"{ctx.author.mention}: **{requester_side.title()}**\n"
-                f"<@{joiner_id}>: **{joiner_side.title()}**"
-            ),
-            inline=False,
-        )
-
-        try:
-            await interaction.response.edit_message(embed=result_embed, view=view)
-        except Exception:
-            pass
-
-    @join_button.callback
-    async def join_callback(interaction):
-        if interaction.user.id == ctx.author.id:
-            return await interaction.response.send_message("❌ You can't join your own match!", ephemeral=True)
-        if any(getattr(child, "disabled", False) for child in view.children):
-            return await interaction.response.send_message("❌ This match is already taken.", ephemeral=True)
-
-        ensure_user(interaction.user.id)
-        joiner_data = data[str(interaction.user.id)]
-        if joiner_data.get("gems", 0) < bet_amount:
-            return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
-
-        for child in view.children:
-            child.disabled = True
-
-        await finalize_match(interaction, interaction.user.id)
-
-    view.add_item(join_button)
+    view = PvPCoinflipView()
     sent_message = await ctx.send(embed=embed, view=view)
     view.message = sent_message
 
