@@ -4961,6 +4961,9 @@ async def mines(ctx, bet: str, mines: int = 3):
     ROW_SLOTS = 5
     SAFE_TILE_TARGET = TOTAL - mines
     status_text = "🟣 Active"
+    inactivity_limit = 10 * 60  # 10 minutes
+    start_time = time.time()
+    message: discord.Message | None = None
 
     revealed_safe = set()
     bomb_positions = set(random.sample(range(TOTAL), mines))
@@ -4973,6 +4976,11 @@ async def mines(ctx, bet: str, mines: int = 3):
 
     def calc_reward():
         return amount * calc_multiplier()
+
+    def remaining_time_text():
+        remaining = max(0, int(inactivity_limit - (time.time() - start_time)))
+        minutes, seconds = divmod(remaining, 60)
+        return f"{minutes:02d}:{seconds:02d}"
 
     def finalize_board(explosion: int | None = None):
         nonlocal exploded_index
@@ -4997,6 +5005,7 @@ async def mines(ctx, bet: str, mines: int = 3):
                 f"💰 Current: **{fmt(reward_display)}**\n"
                 f"🔥 Multiplier: **{calc_multiplier():.2f}x**\n"
                 f"📌 Status: {status_text}\n"
+                f"⏳ Auto-cancel in **{remaining_time_text()}**\n"
                 f"📶 Ping: **{round(bot.latency * 1000)}ms**"
             ),
             color=galaxy_color(),
@@ -5022,6 +5031,44 @@ async def mines(ctx, bet: str, mines: int = 3):
             cashout_button = None
         try:
             view.add_item(play_again)
+        except Exception:
+            pass
+
+    async def inactivity_watchdog():
+        nonlocal game_over, status_text, reward_on_end
+        try:
+            while not game_over:
+                await asyncio.sleep(5)
+                remaining = inactivity_limit - (time.time() - start_time)
+                if remaining <= 0:
+                    game_over = True
+                    reward_on_end = 0
+                    status_text = "⏰ Inactivity — bet refunded."
+                    finalize_board()
+                    for child in view.children:
+                        child.disabled = True
+                    u["gems"] += amount
+                    save_data(data)
+                    add_history(ctx.author.id, {
+                        "game": "mines",
+                        "bet": amount,
+                        "result": "timeout",
+                        "earned": 0,
+                        "timestamp": time.time()
+                    })
+                    attach_play_again()
+                    try:
+                        if message:
+                            await message.edit(embed=embed_update(), view=view)
+                    except Exception:
+                        pass
+                    await release_active_game([owner])
+                    break
+                try:
+                    if message and not game_over:
+                        await message.edit(embed=embed_update(), view=view)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -5082,7 +5129,7 @@ async def mines(ctx, bet: str, mines: int = 3):
             self.index = index
 
         async def callback(self, interaction):
-            nonlocal game_over
+            nonlocal game_over, start_time
 
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
@@ -5090,6 +5137,8 @@ async def mines(ctx, bet: str, mines: int = 3):
                 return await interaction.response.send_message("❌ Game already ended!", ephemeral=True)
             if self.index in revealed_safe:
                 return await interaction.response.send_message("❌ Already clicked!", ephemeral=True)
+
+            start_time = time.time()
 
             # CURSE: immediately explode the clicked tile
             if rig == "curse":
@@ -5128,10 +5177,14 @@ async def mines(ctx, bet: str, mines: int = 3):
             super().__init__(label="💰 Cashout", style=discord.ButtonStyle.primary, row=4)
 
         async def callback(self, interaction):
+            nonlocal start_time
+
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
                 return await interaction.response.send_message("❌ Game already ended!", ephemeral=True)
+
+            start_time = time.time()
 
             if rig == "curse":
                 explosion = random.choice(list(bomb_positions))
@@ -5145,7 +5198,8 @@ async def mines(ctx, bet: str, mines: int = 3):
 
     cashout_button = Cashout()
     view.add_item(cashout_button)
-    await ctx.send(embed=embed_update(), view=view)
+    message = await ctx.send(embed=embed_update(), view=view)
+    bot.loop.create_task(inactivity_watchdog())
 # --------------------------------------------------------------
 #                      TOWER (rig-aware)
 # --------------------------------------------------------------
@@ -5190,6 +5244,9 @@ async def tower(ctx, bet: str):
     game_over = False
     owner = ctx.author.id
     status_text = "🟣 Active"
+    inactivity_limit = 10 * 60  # 10 minutes
+    start_time = time.time()
+    message: discord.Message | None = None
 
     SAFE = "✅"
     BOMB = "💣"
@@ -5206,6 +5263,11 @@ async def tower(ctx, bet: str):
     def calc_reward():
         return amount * calc_multiplier()
 
+    def remaining_time_text():
+        remaining = max(0, int(inactivity_limit - (time.time() - start_time)))
+        minutes, seconds = divmod(remaining, 60)
+        return f"{minutes:02d}:{seconds:02d}"
+
     def embed_update(reveal=False):
         earned = earned_on_end if reveal else (calc_reward() if correct_count > 0 else 0)
         e = discord.Embed(
@@ -5218,6 +5280,7 @@ async def tower(ctx, bet: str):
         e.add_field(name="Multiplier", value=f"{calc_multiplier():.2f}x")
         e.add_field(name="Status", value=status_text, inline=False)
         e.add_field(name="Ping", value=f"{round(bot.latency * 1000)}ms", inline=True)
+        e.add_field(name="Auto-cancel", value=f"{remaining_time_text()} left", inline=True)
 
         lines = []
         for r in reversed(range(TOTAL_ROWS)):
@@ -5260,18 +5323,63 @@ async def tower(ctx, bet: str):
             except Exception:
                 pass
 
+    async def inactivity_watchdog():
+        nonlocal game_over, earned_on_end, status_text
+        try:
+            while not game_over:
+                await asyncio.sleep(5)
+                remaining = inactivity_limit - (time.time() - start_time)
+                if remaining <= 0:
+                    game_over = True
+                    earned_on_end = 0
+                    status_text = "⏰ Inactivity — bet refunded."
+                    for r in range(TOTAL_ROWS):
+                        bc = bomb_positions[r]
+                        grid[r][bc] = False
+                        for c in range(3):
+                            if grid[r][c] is None:
+                                grid[r][c] = (c != bomb_positions[r])
+                    for b in view.children:
+                        b.disabled = True
+                    u["gems"] += amount
+                    save_data(data)
+                    add_history(ctx.author.id, {
+                        "game": "tower",
+                        "bet": amount,
+                        "result": "timeout",
+                        "earned": 0,
+                        "timestamp": time.time()
+                    })
+                    attach_play_again()
+                    try:
+                        if message:
+                            await message.edit(embed=embed_update(True), view=view)
+                    except Exception:
+                        pass
+                    await release_active_game([owner])
+                    break
+                try:
+                    if message and not game_over:
+                        await message.edit(embed=embed_update(False), view=view)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     class Choice(Button):
         def __init__(self, pos):
             super().__init__(label=["Left", "Middle", "Right"][pos], style=discord.ButtonStyle.secondary)
             self.pos = pos
 
         async def callback(self, interaction):
-            nonlocal current_row, correct_count, game_over, exploded_cell, earned_on_end
+            nonlocal current_row, correct_count, game_over, exploded_cell, earned_on_end, start_time
 
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
                 return await interaction.response.send_message("❌ Game ended!", ephemeral=True)
+
+            start_time = time.time()
 
             bomb_col = bomb_positions[current_row]
 
@@ -5352,12 +5460,14 @@ async def tower(ctx, bet: str):
             super().__init__(label="💰 Cashout", style=discord.ButtonStyle.primary)
 
         async def callback(self, interaction):
-            nonlocal game_over, earned_on_end, correct_count, current_row
+            nonlocal game_over, earned_on_end, correct_count, current_row, start_time
 
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
                 return await interaction.response.send_message("❌ Game ended!", ephemeral=True)
+
+            start_time = time.time()
 
             # CURSE: even cashout is a loss
             if rig == "curse":
@@ -5419,7 +5529,8 @@ async def tower(ctx, bet: str):
     view.add_item(Choice(2))
     view.add_item(Cashout())
 
-    await ctx.send(embed=embed_update(False), view=view)
+    message = await ctx.send(embed=embed_update(False), view=view)
+    bot.loop.create_task(inactivity_watchdog())
 
 
 # --------------------------------------------------------------
@@ -5541,6 +5652,15 @@ async def blackjack(ctx, bet: str):
     # Normal interactive blackjack
     player = [draw_card(), draw_card()]
     dealer = [draw_card(), draw_card()]
+    game_over = False
+    inactivity_limit = 10 * 60  # 10 minutes
+    start_time = time.time()
+    message: discord.Message | None = None
+
+    def remaining_time_text():
+        remaining = max(0, int(inactivity_limit - (time.time() - start_time)))
+        minutes, seconds = divmod(remaining, 60)
+        return f"{minutes:02d}:{seconds:02d}"
 
     def make_embed(show_dealer=False, final=False, extra_msg=""):
         pv = hand_value(player)
@@ -5551,7 +5671,8 @@ async def blackjack(ctx, bet: str):
         )
         if extra_msg:
             desc += f"\n\n{extra_msg}"
-        desc += f"\n\n📶 Ping: **{round(bot.latency * 1000)}ms**"
+        desc += f"\n\n⏳ Auto-cancel in **{remaining_time_text()}**\n"
+        desc += f"\n📶 Ping: **{round(bot.latency * 1000)}ms**"
         e = discord.Embed(
             title="🃏 Galaxy Blackjack",
             description=desc,
@@ -5562,16 +5683,13 @@ async def blackjack(ctx, bet: str):
         else:
             e.set_footer(text="Hit or Stand?")
         return e
-    view = View(timeout=40)
-
-    async def on_timeout():
-        for child in view.children:
-            child.disabled = True
-        await finish_game()
-
-    view.on_timeout = on_timeout
+    view = View(timeout=None)
 
     async def finish_game(interaction=None):
+        nonlocal game_over
+        if game_over:
+            return
+        game_over = True
         pv = hand_value(player)
         dv = hand_value(dealer)
         while dv < 17:
@@ -5635,13 +5753,54 @@ async def blackjack(ctx, bet: str):
             await ctx.send(embed=final_embed, view=play_again_view)
         await release_active_game([ctx.author.id])
 
+    async def inactivity_watchdog():
+        nonlocal game_over, start_time
+        try:
+            while not game_over:
+                await asyncio.sleep(5)
+                remaining = inactivity_limit - (time.time() - start_time)
+                if remaining <= 0:
+                    game_over = True
+                    for child in view.children:
+                        child.disabled = True
+                    u["gems"] += amount
+                    save_data(data)
+                    add_history(ctx.author.id, {
+                        "game": "blackjack",
+                        "bet": amount,
+                        "result": "timeout",
+                        "earned": 0,
+                        "timestamp": time.time()
+                    })
+                    play_again_view = build_play_again_view(ctx, "blackjack", amount, lambda: blackjack(ctx, bet))
+                    try:
+                        if message:
+                            await message.edit(
+                                embed=make_embed(show_dealer=False, final=True, extra_msg="⏰ Inactivity — bet refunded."),
+                                view=play_again_view,
+                            )
+                    except Exception:
+                        pass
+                    await release_active_game([ctx.author.id])
+                    break
+                try:
+                    if message and not game_over:
+                        await message.edit(embed=make_embed(), view=view)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     class Hit(Button):
         def __init__(self):
             super().__init__(label="Hit", style=discord.ButtonStyle.primary)
 
         async def callback(self, interaction):
+            nonlocal start_time
+
             if interaction.user.id != ctx.author.id:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+            start_time = time.time()
             player.append(draw_card())
             if hand_value(player) > 21:
                 for b in view.children:
@@ -5655,8 +5814,11 @@ async def blackjack(ctx, bet: str):
             super().__init__(label="Stand", style=discord.ButtonStyle.secondary)
 
         async def callback(self, interaction):
+            nonlocal start_time
+
             if interaction.user.id != ctx.author.id:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+            start_time = time.time()
             for b in view.children:
                 b.disabled = True
             await finish_game(interaction)
@@ -5664,7 +5826,8 @@ async def blackjack(ctx, bet: str):
     view.add_item(Hit())
     view.add_item(Stand())
 
-    await ctx.send(embed=make_embed(), view=view)
+    message = await ctx.send(embed=make_embed(), view=view)
+    bot.loop.create_task(inactivity_watchdog())
 
 
 # --------------------------------------------------------------
