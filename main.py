@@ -5171,11 +5171,24 @@ async def match(ctx):
         )
         return embed
 
-    async def update_message(msg: discord.Message, status: str, remaining: int, locked: bool, view):
+    async def update_message(status: str, remaining: int, locked: bool, view):
+        nonlocal match_message
+
+        embed = build_embed(status, remaining, locked)
         try:
-            await msg.edit(embed=build_embed(status, remaining, locked), view=view)
-        except Exception:
+            await match_message.edit(embed=embed, view=view)
+        except discord.Forbidden:
+            # Can't edit (e.g., missing permissions) — surface the issue and keep going.
+            await ctx.send("❌ I can't edit the match message here (missing permissions).")
+        except discord.NotFound:
+            # Message was deleted; send a new one so the match can continue.
+            match_message = await ctx.send(embed=embed, view=view)
+        except discord.HTTPException:
+            # Rate limit or similar; skip this tick but keep the loop alive.
             pass
+        except Exception as exc:
+            # Unexpected issue; surface it so the match isn't silently stuck.
+            await ctx.send(f"❌ Match update failed: {exc}")
 
     class BetModal(Modal):
         def __init__(self, choice_key: str, label: str):
@@ -5221,7 +5234,7 @@ async def match(ctx):
                 ephemeral=True
             )
 
-            await update_message(match_message, "⚽ Betting open — choose an outcome!", BETTING_WINDOW, False, bet_view)
+            await update_message("⚽ Betting open — choose an outcome!", BETTING_WINDOW, False, bet_view)
 
     class BetButton(Button):
         def __init__(self, label: str, choice_key: str, style=discord.ButtonStyle.primary):
@@ -5243,7 +5256,7 @@ async def match(ctx):
     bets_locked = True
     for child in bet_view.children:
         child.disabled = True
-    await update_message(match_message, "🔒 Bets locked — match is starting!", MATCH_DURATION, True, bet_view)
+    await update_message("🔒 Bets locked — match is starting!", MATCH_DURATION, True, bet_view)
 
     async def maybe_trigger_momentum_shift(team_key: str, elapsed: int):
         nonlocal momentum_active, momentum_team, momentum_ends_at, momentum_used
@@ -5337,7 +5350,7 @@ async def match(ctx):
                 rc_embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}")
                 await match_message.edit(embed=rc_embed, view=bet_view)
                 await asyncio.sleep(random.uniform(2.0, 3.0))
-                await update_message(match_message, "🏃 Match in progress…", remaining, True, bet_view)
+                await update_message("🏃 Match in progress…", remaining, True, bet_view)
                 return
 
         base_prob_a = random.uniform(0.001, 0.05)
@@ -5365,7 +5378,7 @@ async def match(ctx):
                 await handle_goal(key, remaining, elapsed)
                 break
 
-        await update_message(match_message, "🏃 Match in progress…", remaining, True, bet_view)
+        await update_message("🏃 Match in progress…", remaining, True, bet_view)
 
     for remaining in range(MATCH_DURATION, 0, -1):
         await simulate_second(remaining)
@@ -5410,7 +5423,6 @@ async def match(ctx):
     save_data(data)
 
     await update_message(
-        match_message,
         "🏁 Full time — match finished!",
         0,
         True,
