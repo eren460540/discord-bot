@@ -4253,7 +4253,21 @@ async def pvpcoinflip(ctx, amount: str, side: str):
         color=galaxy_color(),
     )
 
-    view = View(timeout=None)
+    class PvPCoinflipView(View):
+        def __init__(self):
+            super().__init__(timeout=300)
+            self.message = None
+
+        async def on_timeout(self):
+            for child in self.children:
+                child.disabled = True
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except Exception:
+                    pass
+
+    view = PvPCoinflipView()
     join_button = Button(label="Join Coinflip", style=discord.ButtonStyle.primary)
 
     async def finalize_match(interaction, joiner_id: int):
@@ -4355,7 +4369,8 @@ async def pvpcoinflip(ctx, amount: str, side: str):
         await finalize_match(interaction, interaction.user.id)
 
     view.add_item(join_button)
-    await ctx.send(embed=embed, view=view)
+    sent_message = await ctx.send(embed=embed, view=view)
+    view.message = sent_message
 
 
 # --------------------------------------------------------------
