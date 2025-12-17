@@ -4609,7 +4609,7 @@ async def crash(ctx, bet: str):
     multiplier = CRASH_STEPS[clicks]["mult"]
     game_over = False
     inactivity_limit = 10 * 60  # 10 minutes
-    last_action = time.time()
+    start_time = time.time()
     message: discord.Message | None = None
 
     def rigged_chance(base: float) -> float:
@@ -4620,7 +4620,7 @@ async def crash(ctx, bet: str):
         return base
 
     def remaining_time_text():
-        remaining = max(0, int(inactivity_limit - (time.time() - last_action)))
+        remaining = max(0, int(inactivity_limit - (time.time() - start_time)))
         minutes, seconds = divmod(remaining, 60)
         return f"{minutes:02d}:{seconds:02d}"
 
@@ -4677,7 +4677,7 @@ async def crash(ctx, bet: str):
             super().__init__(label="Next", style=discord.ButtonStyle.secondary)
 
         async def callback(self, interaction):
-            nonlocal clicks, multiplier, game_over, last_action
+            nonlocal clicks, multiplier, game_over
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
@@ -4694,7 +4694,6 @@ async def crash(ctx, bet: str):
 
             clicks = next_click
             multiplier = CRASH_STEPS[clicks]["mult"]
-            last_action = time.time()
 
             if clicks >= CLICK_LIMIT:
                 self.disabled = True
@@ -4745,11 +4744,11 @@ async def crash(ctx, bet: str):
     view.add_item(CashOut())
 
     async def inactivity_watchdog():
-        nonlocal game_over, last_action, message
+        nonlocal game_over, message
         try:
             while not game_over:
                 await asyncio.sleep(5)
-                remaining = inactivity_limit - (time.time() - last_action)
+                remaining = inactivity_limit - (time.time() - start_time)
                 if remaining <= 0:
                     game_over = True
                     for child in view.children:
