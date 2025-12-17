@@ -25,7 +25,7 @@ DISABLED_CATEGORIES = {1431610646654488661}
 # Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
 
-GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack", "crash", "match"]
+GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack", "crash", "match", "pvp_coinflip"]
 
 
 
@@ -152,6 +152,16 @@ MAX_BET = 200_000_000
 MIN_GAMBLE_AMOUNT = 1_000_000
 LOTTERY_BONUS = 0.10
 CODE_REWARD_GEMS = 100_000_000
+PLAY_AGAIN_DISABLED_GAMES = {"coinflip", "cf", "match", "pvpcoinflip", "pvpcf", "pvp_coinflip"}
+
+WAGER_ROLE_TIERS = [
+    (15_000_000_000, 1450864781258002525),
+    (5_000_000_000, 1450864717693325483),
+    (3_000_000_000, 1450864630262927441),
+    (100_000_000, 1450864553255768144),
+    (10_000_000, 1450864457994473532),
+]
+WAGER_ROLE_ID_SET = {role_id for _, role_id in WAGER_ROLE_TIERS}
 
 # --------------------------------------------------------------
 #                       HELPERS
@@ -520,7 +530,7 @@ def _mark_withdraw_used(uid: str, kind: str, amount: int):
 
 
 FREE_SOURCES = {"daily", "work", "invite_reward", "admin_give", "dropbox"}
-GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack", "crash", "match"}
+GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack", "crash", "match", "pvp_coinflip"}
 ACHIEVEMENT_DEFS = {
     "first_loan": {
         "emoji": "🌌",
@@ -681,6 +691,38 @@ def ensure_user(user_id):
     save_data(data)
 
 
+async def _apply_wager_roles(user_id: int):
+    await bot.wait_until_ready()
+    ensure_user(user_id)
+    total = data[str(user_id)].get("lifetime_wagered", 0)
+
+    target_role_id = None
+    for threshold, role_id in WAGER_ROLE_TIERS:
+        if total >= threshold:
+            target_role_id = role_id
+            break
+
+    for guild in bot.guilds:
+        member = guild.get_member(user_id)
+        if not member:
+            continue
+
+        roles_to_remove = [r for r in member.roles if r.id in WAGER_ROLE_ID_SET and r.id != target_role_id]
+        if roles_to_remove:
+            try:
+                await member.remove_roles(*roles_to_remove, reason="Wager role update")
+            except Exception:
+                pass
+
+        if target_role_id:
+            role = guild.get_role(target_role_id)
+            if role and role not in member.roles:
+                try:
+                    await member.add_roles(role, reason="Wager role update")
+                except Exception:
+                    pass
+
+
 def add_history(user_id, entry):
     ensure_user(user_id)
     uid = str(user_id)
@@ -695,6 +737,7 @@ def add_history(user_id, entry):
         _quest_add_wager(uid, bet)
         data[uid]["lifetime_wagered"] = data[uid].get("lifetime_wagered", 0) + bet
         refresh_achievements(uid)
+        asyncio.create_task(_apply_wager_roles(int(uid)))
 
     hist = data[uid].get("history", [])
     hist.append(entry)
@@ -702,6 +745,45 @@ def add_history(user_id, entry):
         hist = hist[-50:]
     data[uid]["history"] = hist
     save_data(data)
+
+
+def play_again_enabled(game_key: str) -> bool:
+    return game_key not in PLAY_AGAIN_DISABLED_GAMES
+
+
+async def send_play_again(ctx, game_key: str, bet_amount: float, restart_callable):
+    if not play_again_enabled(game_key):
+        return
+
+    view = View(timeout=None)
+
+    class PlayAgain(Button):
+        def __init__(self):
+            super().__init__(label="🔁 Play Again", style=discord.ButtonStyle.success)
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+            ensure_user(interaction.user.id)
+            user = data[str(interaction.user.id)]
+            if user.get("gems", 0) < bet_amount:
+                try:
+                    await interaction.response.edit_message(view=view)
+                except Exception:
+                    pass
+                return
+
+            for child in view.children:
+                child.disabled = True
+            try:
+                await interaction.response.edit_message(view=view)
+            except Exception:
+                pass
+
+            await restart_callable()
+
+    view.add_item(PlayAgain())
+    await ctx.send(content=ctx.author.mention, view=view)
 
 
 def parse_amount(text, user_gems=None, allow_all=False):
@@ -4135,6 +4217,147 @@ async def coinflip(ctx, bet: str, choice: str):
     })
 
 
+@bot.command(aliases=["pvpcf", "pvpcoinflip"])
+async def pvpcoinflip(ctx, amount: str, side: str):
+    ensure_user(ctx.author.id)
+    requester = data[str(ctx.author.id)]
+
+    bet_amount = parse_amount(amount, requester["gems"], allow_all=False)
+    if bet_amount is None or bet_amount <= 0:
+        return await ctx.send("❌ Invalid bet.")
+    if bet_amount < MIN_GAMBLE_AMOUNT:
+        return await ctx.send(
+            f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
+        )
+    if bet_amount > MAX_BET:
+        return await ctx.send(
+            f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
+        )
+    if bet_amount > requester["gems"]:
+        return await ctx.send("❌ You don't have enough gems.")
+
+    chosen_side = side.lower()
+    if chosen_side not in ["heads", "tails"]:
+        return await ctx.send("❌ Choose `heads` or `tails`.")
+
+    opposite = "tails" if chosen_side == "heads" else "heads"
+
+    embed = discord.Embed(
+        title="🪙 PvP Coinflip Lobby",
+        description=(
+            f"{ctx.author.mention} opened a PvP coinflip!\n"
+            f"💵 Bet: **{fmt(bet_amount)}** each\n"
+            f"🎯 Requester side: **{chosen_side.title()}**\n"
+            f"🤝 Joiners get: **{opposite.title()}**"
+        ),
+        color=galaxy_color(),
+    )
+
+    view = View(timeout=None)
+    join_button = Button(label="Join Coinflip", style=discord.ButtonStyle.primary)
+
+    async def finalize_match(interaction, joiner_id: int):
+        requester_user = data[str(ctx.author.id)]
+        joiner_user = data[str(joiner_id)]
+
+        if requester_user["gems"] < bet_amount:
+            for child in view.children:
+                child.disabled = False
+            try:
+                await interaction.response.send_message("❌ Requester lacks funds now.", ephemeral=True)
+                await interaction.message.edit(view=view)
+            except Exception:
+                pass
+            return
+        if joiner_user["gems"] < bet_amount:
+            return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
+
+        requester_user["gems"] -= bet_amount
+        joiner_user["gems"] -= bet_amount
+        save_data(data)
+
+        result = random.choice(["heads", "tails"])
+        requester_side = chosen_side
+        joiner_side = opposite
+
+        if result == requester_side:
+            winner_id = ctx.author.id
+            loser_id = joiner_id
+            winner_side = requester_side
+        else:
+            winner_id = joiner_id
+            loser_id = ctx.author.id
+            winner_side = joiner_side
+
+        data[str(winner_id)]["gems"] += bet_amount * 2
+        save_data(data)
+
+        add_history(ctx.author.id, {
+            "game": "pvp_coinflip",
+            "bet": bet_amount,
+            "result": "win" if winner_id == ctx.author.id else "loss",
+            "earned": bet_amount if winner_id == ctx.author.id else -bet_amount,
+            "timestamp": time.time(),
+            "side": requester_side,
+        })
+
+        add_history(joiner_id, {
+            "game": "pvp_coinflip",
+            "bet": bet_amount,
+            "result": "win" if winner_id == joiner_id else "loss",
+            "earned": bet_amount if winner_id == joiner_id else -bet_amount,
+            "timestamp": time.time(),
+            "side": joiner_side,
+        })
+
+        for child in view.children:
+            child.disabled = True
+
+        result_embed = discord.Embed(
+            title="🪙 PvP Coinflip Result",
+            description=(
+                f"🌀 Coin landed on **{result.title()}**!\n"
+                f"🏆 Winner: <@{winner_id}>\n"
+                f"💔 Loser: <@{loser_id}>\n"
+                f"💰 Total Pot: **{fmt(bet_amount * 2)}**"
+            ),
+            color=discord.Color.green() if winner_id == ctx.author.id else discord.Color.blue(),
+        )
+        result_embed.add_field(
+            name="Sides",
+            value=(
+                f"{ctx.author.mention}: **{requester_side.title()}**\n"
+                f"<@{joiner_id}>: **{joiner_side.title()}**"
+            ),
+            inline=False,
+        )
+
+        try:
+            await interaction.response.edit_message(embed=result_embed, view=view)
+        except Exception:
+            pass
+
+    @join_button.callback
+    async def join_callback(interaction):
+        if interaction.user.id == ctx.author.id:
+            return await interaction.response.send_message("❌ You can't join your own match!", ephemeral=True)
+        if any(getattr(child, "disabled", False) for child in view.children):
+            return await interaction.response.send_message("❌ This match is already taken.", ephemeral=True)
+
+        ensure_user(interaction.user.id)
+        joiner_data = data[str(interaction.user.id)]
+        if joiner_data.get("gems", 0) < bet_amount:
+            return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
+
+        for child in view.children:
+            child.disabled = True
+
+        await finalize_match(interaction, interaction.user.id)
+
+    view.add_item(join_button)
+    await ctx.send(embed=embed, view=view)
+
+
 # --------------------------------------------------------------
 #                      CRASH (rig-aware)
 # --------------------------------------------------------------
@@ -4224,6 +4447,7 @@ async def crash(ctx, bet: str):
         except Exception:
             pass
         await ctx.send(f"☠️ The ship exploded! You lost **{fmt(amount)}** gems.")
+        await send_play_again(ctx, "crash", amount, lambda: crash(ctx, bet))
 
     class Next(Button):
         def __init__(self):
@@ -4288,6 +4512,7 @@ async def crash(ctx, bet: str):
             except Exception:
                 pass
             await ctx.send(f"💰 You cashed out at **{multiplier:.2f}x** for **{fmt(profit)}** gems!")
+            await send_play_again(ctx, "crash", amount, lambda: crash(ctx, bet))
 
     view.add_item(Next())
     view.add_item(CashOut())
@@ -4413,6 +4638,8 @@ async def slots(ctx, bet: str):
         "timestamp": time.time()
     })
 
+    await send_play_again(ctx, "slots", amount, lambda: slots(ctx, bet))
+
 
 # --------------------------------------------------------------
 #                      MINES (rig-aware)
@@ -4516,6 +4743,7 @@ async def mines(ctx, bet: str, mines: int = 3):
         except Exception:
             pass
         await ctx.send(f"💥 A mine detonated! You lost **{fmt(amount)}** gems.")
+        await send_play_again(ctx, "mines", amount, lambda: globals()["mines"](ctx, bet, mines))
 
     async def handle_win(interaction, reason: str):
         nonlocal game_over, reward_on_end
@@ -4536,6 +4764,7 @@ async def mines(ctx, bet: str, mines: int = 3):
         except Exception:
             pass
         await ctx.send(f"🌠 You secured **{fmt(reward_on_end - amount)}** gems from the cosmic field!")
+        await send_play_again(ctx, "mines", amount, lambda: globals()["mines"](ctx, bet, mines))
 
     class Tile(Button):
         def __init__(self, index):
@@ -4742,7 +4971,9 @@ async def tower(ctx, bet: str):
                     "timestamp": time.time()
                 })
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
-                return await ctx.send(f"💥 BOOM! You lost **{fmt(amount)}** gems!")
+                await ctx.send(f"💥 BOOM! You lost **{fmt(amount)}** gems!")
+                await send_play_again(ctx, "tower", amount, lambda: tower(ctx, bet))
+                return
 
             grid[current_row][self.pos] = True
             correct_count += 1
@@ -4771,7 +5002,9 @@ async def tower(ctx, bet: str):
                     "timestamp": time.time()
                 })
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
-                return await ctx.send(f"🏆 Cleared all rows! **+{fmt(reward - amount)}** gems!")
+                await ctx.send(f"🏆 Cleared all rows! **+{fmt(reward - amount)}** gems!")
+                await send_play_again(ctx, "tower", amount, lambda: tower(ctx, bet))
+                return
 
             await interaction.response.edit_message(embed=embed_update(False), view=view)
 
@@ -4808,6 +5041,7 @@ async def tower(ctx, bet: str):
                 })
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
                 await ctx.send(f"💥 BOOM! You lost **{fmt(amount)}** gems!")
+                await send_play_again(ctx, "tower", amount, lambda: tower(ctx, bet))
                 return
 
             # BLESS: guarantee at least one safe row worth of profit
@@ -4837,6 +5071,7 @@ async def tower(ctx, bet: str):
             })
             await interaction.response.edit_message(embed=embed_update(True), view=view)
             await ctx.send(f"💰 Cashed out **{fmt(reward - amount)}** gems!")
+            await send_play_again(ctx, "tower", amount, lambda: tower(ctx, bet))
 
     view.add_item(Choice(0))
     view.add_item(Choice(1))
@@ -4893,6 +5128,15 @@ async def blackjack(ctx, bet: str):
     u["gems"] -= amount
     save_data(data)
 
+    play_again_sent = False
+
+    async def prompt_play_again():
+        nonlocal play_again_sent
+        if play_again_sent:
+            return
+        play_again_sent = True
+        await send_play_again(ctx, "blackjack", amount, lambda: blackjack(ctx, bet))
+
     # Rigged: instant-looking game
     if rig in ("bless", "curse"):
         def random_hand(target_min, target_max):
@@ -4946,6 +5190,7 @@ async def blackjack(ctx, bet: str):
             "earned": profit,
             "timestamp": time.time()
         })
+        await prompt_play_again()
         return
 
     # Normal interactive blackjack
@@ -5035,6 +5280,7 @@ async def blackjack(ctx, bet: str):
             await interaction.response.edit_message(embed=final_embed, view=None)
         else:
             await ctx.send(embed=final_embed)
+        await prompt_play_again()
 
     class Hit(Button):
         def __init__(self):
@@ -6405,6 +6651,7 @@ async def help(ctx):
         name="🎮 Games",
         value=(
             "**!coinflip/!cf amount heads/tails** — 50/50 game\n"
+            "**!pvpcf amount heads/tails** — PvP coinflip lobby; joiners auto-get the other side\n"
             "**!blackjack/!bj amount** — Blackjack game\n"
             "**!slots amount** — Slot machine\n"
             "**!mines amount [mines]** — Mines game\n"
@@ -6523,9 +6770,9 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🎮 Games & Leaderboard",
         value=(
-            "Aliases: **!bj** (blackjack), **!cf** (coinflip), **!lb** (leaderboard)\n"
+            "Aliases: **!bj** (blackjack), **!cf** (coinflip), **!lb** (leaderboard), **!pvpcf** (PvP coinflip)\n"
             "Leaderboard: sorted by holding, 50 pages, 10 users per page (top 500)\n"
-            "Bet limits apply to: coinflip/!cf, blackjack/!bj, slots, mines, tower, crash, match\n"
+            "Bet limits apply to: coinflip/!cf, blackjack/!bj, slots, mines, tower, crash, match, pvpcf\n"
             "**!match** — 90s live football sim with Team A / Team B / Draw bets, one bet per user, fixed **2.5x** payout on correct predictions"
         ),
         inline=False
