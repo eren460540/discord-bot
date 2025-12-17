@@ -6572,7 +6572,59 @@ async def history(ctx):
     await ctx.send(embed=embed)
 
 
- # --------------------------------------------------------------
+# --------------------------------------------------------------
+#                      WAGER RANK
+# --------------------------------------------------------------
+@bot.command(name="rank")
+async def rank(ctx):
+    ensure_user(ctx.author.id)
+    total = int(data[str(ctx.author.id)].get("lifetime_wagered", 0))
+
+    sorted_tiers = sorted(WAGER_ROLE_TIERS, key=lambda t: t[0])
+
+    current_role = None
+    next_role = None
+    for required, role_id in sorted_tiers:
+        if total >= required:
+            current_role = (required, role_id)
+        elif next_role is None:
+            next_role = (required, role_id)
+            break
+
+    ladder_lines = [f"{fmt(req)} wagered → <@&{rid}>" for req, rid in sorted_tiers]
+
+    desc_parts = ["**Current Rank:**"]
+    if current_role:
+        desc_parts.append(f"<@&{current_role[1]}>")
+    else:
+        desc_parts.append("Unranked")
+
+    desc_parts.append("\n**Lifetime Wagered:**")
+    desc_parts.append(fmt(total))
+
+    if next_role:
+        remaining = max(0, next_role[0] - total)
+        desc_parts.append("\n**Next Rank:**")
+        desc_parts.append(f"<@&{next_role[1]}>\nRequired: {fmt(next_role[0])}\nRemaining: {fmt(remaining)}")
+    else:
+        desc_parts.append("\nYou have reached the highest rank")
+
+    embed = discord.Embed(
+        title="🎖️ Wager Rank",
+        description="\n".join(desc_parts),
+        color=galaxy_color(),
+    )
+
+    embed.add_field(
+        name="Rank Ladder",
+        value="\n".join(ladder_lines),
+        inline=False,
+    )
+
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+
+# --------------------------------------------------------------
 #                      CHECK
 # --------------------------------------------------------------
 
