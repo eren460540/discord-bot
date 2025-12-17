@@ -4608,6 +4608,9 @@ async def crash(ctx, bet: str):
     clicks = 0
     multiplier = CRASH_STEPS[clicks]["mult"]
     game_over = False
+    inactivity_limit = 10 * 60  # 10 minutes
+    last_action = time.time()
+    message: discord.Message | None = None
 
     def rigged_chance(base: float) -> float:
         if rig == "bless":
@@ -4615,6 +4618,11 @@ async def crash(ctx, bet: str):
         if rig == "curse":
             return min(100.0, base * 2)
         return base
+
+    def remaining_time_text():
+        remaining = max(0, int(inactivity_limit - (time.time() - last_action)))
+        minutes, seconds = divmod(remaining, 60)
+        return f"{minutes:02d}:{seconds:02d}"
 
     def embed_update(status: str):
         # Crash chance is tied to the *next* click based on the table above.
@@ -4629,6 +4637,7 @@ async def crash(ctx, bet: str):
                 f"💥 Crash chance: **{adjusted_chance:.0f}%**\n"
                 f"🔢 Clicks: **{clicks}/{CLICK_LIMIT}**\n"
                 f"📌 Status: {status}\n"
+                f"⏳ Auto-cancel in **{remaining_time_text()}**\n"
                 f"📶 Ping: **{round(bot.latency * 1000)}ms**"
             ),
             color=galaxy_color(),
@@ -4668,7 +4677,7 @@ async def crash(ctx, bet: str):
             super().__init__(label="Next", style=discord.ButtonStyle.secondary)
 
         async def callback(self, interaction):
-            nonlocal clicks, multiplier, game_over
+            nonlocal clicks, multiplier, game_over, last_action
             if interaction.user.id != owner:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             if game_over:
@@ -4685,6 +4694,7 @@ async def crash(ctx, bet: str):
 
             clicks = next_click
             multiplier = CRASH_STEPS[clicks]["mult"]
+            last_action = time.time()
 
             if clicks >= CLICK_LIMIT:
                 self.disabled = True
@@ -4734,7 +4744,42 @@ async def crash(ctx, bet: str):
     view.add_item(Next())
     view.add_item(CashOut())
 
-    await ctx.send(embed=embed_update("🟣 Active"), view=view)
+    async def inactivity_watchdog():
+        nonlocal game_over, last_action, message
+        try:
+            while not game_over:
+                await asyncio.sleep(5)
+                remaining = inactivity_limit - (time.time() - last_action)
+                if remaining <= 0:
+                    game_over = True
+                    for child in view.children:
+                        child.disabled = True
+                    u["gems"] += amount
+                    save_data(data)
+                    add_history(ctx.author.id, {
+                        "game": "crash",
+                        "bet": amount,
+                        "result": "timeout",
+                        "earned": 0,
+                        "timestamp": time.time(),
+                    })
+                    try:
+                        if message:
+                            await message.edit(embed=embed_update("⏰ Inactivity — bet refunded."), view=view)
+                    except Exception:
+                        pass
+                    await release_active_game([owner])
+                    break
+                try:
+                    if message and not game_over:
+                        await message.edit(embed=embed_update("🟣 Active"), view=view)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    message = await ctx.send(embed=embed_update("🟣 Active"), view=view)
+    _watchdog_task = bot.loop.create_task(inactivity_watchdog())
 
 
 # --------------------------------------------------------------
