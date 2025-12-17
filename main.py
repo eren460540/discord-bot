@@ -4747,7 +4747,7 @@ async def crash(ctx, bet: str):
         nonlocal game_over, message
         try:
             while not game_over:
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
                 remaining = inactivity_limit - (time.time() - start_time)
                 if remaining <= 0:
                     game_over = True
@@ -5038,7 +5038,7 @@ async def mines(ctx, bet: str, mines: int = 3):
         nonlocal game_over, status_text, reward_on_end
         try:
             while not game_over:
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
                 remaining = inactivity_limit - (time.time() - start_time)
                 if remaining <= 0:
                     game_over = True
@@ -5327,7 +5327,7 @@ async def tower(ctx, bet: str):
         nonlocal game_over, earned_on_end, status_text
         try:
             while not game_over:
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
                 remaining = inactivity_limit - (time.time() - start_time)
                 if remaining <= 0:
                     game_over = True
@@ -5757,7 +5757,7 @@ async def blackjack(ctx, bet: str):
         nonlocal game_over, start_time
         try:
             while not game_over:
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
                 remaining = inactivity_limit - (time.time() - start_time)
                 if remaining <= 0:
                     game_over = True
