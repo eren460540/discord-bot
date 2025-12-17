@@ -158,6 +158,10 @@ PLAY_AGAIN_DISABLED_GAMES = {"coinflip", "cf", "match", "pvpcoinflip", "pvpcf", 
 active_games: dict[int, str] = {}
 active_games_lock = asyncio.Lock()
 
+# Track bets for games in progress so we can refund on forced stops
+active_game_bets: dict[int, dict[str, int]] = {}
+active_game_bets_lock = asyncio.Lock()
+
 WAGER_ROLE_TIERS = [
     (15_000_000_000, 1450864781258002525),
     (5_000_000_000, 1450864717693325483),
@@ -198,6 +202,30 @@ async def release_active_game(user_ids: list[int]):
         for uid in user_ids:
             active_games.pop(uid, None)
 
+    async with active_game_bets_lock:
+        for uid in user_ids:
+            active_game_bets.pop(uid, None)
+
+
+async def register_active_bet(user_ids: list[int], game_name: str, amount: int):
+    """Remember active bets so they can be refunded if games are force-stopped."""
+
+    if amount <= 0:
+        return
+
+    async with active_game_bets_lock:
+        for uid in user_ids:
+            active_game_bets[uid] = {"game": game_name, "bet": int(amount)}
+
+
+async def snapshot_active_bets():
+    """Return a list of active bet entries and clear the tracker."""
+
+    async with active_game_bets_lock:
+        entries = list(active_game_bets.items())
+        active_game_bets.clear()
+        return entries
+
 
 def active_game_blocked_message(conflicts: dict[int, str]) -> str:
     """Build a friendly message when a user already has an active game."""
@@ -210,6 +238,54 @@ def active_game_blocked_message(conflicts: dict[int, str]) -> str:
     return (
         "❌ You already have an active game in progress "
         f"(`{existing}`). Finish it before starting another."
+    )
+
+
+def skip_active_game_tracking(ctx: commands.Context) -> bool:
+    """Whether active-game locks should be ignored for this channel."""
+
+    try:
+        return ctx.channel and ctx.channel.category_id in DISABLED_CATEGORIES
+    except Exception:
+        return False
+
+
+@bot.command(name="stop")
+async def stop_active_games(ctx):
+    if ctx.author.id != OWNER_ID:
+        return await ctx.send("❌ Only the bot owner can stop all active games.")
+
+    refunds = await snapshot_active_bets()
+    async with active_games_lock:
+        cleared_slots = len(active_games)
+        active_games.clear()
+
+    total_refund = 0
+    refunded_users = 0
+    for uid, info in refunds:
+        bet_amount = int(info.get("bet", 0) or 0)
+        if bet_amount <= 0:
+            continue
+
+        ensure_user(uid)
+        data[str(uid)]["gems"] += bet_amount
+        total_refund += bet_amount
+        refunded_users += 1
+
+        add_history(uid, {
+            "game": info.get("game", "active_game"),
+            "bet": bet_amount,
+            "result": "stopped",
+            "earned": bet_amount,
+            "timestamp": time.time(),
+        })
+
+    save_data(data)
+
+    await ctx.send(
+        "⛔ All active games have been force-stopped. "
+        f"Released **{cleared_slots}** active slots and refunded **{refunded_users}** players "
+        f"for **{fmt(total_refund)}** gems."
     )
 
 
@@ -4220,13 +4296,20 @@ async def coinflip(ctx, bet: str, choice: str):
     if choice not in ["heads", "tails"]:
         return await ctx.send("❌ Choose `heads` or `tails`.")
 
-    success, conflicts = await claim_active_game([ctx.author.id], "coinflip")
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "coinflip")
     if not success:
         return await ctx.send(active_game_blocked_message(conflicts))
 
     try:
         u["gems"] -= amount
         save_data(data)
+
+        if not ignore_active:
+            await register_active_bet([ctx.author.id], "coinflip", amount)
 
         rig = consume_rig(u)
 
@@ -4299,7 +4382,11 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
     if chosen_side not in ["heads", "tails"]:
         return await ctx.send("❌ Choose `heads` or `tails`.")
 
-    success, conflicts = await claim_active_game([ctx.author.id], "pvp_coinflip")
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "pvp_coinflip")
     if not success:
         return await ctx.send(active_game_blocked_message(conflicts))
 
@@ -4375,6 +4462,9 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
             joiner_user["gems"] -= bet_amount
             save_data(data)
 
+            if not ignore_active:
+                await register_active_bet([self.requester_id, joiner_id], "pvp_coinflip", bet_amount)
+
             result = random.choice(["heads", "tails"])
             requester_side = chosen_side
             joiner_side = opposite
@@ -4446,11 +4536,12 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
             if joiner_data.get("gems", 0) < bet_amount:
                 return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
 
-            success, conflicts = await claim_active_game([interaction.user.id], "pvp_coinflip")
-            if not success:
-                return await interaction.response.send_message(
-                    active_game_blocked_message(conflicts), ephemeral=True
-                )
+            if not ignore_active:
+                success, conflicts = await claim_active_game([interaction.user.id], "pvp_coinflip")
+                if not success:
+                    return await interaction.response.send_message(
+                        active_game_blocked_message(conflicts), ephemeral=True
+                    )
 
             self._set_disabled(True)
             if self.message:
@@ -4488,12 +4579,19 @@ async def crash(ctx, bet: str):
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
-    success, conflicts = await claim_active_game([ctx.author.id], "crash")
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "crash")
     if not success:
         return await ctx.send(active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
     save_data(data)
+
+    if not ignore_active:
+        await register_active_bet([ctx.author.id], "crash", amount)
 
     rig = consume_rig(u)
 
@@ -4661,13 +4759,20 @@ async def slots(ctx, bet: str):
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
-    success, conflicts = await claim_active_game([ctx.author.id], "slots")
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "slots")
     if not success:
         return await ctx.send(active_game_blocked_message(conflicts))
 
     try:
         u["gems"] -= amount
         save_data(data)
+
+        if not ignore_active:
+            await register_active_bet([ctx.author.id], "slots", amount)
 
         rig = consume_rig(u)
 
@@ -4791,12 +4896,19 @@ async def mines(ctx, bet: str, mines: int = 3):
     if not 1 <= mines <= 15:
         return await ctx.send("❌ Mines must be between **1 and 15**.")
 
-    success, conflicts = await claim_active_game([ctx.author.id], "mines")
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "mines")
     if not success:
         return await ctx.send(active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
     save_data(data)
+
+    if not ignore_active:
+        await register_active_bet([ctx.author.id], "mines", amount)
 
     rig = consume_rig(u)  # 'bless', 'curse', or None
     owner = ctx.author.id
@@ -5012,12 +5124,19 @@ async def tower(ctx, bet: str):
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
-    success, conflicts = await claim_active_game([ctx.author.id], "tower")
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "tower")
     if not success:
         return await ctx.send(active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
     save_data(data)
+
+    if not ignore_active:
+        await register_active_bet([ctx.author.id], "tower", amount)
 
     rig = consume_rig(u)
 
@@ -5302,13 +5421,20 @@ async def blackjack(ctx, bet: str):
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
-    success, conflicts = await claim_active_game([ctx.author.id], "blackjack")
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "blackjack")
     if not success:
         return await ctx.send(active_game_blocked_message(conflicts))
 
     rig = consume_rig(u)
     u["gems"] -= amount
     save_data(data)
+
+    if not ignore_active:
+        await register_active_bet([ctx.author.id], "blackjack", amount)
 
     # Rigged: instant-looking game
     if rig in ("bless", "curse"):
@@ -5507,7 +5633,11 @@ async def match(ctx):
     BETTING_WINDOW = 20
     MATCH_DURATION = 90
 
-    success, conflicts = await claim_active_game([ctx.author.id], "match")
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "match")
     if not success:
         return await ctx.send(active_game_blocked_message(conflicts))
 
@@ -5667,6 +5797,9 @@ async def match(ctx):
 
             u["gems"] -= amount
             save_data(data)
+
+            if not ignore_active:
+                await register_active_bet([interaction.user.id], "match", int(amount))
 
             bets[uid] = {"choice": self.choice_key, "amount": int(amount)}
             await interaction.response.send_message(
@@ -5891,7 +6024,7 @@ async def match(ctx):
     result_embed.set_footer(text="Payout: 2.5x for correct predictions")
 
     await ctx.send(embed=result_embed)
-    await release_active_game([ctx.author.id])
+    await release_active_game([ctx.author.id] + [int(uid) for uid in bets.keys()])
 
 
 # --------------------------------------------------------------
@@ -7006,6 +7139,7 @@ async def helpadmin(ctx):
         value=(
             "**!backup** — Force a JSON backup upload\n"
             "**!membercount** — Show server stats\n"
+            "**!stop** — Force-stop and refund all active games (owner only)\n"
             "Automatic backups every 10 minutes."
         ),
         inline=False
