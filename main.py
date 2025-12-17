@@ -154,6 +154,10 @@ LOTTERY_BONUS = 0.10
 CODE_REWARD_GEMS = 100_000_000
 PLAY_AGAIN_DISABLED_GAMES = {"coinflip", "cf", "match", "pvpcoinflip", "pvpcf", "pvp_coinflip"}
 
+# Track currently active games to prevent concurrent sessions per user
+active_games: dict[int, str] = {}
+active_games_lock = asyncio.Lock()
+
 WAGER_ROLE_TIERS = [
     (15_000_000_000, 1450864781258002525),
     (5_000_000_000, 1450864717693325483),
@@ -167,6 +171,46 @@ WAGER_ROLE_ID_SET = {role_id for _, role_id in WAGER_ROLE_TIERS}
 #                       HELPERS
 # --------------------------------------------------------------
 
+
+
+async def claim_active_game(user_ids: list[int], game_name: str):
+    """Reserve an active game slot for the given users.
+
+    Returns (success, conflicts) where conflicts maps user_id -> game_name for
+    any users that already have a game in progress.
+    """
+
+    async with active_games_lock:
+        conflicts = {uid: active_games[uid] for uid in user_ids if uid in active_games}
+        if conflicts:
+            return False, conflicts
+
+        for uid in user_ids:
+            active_games[uid] = game_name
+
+        return True, {}
+
+
+async def release_active_game(user_ids: list[int]):
+    """Release active game slots for the given users."""
+
+    async with active_games_lock:
+        for uid in user_ids:
+            active_games.pop(uid, None)
+
+
+def active_game_blocked_message(conflicts: dict[int, str]) -> str:
+    """Build a friendly message when a user already has an active game."""
+
+    if not conflicts:
+        return "❌ You already have an active game in progress. Finish it before starting another."
+
+    # Show the first conflicting game for clarity.
+    _, existing = next(iter(conflicts.items()))
+    return (
+        "❌ You already have an active game in progress "
+        f"(`{existing}`). Finish it before starting another."
+    )
 
 
 async def fetch_roblox_avatar(username: str):
@@ -4176,51 +4220,58 @@ async def coinflip(ctx, bet: str, choice: str):
     if choice not in ["heads", "tails"]:
         return await ctx.send("❌ Choose `heads` or `tails`.")
 
-    u["gems"] -= amount
-    save_data(data)
+    success, conflicts = await claim_active_game([ctx.author.id], "coinflip")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
 
-    rig = consume_rig(u)
+    try:
+        u["gems"] -= amount
+        save_data(data)
 
-    if rig == "curse":
-        result = "tails" if choice == "heads" else "heads"
-    elif rig == "bless":
-        result = choice
-    else:
-        result = random.choice(["heads", "tails"])
+        rig = consume_rig(u)
 
-    if result == choice:
-        u["gems"] += amount * 2
-        profit = amount
-        res = "win"
-        title = "🪙 Coinflip — You Won!"
-        color = discord.Color.green()
-    else:
-        profit = -amount
-        res = "lose"
-        title = "🪙 Coinflip — You Lost"
-        color = discord.Color.red()
+        if rig == "curse":
+            result = "tails" if choice == "heads" else "heads"
+        elif rig == "bless":
+            result = choice
+        else:
+            result = random.choice(["heads", "tails"])
 
-    save_data(data)
+        if result == choice:
+            u["gems"] += amount * 2
+            profit = amount
+            res = "win"
+            title = "🪙 Coinflip — You Won!"
+            color = discord.Color.green()
+        else:
+            profit = -amount
+            res = "lose"
+            title = "🪙 Coinflip — You Lost"
+            color = discord.Color.red()
 
-    embed = discord.Embed(
-        title=title,
-        description=(
-            f"🎯 Your choice: **{choice}**\n"
-            f"🌀 Result: **{result}**\n"
-            f"💰 Net: **{fmt(profit)}** gems"
-        ),
-        color=color
-    )
-    embed.set_footer(text="Galaxy Coinflip • 50/50 in the void 🌌")
-    await ctx.send(embed=embed)
+        save_data(data)
 
-    add_history(ctx.author.id, {
-        "game": "coinflip",
-        "bet": amount,
-        "result": res,
-        "earned": profit,
-        "timestamp": time.time()
-    })
+        embed = discord.Embed(
+            title=title,
+            description=(
+                f"🎯 Your choice: **{choice}**\n"
+                f"🌀 Result: **{result}**\n"
+                f"💰 Net: **{fmt(profit)}** gems"
+            ),
+            color=color
+        )
+        embed.set_footer(text="Galaxy Coinflip • 50/50 in the void 🌌")
+        await ctx.send(embed=embed)
+
+        add_history(ctx.author.id, {
+            "game": "coinflip",
+            "bet": amount,
+            "result": res,
+            "earned": profit,
+            "timestamp": time.time()
+        })
+    finally:
+        await release_active_game([ctx.author.id])
 
 
 @bot.command(aliases=["pvpcf"])
@@ -4247,6 +4298,10 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
     chosen_side = side.lower()
     if chosen_side not in ["heads", "tails"]:
         return await ctx.send("❌ Choose `heads` or `tails`.")
+
+    success, conflicts = await claim_active_game([ctx.author.id], "pvp_coinflip")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
 
     opposite = "tails" if chosen_side == "heads" else "heads"
 
@@ -4287,12 +4342,14 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
                     await self.message.edit(view=self)
                 except Exception:
                     pass
+            await release_active_game([self.requester_id])
 
         async def finalize_match(self, interaction: discord.Interaction, joiner_id: int):
             requester_user = data[str(ctx.author.id)]
             joiner_user = data[str(joiner_id)]
 
             if requester_user["gems"] < bet_amount:
+                await release_active_game([self.requester_id, joiner_id])
                 self._set_disabled(False)
                 if self.message:
                     try:
@@ -4305,6 +4362,7 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
                     pass
                 return
             if joiner_user["gems"] < bet_amount:
+                await release_active_game([joiner_id])
                 self._set_disabled(False)
                 if self.message:
                     try:
@@ -4376,6 +4434,7 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
                 await interaction.response.edit_message(embed=result_embed, view=self)
             except Exception:
                 pass
+            await release_active_game([self.requester_id, joiner_id])
 
         @discord.ui.button(label="Join Coinflip", style=discord.ButtonStyle.primary)
         async def join_button(self, interaction: discord.Interaction, button: Button):
@@ -4386,6 +4445,12 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
             joiner_data = data[str(interaction.user.id)]
             if joiner_data.get("gems", 0) < bet_amount:
                 return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
+
+            success, conflicts = await claim_active_game([interaction.user.id], "pvp_coinflip")
+            if not success:
+                return await interaction.response.send_message(
+                    active_game_blocked_message(conflicts), ephemeral=True
+                )
 
             self._set_disabled(True)
             if self.message:
@@ -4422,6 +4487,10 @@ async def crash(ctx, bet: str):
         )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
+
+    success, conflicts = await claim_active_game([ctx.author.id], "crash")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
     save_data(data)
@@ -4494,6 +4563,7 @@ async def crash(ctx, bet: str):
             )
         except Exception:
             pass
+        await release_active_game([owner])
 
     class Next(Button):
         def __init__(self):
@@ -4561,6 +4631,7 @@ async def crash(ctx, bet: str):
                 )
             except Exception:
                 pass
+            await release_active_game([owner])
 
     view.add_item(Next())
     view.add_item(CashOut())
@@ -4590,104 +4661,110 @@ async def slots(ctx, bet: str):
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
 
-    u["gems"] -= amount
-    save_data(data)
+    success, conflicts = await claim_active_game([ctx.author.id], "slots")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
 
-    rig = consume_rig(u)
+    try:
+        u["gems"] -= amount
+        save_data(data)
 
-    symbols = ["🍒", "🍋", "⭐", "💎"]
+        rig = consume_rig(u)
 
-    def spin_row():
-        return [random.choice(symbols) for _ in range(4)]
+        symbols = ["🍒", "🍋", "⭐", "💎"]
 
-    def row_best_match(row):
-        counts = {}
-        for s in row:
-            counts[s] = counts.get(s, 0) + 1
-        best_sym = max(counts, key=counts.get)
-        return counts[best_sym], best_sym
+        def spin_row():
+            return [random.choice(symbols) for _ in range(4)]
 
-    # Base first row
-    row1 = spin_row()
+        def row_best_match(row):
+            counts = {}
+            for s in row:
+                counts[s] = counts.get(s, 0) + 1
+            best_sym = max(counts, key=counts.get)
+            return counts[best_sym], best_sym
 
-    if rig == "bless":
-        # Guaranteed winning line (at least 3 of a kind)
-        win_symbol = random.choice(symbols)
-        row2 = [win_symbol, win_symbol, win_symbol, random.choice(symbols)]
-        random.shuffle(row2)
-        row3 = spin_row()
-    elif rig == "curse":
-        # Guaranteed losing rows (no 3-of-a-kind)
-        def spin_lose_row():
-            while True:
-                r = spin_row()
-                m, _ = row_best_match(r)
-                if m < 3:
-                    return r
+        # Base first row
+        row1 = spin_row()
 
-        row2 = spin_lose_row()
-        row3 = spin_lose_row()
-    else:
-        # Normal random
-        row2 = spin_row()
-        row3 = spin_row()
+        if rig == "bless":
+            # Guaranteed winning line (at least 3 of a kind)
+            win_symbol = random.choice(symbols)
+            row2 = [win_symbol, win_symbol, win_symbol, random.choice(symbols)]
+            random.shuffle(row2)
+            row3 = spin_row()
+        elif rig == "curse":
+            # Guaranteed losing rows (no 3-of-a-kind)
+            def spin_lose_row():
+                while True:
+                    r = spin_row()
+                    m, _ = row_best_match(r)
+                    if m < 3:
+                        return r
 
-    r2_match, r2_sym = row_best_match(row2)
-    r3_match, r3_sym = row_best_match(row3)
+            row2 = spin_lose_row()
+            row3 = spin_lose_row()
+        else:
+            # Normal random
+            row2 = spin_row()
+            row3 = spin_row()
 
-    best_match = 0
-    best_symbol = None
-    for m, s in [(r2_match, r2_sym), (r3_match, r3_sym)]:
-        if m > best_match:
-            best_match = m
-            best_symbol = s
+        r2_match, r2_sym = row_best_match(row2)
+        r3_match, r3_sym = row_best_match(row3)
 
-    if best_match >= 3:
-        multiplier = 2.0
-        reward = amount * multiplier
-        profit = reward - amount
-        u["gems"] += reward
-        result_text = f"3x {best_symbol}! You win."
-        res = "win"
-    else:
-        multiplier = 0.0
-        reward = 0
-        profit = -amount
-        result_text = "No match."
-        res = "lose"
+        best_match = 0
+        best_symbol = None
+        for m, s in [(r2_match, r2_sym), (r3_match, r3_sym)]:
+            if m > best_match:
+                best_match = m
+                best_symbol = s
 
-    save_data(data)
+        if best_match >= 3:
+            multiplier = 2.0
+            reward = amount * multiplier
+            profit = reward - amount
+            u["gems"] += reward
+            result_text = f"3x {best_symbol}! You win."
+            res = "win"
+        else:
+            multiplier = 0.0
+            reward = 0
+            profit = -amount
+            result_text = "No match."
+            res = "lose"
 
-    grid = (
-        f"{row1[0]} {row1[1]} {row1[2]} {row1[3]}\n"
-        f"➡ {row2[0]} {row2[1]} {row2[2]} {row2[3]} ⬅\n"
-        f"➡ {row3[0]} {row3[1]} {row3[2]} {row3[3]} ⬅"
-    )
+        save_data(data)
 
-    embed = discord.Embed(
-        title="🎰 Galaxy Slots",
-        description=(
-            f"**Bet:** {fmt(amount)}\n"
-            f"**Multiplier:** {multiplier:.2f}x\n"
-            f"**Result:** {result_text}\n"
-            f"**Profit:** {fmt(profit)} gems\n"
-            f"📶 Ping: **{round(bot.latency * 1000)}ms**"
-        ),
-        color=galaxy_color()
-    )
-    embed.add_field(name="Reels", value=f"```{grid}```", inline=False)
-    embed.set_footer(text="Galaxy Slots • Spin among the stars 🌌")
-    play_again_view = build_play_again_view(ctx, "slots", amount, lambda: slots(ctx, bet))
-    await ctx.send(embed=embed, view=play_again_view)
+        grid = (
+            f"{row1[0]} {row1[1]} {row1[2]} {row1[3]}\n"
+            f"➡ {row2[0]} {row2[1]} {row2[2]} {row2[3]} ⬅\n"
+            f"➡ {row3[0]} {row3[1]} {row3[2]} {row3[3]} ⬅"
+        )
 
-    add_history(ctx.author.id, {
-        "game": "slots",
-        "bet": amount,
-        "result": res,
-        "earned": profit,
-        "timestamp": time.time()
-    })
+        embed = discord.Embed(
+            title="🎰 Galaxy Slots",
+            description=(
+                f"**Bet:** {fmt(amount)}\n"
+                f"**Multiplier:** {multiplier:.2f}x\n"
+                f"**Result:** {result_text}\n"
+                f"**Profit:** {fmt(profit)} gems\n"
+                f"📶 Ping: **{round(bot.latency * 1000)}ms**"
+            ),
+            color=galaxy_color(),
+        )
+        embed.add_field(name="Reels", value=f"```{grid}```", inline=False)
+        embed.set_footer(text="Galaxy Slots • Spin among the stars 🌌")
+        play_again_view = build_play_again_view(ctx, "slots", amount, lambda: slots(ctx, bet))
+        await ctx.send(embed=embed, view=play_again_view)
 
+        add_history(ctx.author.id, {
+            "game": "slots",
+            "bet": amount,
+            "result": res,
+            "earned": profit,
+            "timestamp": time.time()
+        })
+    finally:
+        await release_active_game([ctx.author.id])
 
 
 # --------------------------------------------------------------
@@ -4713,6 +4790,10 @@ async def mines(ctx, bet: str, mines: int = 3):
         return await ctx.send("❌ You don't have enough gems.")
     if not 1 <= mines <= 15:
         return await ctx.send("❌ Mines must be between **1 and 15**.")
+
+    success, conflicts = await claim_active_game([ctx.author.id], "mines")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
     save_data(data)
@@ -4815,6 +4896,7 @@ async def mines(ctx, bet: str, mines: int = 3):
             await interaction.response.edit_message(embed=embed_update(), view=view)
         except Exception:
             pass
+        await release_active_game([owner])
 
     async def handle_win(interaction, reason: str):
         nonlocal game_over, reward_on_end, status_text
@@ -4836,6 +4918,7 @@ async def mines(ctx, bet: str, mines: int = 3):
             await interaction.response.edit_message(embed=embed_update(), view=view)
         except Exception:
             pass
+        await release_active_game([owner])
 
     class Tile(Button):
         def __init__(self, index):
@@ -4928,6 +5011,10 @@ async def tower(ctx, bet: str):
         )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
+
+    success, conflicts = await claim_active_game([ctx.author.id], "tower")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
     save_data(data)
@@ -5060,6 +5147,7 @@ async def tower(ctx, bet: str):
                 })
                 attach_play_again()
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
+                await release_active_game([owner])
                 return
 
             grid[current_row][self.pos] = True
@@ -5091,6 +5179,7 @@ async def tower(ctx, bet: str):
                 })
                 attach_play_again()
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
+                await release_active_game([owner])
                 return
 
             await interaction.response.edit_message(embed=embed_update(False), view=view)
@@ -5129,6 +5218,7 @@ async def tower(ctx, bet: str):
                 })
                 attach_play_again()
                 await interaction.response.edit_message(embed=embed_update(True), view=view)
+                await release_active_game([owner])
                 return
 
             # BLESS: guarantee at least one safe row worth of profit
@@ -5159,6 +5249,7 @@ async def tower(ctx, bet: str):
             })
             attach_play_again()
             await interaction.response.edit_message(embed=embed_update(True), view=view)
+            await release_active_game([owner])
 
     view.add_item(Choice(0))
     view.add_item(Choice(1))
@@ -5210,6 +5301,10 @@ async def blackjack(ctx, bet: str):
         )
     if amount > u["gems"]:
         return await ctx.send("❌ You don't have enough gems.")
+
+    success, conflicts = await claim_active_game([ctx.author.id], "blackjack")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
 
     rig = consume_rig(u)
     u["gems"] -= amount
@@ -5270,6 +5365,7 @@ async def blackjack(ctx, bet: str):
             "earned": profit,
             "timestamp": time.time()
         })
+        await release_active_game([ctx.author.id])
         return
 
     # Normal interactive blackjack
@@ -5297,6 +5393,13 @@ async def blackjack(ctx, bet: str):
             e.set_footer(text="Hit or Stand?")
         return e
     view = View(timeout=40)
+
+    async def on_timeout():
+        for child in view.children:
+            child.disabled = True
+        await finish_game()
+
+    view.on_timeout = on_timeout
 
     async def finish_game(interaction=None):
         pv = hand_value(player)
@@ -5360,6 +5463,7 @@ async def blackjack(ctx, bet: str):
             await interaction.response.edit_message(embed=final_embed, view=play_again_view)
         else:
             await ctx.send(embed=final_embed, view=play_again_view)
+        await release_active_game([ctx.author.id])
 
     class Hit(Button):
         def __init__(self):
@@ -5402,6 +5506,10 @@ async def match(ctx):
 
     BETTING_WINDOW = 20
     MATCH_DURATION = 90
+
+    success, conflicts = await claim_active_game([ctx.author.id], "match")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
 
     team_colors = [
         ("🔴", "Red"), ("🔵", "Blue"), ("🟢", "Green"), ("🟡", "Yellow"),
@@ -5783,6 +5891,7 @@ async def match(ctx):
     result_embed.set_footer(text="Payout: 2.5x for correct predictions")
 
     await ctx.send(embed=result_embed)
+    await release_active_game([ctx.author.id])
 
 
 # --------------------------------------------------------------
