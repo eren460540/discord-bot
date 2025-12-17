@@ -5340,7 +5340,7 @@ async def match(ctx):
             await maybe_trigger_momentum_shift(team_key, elapsed)
 
     async def simulate_second(remaining: int):
-        nonlocal prob_a, prob_b, show_goal_probs
+        nonlocal prob_a, prob_b, show_goal_probs, momentum_active, momentum_team
         elapsed = MATCH_DURATION - remaining
 
         # Red card checks (pause match on trigger)
