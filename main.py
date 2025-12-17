@@ -4217,7 +4217,7 @@ async def coinflip(ctx, bet: str, choice: str):
     })
 
 
-@bot.command(aliases=["pvpcf", "pvpcoinflip"])
+@bot.command(aliases=["pvpcf"])
 async def pvpcoinflip(ctx, amount: str, side: str):
     ensure_user(ctx.author.id)
     requester = data[str(ctx.author.id)]
