@@ -4218,13 +4218,15 @@ async def coinflip(ctx, bet: str, choice: str):
 
 
 @bot.command(aliases=["pvpcf"])
-async def pvpcoinflip(ctx, amount: str, side: str):
+async def pvpcoinflip(ctx, amount: str, side: str | None = None):
     ensure_user(ctx.author.id)
     requester = data[str(ctx.author.id)]
 
     bet_amount = parse_amount(amount, requester["gems"], allow_all=False)
     if bet_amount is None or bet_amount <= 0:
         return await ctx.send("❌ Invalid bet.")
+    if side is None:
+        return await ctx.send("❌ Please choose a side: `heads` or `tails`.")
     if bet_amount < MIN_GAMBLE_AMOUNT:
         return await ctx.send(
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
