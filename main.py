@@ -5171,10 +5171,13 @@ async def match(ctx):
         )
         return embed
 
-    async def update_message(status: str, remaining: int, locked: bool, view):
+    async def safe_edit(embed, view):
+        """
+        Safely edit the match message without crashing the simulation if Discord
+        rejects the update (e.g., message deleted or transient HTTP issues).
+        """
         nonlocal match_message
 
-        embed = build_embed(status, remaining, locked)
         try:
             await match_message.edit(embed=embed, view=view)
         except discord.Forbidden:
@@ -5189,6 +5192,10 @@ async def match(ctx):
         except Exception as exc:
             # Unexpected issue; surface it so the match isn't silently stuck.
             await ctx.send(f"❌ Match update failed: {exc}")
+
+    async def update_message(status: str, remaining: int, locked: bool, view):
+        embed = build_embed(status, remaining, locked)
+        await safe_edit(embed, view)
 
     class BetModal(Modal):
         def __init__(self, choice_key: str, label: str):
@@ -5281,7 +5288,7 @@ async def match(ctx):
         )
         shift_embed.add_field(name="Boost", value="+0.5% goal chance for 5s", inline=False)
         shift_embed.add_field(name="Opposition", value="-0.5% goal chance (min 0.5%)", inline=False)
-        await match_message.edit(embed=shift_embed, view=bet_view)
+        await safe_edit(shift_embed, bet_view)
         await asyncio.sleep(1.5)
 
     async def handle_goal(team_key: str, remaining: int, elapsed: int):
@@ -5298,7 +5305,7 @@ async def match(ctx):
             color=galaxy_color(),
         )
         goal_embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}", inline=False)
-        await match_message.edit(embed=goal_embed, view=bet_view)
+        await safe_edit(goal_embed, bet_view)
         await asyncio.sleep(random.uniform(1.0, 2.0))
 
         var_eligible = (elapsed < 10 or remaining <= 10) and var_reviews_used < 3
@@ -5306,7 +5313,7 @@ async def match(ctx):
             var_reviews_used += 1
             log_event(elapsed, "VAR Review")
             var_embed = discord.Embed(title="📺 VAR CHECK IN PROGRESS…", color=discord.Color.blue())
-            await match_message.edit(embed=var_embed, view=bet_view)
+            await safe_edit(var_embed, bet_view)
             await asyncio.sleep(random.uniform(2.0, 3.0))
 
             stands = random.random() < 0.5
@@ -5324,7 +5331,7 @@ async def match(ctx):
                 color=discord.Color.blue(),
             )
             result_embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}")
-            await match_message.edit(embed=result_embed, view=bet_view)
+            await safe_edit(result_embed, bet_view)
             await asyncio.sleep(random.uniform(1.5, 2.5))
 
             goal_awarded = stands
@@ -5348,7 +5355,7 @@ async def match(ctx):
                 )
                 rc_embed.add_field(name="Red Cards", value=format_red_cards(), inline=False)
                 rc_embed.add_field(name="Score", value=f"{scores['A']} – {scores['B']}")
-                await match_message.edit(embed=rc_embed, view=bet_view)
+                await safe_edit(rc_embed, bet_view)
                 await asyncio.sleep(random.uniform(2.0, 3.0))
                 await update_message("🏃 Match in progress…", remaining, True, bet_view)
                 return
