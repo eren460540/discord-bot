@@ -7280,6 +7280,8 @@ async def help(ctx):
             "**!history** — Last 10 games\n"
             "**!stats** — Player stats\n"
             "**!leaderboard / !lb** — Top richest players\n"
+            "**!rank** — See your wager rank and next milestone\n"
+            "**!check [@user]** — Track free vs gambled gems ratio\n"
             "**!membercount** — Server statistics"
         ),
         inline=False
@@ -7290,8 +7292,7 @@ async def help(ctx):
         name="🎟 Events",
         value=(
             "**!guessthecolor amount** — Guess the color\n"
-            "**!guessthenumber amount** — Guess between 1–10\n"
-            "**!splitorsteal amount** — PvP Split-or-Steal"
+            "**!rainbow** — Send a rainbow spam (fun)"
         ),
         inline=False
     )
@@ -7396,10 +7397,37 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🛡 Moderation & Tools",
         value=(
-            "**!backup** — Force a JSON backup upload\n"
+            "**!savebackup** — Force a JSON backup upload\n"
+            "**!restorelatest** — Restore the newest backup from the backup channel\n"
+            "**!restorebackup** — Restore from an attached backup JSON\n"
+            "**!cleanhistory <time>** — Zero balances for inactive users (e.g., 30d)\n"
+            "**!robloxdupes** — List Roblox accounts linked to multiple Discord users\n"
+            "**!lockcat / !unlockcat <category_id>** — Disable/enable commands in a category\n"
+            "**!dm \"message\" \"roleID\"** — DM every human with a role\n"
             "**!membercount** — Show server stats\n"
             "**!stop** — Force-stop and refund all active games (owner only)\n"
             "Automatic backups every 10 minutes."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="✨ Rig Controls",
+        value=(
+            "**!bless <user_id> [amount/off]** — Guarantee wins for a user\n"
+            "**!curse <user_id> [amount/off]** — Force losses for a user\n"
+            "**!status** — View current bless/curse adjustments"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🎟 Admin Events & Giveaways",
+        value=(
+            "**!lottery <ticket_price> <duration>** — Launch a ticket lottery (+10% prize)\n"
+            "**!guessthenumber <prize>** — Run an infinite 1–10 guessing event\n"
+            "**!splitorsteal <prize>** — Two-player split-or-steal event\n"
+            "**!taco** — Broadcast the raining tacos song"
         ),
         inline=False
     )
