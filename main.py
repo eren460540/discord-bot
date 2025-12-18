@@ -10,6 +10,10 @@ import asyncio
 from datetime import datetime
 import aiohttp  # NEW: for Roblox API
 from discord.ui import Button, View, Modal, TextInput
+import tempfile
+from ytmusicapi import YTMusic
+import yt_dlp
+import shutil
 
 
 
@@ -144,6 +148,8 @@ loan_log_worker_started = False
 # --------------------------------------------------------------
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+ytmusic_client = YTMusic()
 
 # --------------------------------------------------------------
 #                         CONSTANTS
@@ -737,6 +743,124 @@ GALAXY_COLORS = [
 def galaxy_color():
     return random.choice(GALAXY_COLORS)
 
+
+def _normalize_text(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _parse_view_count(raw):
+    if raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        text = raw.replace(",", "").strip().upper()
+        multiplier = 1
+        if text.endswith("K"):
+            multiplier = 1_000
+            text = text[:-1]
+        elif text.endswith("M"):
+            multiplier = 1_000_000
+            text = text[:-1]
+        try:
+            return int(float(text) * multiplier)
+        except ValueError:
+            return 0
+    return 0
+
+
+def select_youtube_music_result(query: str):
+    try:
+        results = ytmusic_client.search(query, filter="songs", limit=10)
+    except Exception:
+        return None
+
+    best_entry = None
+    best_score = float("-inf")
+    normalized_query = _normalize_text(query)
+
+    for entry in results:
+        video_id = entry.get("videoId")
+        title = entry.get("title") or ""
+        artists = entry.get("artists") or []
+
+        if not video_id:
+            continue
+
+        normalized_title = _normalize_text(title)
+        artist_names = [a.get("name", "") for a in artists if a.get("name")]
+        normalized_artists = [_normalize_text(a) for a in artist_names]
+
+        score = 0
+
+        if normalized_query == normalized_title:
+            score += 80
+        elif normalized_query in normalized_title:
+            score += 40
+
+        for artist in normalized_artists:
+            if artist and artist in normalized_query:
+                score += 30
+
+        if entry.get("isOfficialAudio"):
+            score += 30
+        if entry.get("resultType") == "song":
+            score += 10
+
+        if "live" in normalized_title:
+            score -= 25
+
+        score += min(_parse_view_count(entry.get("views")) // 100_000, 20)
+
+        if score > best_score:
+            best_score = score
+            best_entry = {
+                "video_id": video_id,
+                "title": title,
+                "artists": ", ".join(artist_names) if artist_names else "Unknown Artist",
+            }
+
+    return best_entry
+
+
+async def download_youtube_audio(video_id: str, title: str) -> str | None:
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    loop = asyncio.get_event_loop()
+
+    def _download():
+        tmpdir = tempfile.mkdtemp()
+        safe_title = _normalize_text(title).replace(" ", "_") or "track"
+        output_template = os.path.join(tmpdir, f"{safe_title}.%(ext)s")
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": output_template,
+            "quiet": True,
+            "noplaylist": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            downloaded_path = ydl.prepare_filename(info)
+            base, _ = os.path.splitext(downloaded_path)
+            candidate_mp3 = f"{base}.mp3"
+            if os.path.exists(candidate_mp3):
+                final_path = candidate_mp3
+            else:
+                final_path = downloaded_path
+
+            final_name = os.path.basename(final_path)
+            destination = os.path.join(tmpdir, final_name)
+            os.replace(final_path, destination)
+            return destination
+
+    return await loop.run_in_executor(None, _download)
 
 def _loan_record(uid: str):
     ensure_user(uid)
@@ -7197,6 +7321,50 @@ async def tax(ctx, percent: float):
 
 
 # ==============================================================
+#                          MUSIC
+# ==============================================================
+@bot.command()
+async def play(ctx, *, name: str | None = None):
+    if not name:
+        await ctx.send("!play <song name>")
+        return
+
+    await ctx.trigger_typing()
+    result = select_youtube_music_result(name)
+
+    if not result:
+        await ctx.send("❌ No matching song found. Try a different name.")
+        return
+
+    try:
+        audio_path = await download_youtube_audio(result["video_id"], result["title"])
+    except Exception:
+        audio_path = None
+
+    if not audio_path or not os.path.exists(audio_path):
+        await ctx.send("❌ No matching song found. Try a different name.")
+        return
+
+    embed = discord.Embed(
+        title="Now Playing",
+        description=f"**{result['title']}**",
+        color=galaxy_color(),
+    )
+    embed.add_field(name="Artist", value=result["artists"], inline=True)
+    embed.add_field(name="Source", value="YouTube Music", inline=True)
+
+    file = discord.File(audio_path, filename=os.path.basename(audio_path))
+    try:
+        await ctx.send(embed=embed, file=file)
+    finally:
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+        dir_path = os.path.dirname(audio_path)
+        if dir_path and os.path.isdir(dir_path):
+            shutil.rmtree(dir_path, ignore_errors=True)
+
+
+# ==============================================================
 #                       HELP (PLAYER)
 # ==============================================================
 @bot.command()
@@ -7205,6 +7373,16 @@ async def help(ctx):
         title="🌌 Galaxy Casino — Player Commands",
         description="Use `!command` to play.\nHere are your main commands:",
         color=galaxy_color()
+    )
+
+    # ---------------- General ----------------
+    embed.add_field(
+        name="🧭 General",
+        value=(
+            "**!help** — Show this command list\n"
+            "**!play <song name>** — Search YouTube Music and play the best matching song"
+        ),
+        inline=False
     )
 
     # ---------------- Economy ----------------
@@ -7240,6 +7418,13 @@ async def help(ctx):
             "**!match** — 90-second live football match with Team A / Team B / Draw bets (2.5x payout on correct picks)\n"
             "Minimum bet: **1,000,000** gems • Maximum bet: **200,000,000** gems"
         ),
+        inline=False
+    )
+
+    # ---------------- Music ----------------
+    embed.add_field(
+        name="🎵 Music",
+        value="**!play <song name>** — Search YouTube Music and play the best matching song",
         inline=False
     )
 
