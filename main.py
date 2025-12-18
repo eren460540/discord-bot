@@ -7329,21 +7329,21 @@ async def play(ctx, *, name: str | None = None):
         await ctx.send("!play <song name>")
         return
 
-    await ctx.trigger_typing()
-    result = select_youtube_music_result(name)
+    async with ctx.typing():
+        result = select_youtube_music_result(name)
 
-    if not result:
-        await ctx.send("❌ No matching song found. Try a different name.")
-        return
+        if not result:
+            await ctx.send("❌ No matching song found. Try a different name.")
+            return
 
-    try:
-        audio_path = await download_youtube_audio(result["video_id"], result["title"])
-    except Exception:
-        audio_path = None
+        try:
+            audio_path = await download_youtube_audio(result["video_id"], result["title"])
+        except Exception:
+            audio_path = None
 
-    if not audio_path or not os.path.exists(audio_path):
-        await ctx.send("❌ No matching song found. Try a different name.")
-        return
+        if not audio_path or not os.path.exists(audio_path):
+            await ctx.send("❌ No matching song found. Try a different name.")
+            return
 
     embed = discord.Embed(
         title="Now Playing",
