@@ -827,11 +827,36 @@ async def download_youtube_audio(video_id: str, title: str) -> str | None:
     url = f"https://www.youtube.com/watch?v={video_id}"
     loop = asyncio.get_event_loop()
 
+    def _run_download(ydl_opts, tmpdir):
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            downloaded_path = ydl.prepare_filename(info)
+
+            # Prefer the post-processed file if one was produced (e.g., MP3)
+            base, _ = os.path.splitext(downloaded_path)
+            candidate_mp3 = f"{base}.mp3"
+            final_path = candidate_mp3 if os.path.exists(candidate_mp3) else downloaded_path
+
+            if not os.path.exists(final_path):
+                return None
+
+            final_name = os.path.basename(final_path)
+            destination = os.path.join(tmpdir, final_name)
+
+            # Move into a predictable location; if it's already there this is a no-op
+            if final_path != destination:
+                os.replace(final_path, destination)
+
+            return destination
+
     def _download():
         tmpdir = tempfile.mkdtemp()
         safe_title = _normalize_text(title).replace(" ", "_") or "track"
         output_template = os.path.join(tmpdir, f"{safe_title}.%(ext)s")
-        ydl_opts = {
+
+        # First, try to produce an MP3 (requires ffmpeg). If that fails, fall back to the
+        # best available audio-only format so the command still succeeds.
+        mp3_opts = {
             "format": "bestaudio/best",
             "outtmpl": output_template,
             "quiet": True,
@@ -845,20 +870,17 @@ async def download_youtube_audio(video_id: str, title: str) -> str | None:
             ],
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            downloaded_path = ydl.prepare_filename(info)
-            base, _ = os.path.splitext(downloaded_path)
-            candidate_mp3 = f"{base}.mp3"
-            if os.path.exists(candidate_mp3):
-                final_path = candidate_mp3
-            else:
-                final_path = downloaded_path
+        fallback_opts = {
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "outtmpl": output_template,
+            "quiet": True,
+            "noplaylist": True,
+        }
 
-            final_name = os.path.basename(final_path)
-            destination = os.path.join(tmpdir, final_name)
-            os.replace(final_path, destination)
-            return destination
+        try:
+            return _run_download(mp3_opts, tmpdir)
+        except Exception:
+            return _run_download(fallback_opts, tmpdir)
 
     return await loop.run_in_executor(None, _download)
 
