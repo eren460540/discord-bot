@@ -4522,7 +4522,7 @@ class HiLoSession:
         self.view = HiLoView(self)
         self.message: discord.Message | None = None
         self.info_unlocked = False
-        self.info_fee = int(self.amount * 0.25)
+        self.info_fee_rate = 0.25
 
     def _draw_card(self, allowed_values: list[int] | None = None) -> int:
         pool: list[int] = []
@@ -4595,8 +4595,9 @@ class HiLoSession:
         if final and final_card is not None:
             description += f"\n🏁 Final Card: **{_hilo_card_label(final_card)}**"
         if self.info_unlocked:
+            estimated_fee = int(payout * self.info_fee_rate)
             description += (
-                f"\n🔍 Info Unlocked: **Yes** (fee **{fmt(self.info_fee)}** deducted from final payout)"
+                f"\n🔍 Info Unlocked: **Yes** (≈**{fmt(estimated_fee)}** deducted from final payout)"
             )
         if status:
             description += f"\n\n{status}"
@@ -4696,33 +4697,30 @@ class HiLoSession:
         except Exception:
             pass
 
-    async def show_info(self, interaction: discord.Interaction):
-        if self.ended:
-            return await interaction.response.send_message("❌ Game already ended.", ephemeral=True)
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
-
-        unlocked_now = False
-        if not self.info_unlocked:
-            self.info_unlocked = True
-            unlocked_now = True
-            for child in self.view.children:
-                if isinstance(child, HiLoView.InfoButton):
-                    child.label = "📊 View Info"
-
+    async def _send_info_embed(self, interaction: discord.Interaction, *, unlocked_now: bool = False):
         higher_prob = self._success_probability("higher") * 100
         lower_prob = self._success_probability("lower") * 100
+        tie_prob = 100 - higher_prob - lower_prob
+
         higher_mult = self._round_multiplier("higher")
         lower_mult = self._round_multiplier("lower")
 
         lines = []
         if unlocked_now:
             lines.append(
-                f"🔓 Info unlocked for **{fmt(self.info_fee)}**. The fee will be deducted from your final payout."
+                "🔓 Info unlocked! Your final cashout will be reduced by **25%** — better odds insights for a stronger finish."
             )
         lines.append(f"📦 Cards remaining: **{self._remaining_cards()}**")
-        lines.append(f"🔼 Higher chance: **{higher_prob:.2f}%** | Multiplier: **{higher_mult:.2f}x**")
-        lines.append(f"🔽 Lower chance: **{lower_prob:.2f}%** | Multiplier: **{lower_mult:.2f}x**")
+        lines.append(
+            f"🔼 Higher chance: **{higher_prob:.2f}%** | Multiplier: **{higher_mult:.2f}x**"
+        )
+        lines.append(
+            f"🔽 Lower chance: **{lower_prob:.2f}%** | Multiplier: **{lower_mult:.2f}x**"
+        )
+        lines.append(f"⚖️ Tie chance: **{max(tie_prob, 0):.2f}%** (tie loses)")
+        lines.append(
+            f"💸 Current cashout after fee: **{fmt(max(int(self.amount * self.multiplier * (1 - self.info_fee_rate)), 0))}**"
+        )
 
         embed = discord.Embed(
             title="🔍 Hi-Lo Insights",
@@ -4739,6 +4737,65 @@ class HiLoSession:
                 await self.message.edit(view=self.view)
         except Exception:
             pass
+
+    async def _unlock_info(self, interaction: discord.Interaction):
+        if not self.info_unlocked:
+            self.info_unlocked = True
+            for child in self.view.children:
+                if isinstance(child, HiLoView.InfoButton):
+                    child.label = "📊 View Info"
+        await self._send_info_embed(interaction, unlocked_now=True)
+
+    async def show_info(self, interaction: discord.Interaction):
+        if self.ended:
+            return await interaction.response.send_message("❌ Game already ended.", ephemeral=True)
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+
+        if not self.info_unlocked:
+            class InfoConfirmView(View):
+                def __init__(self, session: "HiLoSession"):
+                    super().__init__(timeout=40)
+                    self.session = session
+
+                async def interaction_check(self, inter: discord.Interaction, /) -> bool:
+                    if inter.user.id != self.session.user_id:
+                        await inter.response.send_message("❌ Not your game!", ephemeral=True)
+                        return False
+                    return True
+
+            view = InfoConfirmView(self)
+
+            class Confirm(Button):
+                def __init__(self):
+                    super().__init__(label="Unlock Insights (25% fee)", style=discord.ButtonStyle.success)
+
+                async def callback(self, inter: discord.Interaction):
+                    await self.view.session._unlock_info(inter)
+
+            class Cancel(Button):
+                def __init__(self):
+                    super().__init__(label="Nevermind", style=discord.ButtonStyle.secondary)
+
+                async def callback(self, inter: discord.Interaction):
+                    await inter.response.send_message("ℹ️ Info unlock canceled.", ephemeral=True)
+
+            view.add_item(Confirm())
+            view.add_item(Cancel())
+
+            confirm_embed = discord.Embed(
+                title="🔐 Unlock Hi-Lo Insights?",
+                description=(
+                    "Access live odds and multipliers with real-time accuracy. Unlocking costs **25% of your final cashout**"
+                    " (never your bet) and is usually worth it for smarter decisions."
+                ),
+                color=galaxy_color(),
+            )
+
+            await interaction.response.send_message(embed=confirm_embed, view=view, ephemeral=True)
+            return
+
+        await self._send_info_embed(interaction)
 
     async def cash_out(self, interaction: discord.Interaction):
         if self.ended:
@@ -4802,7 +4859,7 @@ class HiLoSession:
         fee_applied = 0
         final_payout = payout
         if self.info_unlocked:
-            fee_applied = self.info_fee
+            fee_applied = int(payout * self.info_fee_rate)
             final_payout = max(payout - fee_applied, 0)
             status += f"\n🔍 Info unlock fee: **{fmt(fee_applied)}** deducted from payout."
 
@@ -4906,7 +4963,7 @@ def _build_hilo_help_embed() -> discord.Embed:
         "• Bless/Curse rigs override luck with forced wins or losses.\n"
         "• Use the 💸 Cash Out button anytime to lock in your current payout.\n"
         "• Cards are drawn from a single deck — once a value appears, it's removed from future odds.\n"
-        "• Pay 25% of your original bet with 🔍 Unlock Info to reveal live odds and multipliers.\n"
+        "• 🔍 Unlock Info asks for confirmation and then reduces your final cashout by **25%** (not your bet) in exchange for precise odds.\n"
         "• If the next card matches your current card, it's an automatic loss."
     )
 
