@@ -4468,6 +4468,7 @@ class HiLoView(View):
         self.session = session
         self.add_item(self.HiLoButton("higher", "🔼 Higher", discord.ButtonStyle.success))
         self.add_item(self.HiLoButton("lower", "🔽 Lower", discord.ButtonStyle.danger))
+        self.add_item(self.CashOutButton())
 
     class HiLoButton(Button):
         def __init__(self, direction: str, label: str, style: discord.ButtonStyle):
@@ -4476,6 +4477,13 @@ class HiLoView(View):
 
         async def callback(self, interaction: discord.Interaction):
             await self.view.session.handle_guess(self.direction, interaction)
+
+    class CashOutButton(Button):
+        def __init__(self):
+            super().__init__(label="💸 Cash Out", style=discord.ButtonStyle.primary)
+
+        async def callback(self, interaction: discord.Interaction):
+            await self.view.session.cash_out(interaction)
 
 
 class HiLoExit(Button):
@@ -4625,6 +4633,23 @@ class HiLoSession:
         except Exception:
             pass
 
+    async def cash_out(self, interaction: discord.Interaction):
+        if self.ended:
+            return await interaction.response.send_message("❌ Game already ended.", ephemeral=True)
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+
+        payout = int(self.amount * self.multiplier)
+        status = f"💸 Cashed out at **{self.multiplier:.2f}x**."
+        await self._end_game(status, payout=payout, final_card=self.current_card)
+
+        try:
+            await interaction.response.edit_message(
+                embed=self._build_embed(status, True, self.current_card), view=self._end_view()
+            )
+        except Exception:
+            pass
+
     async def stop_via_command(self, ctx):
         if self.ended:
             return await ctx.send("ℹ️ Your Hi-Lo game already ended.")
@@ -4692,6 +4717,104 @@ class HiLoSession:
             view.add_item(play_again)
         view.add_item(HiLoExit())
         return view
+
+
+def _hilo_is_guaranteed_value(card: int, prediction: str) -> bool:
+    return (card == 1 and prediction == "higher") or (card == 13 and prediction == "lower")
+
+
+def _hilo_is_impossible_value(card: int, prediction: str) -> bool:
+    return (card == 1 and prediction == "lower") or (card == 13 and prediction == "higher")
+
+
+def _hilo_success_rate(card: int, prediction: str) -> float:
+    if _hilo_is_guaranteed_value(card, prediction):
+        return 1.0
+    if _hilo_is_impossible_value(card, prediction):
+        return 0.0
+    wins = 13 - card if prediction == "higher" else card - 1
+    return wins / 13
+
+
+def _hilo_preview_multiplier(card: int, prediction: str) -> float:
+    if _hilo_is_guaranteed_value(card, prediction):
+        return HILO_GUARANTEED_MULTIPLIER
+    losing = card if prediction == "higher" else 14 - card
+    hardness = losing / 12
+    return 1 + (hardness * 1.5)
+
+
+def _hilo_card_table() -> str:
+    face_map = {1: "A", 11: "J", 12: "Q", 13: "K"}
+    lines = []
+    for card in range(1, 14):
+        face = face_map.get(card, str(card))
+
+        higher_rate = _hilo_success_rate(card, "higher")
+        lower_rate = _hilo_success_rate(card, "lower")
+
+        def format_side(rate: float, prediction: str) -> str:
+            if _hilo_is_impossible_value(card, prediction):
+                return "0% (Impossible)"
+            multiplier = _hilo_preview_multiplier(card, prediction)
+            if _hilo_is_guaranteed_value(card, prediction):
+                return f"100% (Guaranteed {multiplier:.2f}x)"
+            return f"{rate * 100:5.1f}% (~{multiplier:.2f}x)"
+
+        higher_text = format_side(higher_rate, "higher")
+        lower_text = format_side(lower_rate, "lower")
+        lines.append(f"{face:>2}: Higher {higher_text:<24} | Lower {lower_text}")
+
+    return "\n".join(lines)
+
+
+def _build_hilo_help_embed() -> discord.Embed:
+    description = (
+        "Welcome to Galaxy Hi-Lo! Start with a random card, choose **Higher** or **Lower**, "
+        "and climb your multiplier with every correct guess. Ties lose, so aim above or below.\n\n"
+        "**Key rules**\n"
+        "• Ace guessing higher and King guessing lower are guaranteed wins (1.05x).\n"
+        "• Making an impossible prediction instantly loses (Ace→Lower or King→Higher).\n"
+        "• Bless/Curse rigs override luck with forced wins or losses.\n"
+        "• Use the 💸 Cash Out button anytime to lock in your current payout.\n"
+        "• If the next card matches your current card, it's an automatic loss."
+    )
+
+    embed = discord.Embed(
+        title="♦️ Galaxy Hi-Lo Guide", description=description, color=galaxy_color()
+    )
+
+    embed.add_field(
+        name="Card odds & round multipliers",
+        value=f"```\n{_hilo_card_table()}\n```",
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Pro tips",
+        value=(
+            "• Odds are based on a 13-card spread with no deck exhaustion.\n"
+            "• Riskier calls (fewer winning cards) pay higher round multipliers.\n"
+            "• Cashing out pays **bet × current multiplier** — perfect for banking big streaks."
+        ),
+        inline=False,
+    )
+
+    return embed
+
+
+@bot.command()
+async def hilocards(ctx):
+    """Show Hi-Lo odds, multipliers, and gameplay tips."""
+
+    await ctx.send(embed=_build_hilo_help_embed())
+
+
+@bot.command()
+async def hilohelp(ctx):
+    """Alias for !hilocards so players can quickly learn Hi-Lo."""
+
+    await ctx.send(embed=_build_hilo_help_embed())
 
 
 @bot.command()
@@ -7759,6 +7882,7 @@ async def help(ctx):
             "**!mines amount [mines]** — Mines game\n"
             "**!tower amount** — 10-floor tower\n"
             "**!hilo amount** — Classic Hi-Lo with multipliers\n"
+            "**!hilohelp** — Hi-Lo odds, payouts, and cash-out guide\n"
             "**!crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses.\n"
             "**!match** — 90-second live football match with Team A / Team B / Draw bets (2.5x payout on correct picks)\n"
             "Minimum bet: **1,000,000** gems • Maximum bet: **200,000,000** gems"
