@@ -29,7 +29,17 @@ DISABLED_CATEGORIES = {1431610646654488661}
 # Channel used for JSON backups
 BACKUP_CHANNEL_ID = 1431610647921295451
 
-GAMBLE_GAMES = ["slots", "mines", "tower", "coinflip", "blackjack", "crash", "match", "pvp_coinflip"]
+GAMBLE_GAMES = [
+    "slots",
+    "mines",
+    "tower",
+    "coinflip",
+    "blackjack",
+    "crash",
+    "match",
+    "pvp_coinflip",
+    "hilo",
+]
 
 
 
@@ -159,6 +169,7 @@ MIN_GAMBLE_AMOUNT = 1_000_000
 LOTTERY_BONUS = 0.10
 CODE_REWARD_GEMS = 100_000_000
 PLAY_AGAIN_DISABLED_GAMES = {"coinflip", "cf", "match", "pvpcoinflip", "pvpcf", "pvp_coinflip"}
+HILO_GUARANTEED_MULTIPLIER = 1.05
 
 # Track currently active games to prevent concurrent sessions per user
 active_games: dict[int, str] = {}
@@ -167,6 +178,9 @@ active_games_lock = asyncio.Lock()
 # Track bets for games in progress so we can refund on forced stops
 active_game_bets: dict[int, dict[str, int]] = {}
 active_game_bets_lock = asyncio.Lock()
+
+# Track active Hi-Lo sessions for per-user stop handling
+hilo_sessions: dict[int, "HiLoSession"] = {}
 
 WAGER_ROLE_TIERS = [
     (15_000_000_000, 1450864781258002525),
@@ -259,7 +273,11 @@ def skip_active_game_tracking(ctx: commands.Context) -> bool:
 @bot.command(name="stop")
 async def stop_active_games(ctx):
     if ctx.author.id != OWNER_ID:
-        return await ctx.send("❌ Only the bot owner can stop all active games.")
+        session = hilo_sessions.get(ctx.author.id)
+        if not session:
+            return await ctx.send("❌ You don't have an active Hi-Lo game.")
+        await session.stop_via_command(ctx)
+        return
 
     refunds = await snapshot_active_bets()
     async with active_games_lock:
@@ -285,6 +303,11 @@ async def stop_active_games(ctx):
             "earned": bet_amount,
             "timestamp": time.time(),
         })
+
+    # Shut down any active Hi-Lo sessions to prevent further interaction after refunds
+    sessions = list(hilo_sessions.values())
+    for session in sessions:
+        await session.force_terminate()
 
     save_data(data)
 
@@ -656,7 +679,17 @@ def _mark_withdraw_used(uid: str, kind: str, amount: int):
 
 
 FREE_SOURCES = {"daily", "work", "invite_reward", "admin_give", "dropbox"}
-GAMBLE_GAMES = {"coinflip", "slots", "mines", "tower", "blackjack", "crash", "match", "pvp_coinflip"}
+GAMBLE_GAMES = {
+    "coinflip",
+    "slots",
+    "mines",
+    "tower",
+    "blackjack",
+    "crash",
+    "match",
+    "pvp_coinflip",
+    "hilo",
+}
 ACHIEVEMENT_DEFS = {
     "first_loan": {
         "emoji": "🌌",
@@ -4418,8 +4451,296 @@ async def gift(ctx, member: discord.Member, amount: str):
 
 
 # --------------------------------------------------------------
+#                      HI-LO
+# --------------------------------------------------------------
+
+
+def _hilo_card_label(value: int) -> str:
+    faces = {1: "A", 11: "J", 12: "Q", 13: "K"}
+    label = faces.get(value, str(value))
+    return f"{label} ({value})"
+
+
+class HiLoView(View):
+    def __init__(self, session: "HiLoSession"):
+        super().__init__(timeout=None)
+        self.session = session
+        self.add_item(self.HiLoButton("higher", "🔼 Higher", discord.ButtonStyle.success))
+        self.add_item(self.HiLoButton("lower", "🔽 Lower", discord.ButtonStyle.danger))
+
+    class HiLoButton(Button):
+        def __init__(self, direction: str, label: str, style: discord.ButtonStyle):
+            super().__init__(label=label, style=style)
+            self.direction = direction
+
+        async def callback(self, interaction: discord.Interaction):
+            await self.view.session.handle_guess(self.direction, interaction)
+
+
+class HiLoExit(Button):
+    def __init__(self):
+        super().__init__(label="Exit", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        for child in self.view.children:
+            child.disabled = True
+        try:
+            await interaction.response.edit_message(view=self.view)
+        except Exception:
+            pass
+
+
+class HiLoSession:
+    def __init__(self, ctx, amount: int, bet_input: str, rig: str | None):
+        self.ctx = ctx
+        self.user_id = ctx.author.id
+        self.amount = int(amount)
+        self.bet_input = bet_input
+        self.rig = rig
+        self.current_card = random.randint(1, 13)
+        self.last_draw: int | None = None
+        self.multiplier = 1.0
+        self.ended = False
+        self.view = HiLoView(self)
+        self.message: discord.Message | None = None
+
+    # -------------------- Card + odds helpers --------------------
+    def _losing_cards(self, prediction: str) -> list[int]:
+        if prediction == "higher":
+            return list(range(1, self.current_card + 1))
+        return list(range(self.current_card, 14))
+
+    def _winning_cards(self, prediction: str) -> list[int]:
+        if prediction == "higher":
+            return list(range(self.current_card + 1, 14))
+        return list(range(1, self.current_card))
+
+    def _hardness(self, prediction: str) -> tuple[float, int]:
+        losing = len(self._losing_cards(prediction))
+        hardness = losing / 12
+        return hardness, losing
+
+    def _round_multiplier(self, prediction: str) -> float:
+        hardness, _ = self._hardness(prediction)
+        return 1 + (hardness * 1.5)
+
+    def _is_impossible(self, prediction: str) -> bool:
+        return (
+            (self.current_card == 1 and prediction == "lower")
+            or (self.current_card == 13 and prediction == "higher")
+        )
+
+    def _is_guaranteed(self, prediction: str) -> bool:
+        return (
+            (self.current_card == 1 and prediction == "higher")
+            or (self.current_card == 13 and prediction == "lower")
+        )
+
+    # -------------------- Game flow --------------------
+    async def start(self):
+        hilo_sessions[self.user_id] = self
+        embed = self._build_embed("Make your prediction!")
+        self.message = await self.ctx.send(embed=embed, view=self.view)
+
+    def _build_embed(self, status: str, final: bool = False, final_card: int | None = None, payout_override: int | None = None):
+        payout = payout_override if payout_override is not None else int(self.amount * self.multiplier)
+        description = (
+            f"💵 Bet: **{fmt(self.amount)}**\n"
+            f"🔥 Multiplier: **{self.multiplier:.2f}x**\n"
+            f"💰 Payout: **{fmt(payout)}**\n"
+            f"🃏 Current Card: **{_hilo_card_label(self.current_card)}**"
+        )
+        if self.last_draw is not None:
+            description += f"\n🎴 Last Draw: **{_hilo_card_label(self.last_draw)}**"
+        if final and final_card is not None:
+            description += f"\n🏁 Final Card: **{_hilo_card_label(final_card)}**"
+        if status:
+            description += f"\n\n{status}"
+
+        title = f"♦️ Galaxy Hi-Lo | {self.ctx.author.name}"
+        color = galaxy_color()
+        return discord.Embed(title=title, description=description, color=color)
+
+    async def handle_guess(self, prediction: str, interaction: discord.Interaction):
+        if self.ended:
+            return await interaction.response.send_message("❌ Game already ended.", ephemeral=True)
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+
+        status = ""
+        next_card = self.current_card
+        round_multiplier = None
+        result = ""
+
+        if self._is_impossible(prediction):
+            result = "lose"
+            status = "❌ Impossible prediction — automatic loss."
+        elif self._is_guaranteed(prediction):
+            result = "win"
+            round_multiplier = HILO_GUARANTEED_MULTIPLIER
+            status = "✅ Guaranteed success."
+            next_card = random.choice(self._winning_cards(prediction))
+        elif self.rig == "curse":
+            result = "lose"
+            next_card = random.choice(self._losing_cards(prediction))
+            status = "☠️ You were cursed — prediction failed."
+        elif self.rig == "bless":
+            result = "win"
+            round_multiplier = self._round_multiplier(prediction)
+            winners = self._winning_cards(prediction)
+            next_card = random.choice(winners) if winners else self.current_card
+            status = "✨ Blessing ensured your success."
+        else:
+            next_card = random.randint(1, 13)
+            if (prediction == "higher" and next_card > self.current_card) or (
+                prediction == "lower" and next_card < self.current_card
+            ):
+                result = "win"
+                round_multiplier = self._round_multiplier(prediction)
+                status = "✅ Correct prediction!"
+            elif next_card == self.current_card:
+                result = "lose"
+                status = "⚖️ Equal card — automatic loss."
+            else:
+                result = "lose"
+                status = "❌ Wrong prediction."
+
+        self.last_draw = next_card
+
+        if result == "win":
+            round_multiplier = round_multiplier or self._round_multiplier(prediction)
+            self.multiplier *= round_multiplier
+            self.current_card = next_card
+            status += f" Drew **{_hilo_card_label(next_card)}**."
+            try:
+                await interaction.response.edit_message(embed=self._build_embed(status), view=self.view)
+            except Exception:
+                pass
+            return
+
+        await self._end_game(status + f" Drew **{_hilo_card_label(next_card)}**.", payout=0, final_card=next_card)
+        try:
+            await interaction.response.edit_message(embed=self._build_embed(status, True, next_card), view=self._end_view())
+        except Exception:
+            pass
+
+    async def stop_via_command(self, ctx):
+        if self.ended:
+            return await ctx.send("ℹ️ Your Hi-Lo game already ended.")
+        payout = int(self.amount * self.multiplier)
+        await self._end_game(f"⛔ Stopped via !stop. Payout: **{fmt(payout)}**", payout=payout)
+        try:
+            if self.message:
+                await self.message.edit(embed=self._build_embed("Game stopped.", True, self.current_card), view=self._end_view())
+        except Exception:
+            pass
+        await ctx.send(f"✅ Stopped your Hi-Lo game. You received **{fmt(payout)}** gems.")
+
+    async def force_terminate(self):
+        if self.ended:
+            return
+        self.ended = True
+        hilo_sessions.pop(self.user_id, None)
+        try:
+            if self.message:
+                await self.message.edit(
+                    embed=self._build_embed(
+                        "⛔ Game stopped. Your wager was refunded.", True, self.current_card, payout_override=0
+                    ),
+                    view=self._end_view(),
+                )
+        except Exception:
+            pass
+        await release_active_game([self.user_id])
+
+    async def _end_game(self, status: str, payout: int, final_card: int | None = None):
+        if self.ended:
+            return
+        self.ended = True
+        hilo_sessions.pop(self.user_id, None)
+        ensure_user(self.user_id)
+        user = data[str(self.user_id)]
+        user["gems"] += payout
+        save_data(data)
+
+        profit = payout - self.amount
+        add_history(
+            self.user_id,
+            {
+                "game": "hilo",
+                "bet": self.amount,
+                "result": "win" if payout > 0 else "lose",
+                "earned": profit,
+                "timestamp": time.time(),
+            },
+        )
+        await release_active_game([self.user_id])
+
+        if self.message:
+            try:
+                await self.message.edit(embed=self._build_embed(status, True, final_card), view=self._end_view())
+            except Exception:
+                pass
+
+    def _end_view(self):
+        view = View(timeout=None)
+        play_again = create_play_again_button(
+            self.ctx, "hilo", self.amount, lambda: globals()["hilo"](self.ctx, str(int(self.amount)))
+        )
+        if play_again:
+            view.add_item(play_again)
+        view.add_item(HiLoExit())
+        return view
+
+
+@bot.command()
+async def hilo(ctx, bet: str):
+    ensure_user(ctx.author.id)
+    u = data[str(ctx.author.id)]
+
+    amount = parse_amount(bet, u["gems"], allow_all=True)
+    if amount is None or amount <= 0:
+        return await ctx.send("❌ Invalid bet.")
+    amount = int(amount)
+    if amount < MIN_GAMBLE_AMOUNT:
+        return await ctx.send(
+            f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
+        )
+    if amount > MAX_BET:
+        return await ctx.send(
+            f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
+        )
+    if amount > u.get("gems", 0):
+        return await ctx.send("❌ You don't have enough gems.")
+
+    ignore_active = skip_active_game_tracking(ctx)
+    if ignore_active:
+        success, conflicts = True, {}
+    else:
+        success, conflicts = await claim_active_game([ctx.author.id], "hilo")
+    if not success:
+        return await ctx.send(active_game_blocked_message(conflicts))
+
+    try:
+        u["gems"] -= amount
+        save_data(data)
+
+        if not ignore_active:
+            await register_active_bet([ctx.author.id], "hilo", amount)
+
+        rig = consume_rig(u)
+        session = HiLoSession(ctx, amount, bet, rig)
+        await session.start()
+    except Exception:
+        u["gems"] += amount
+        save_data(data)
+        await release_active_game([ctx.author.id])
+        return await ctx.send("❌ Failed to start Hi-Lo. Please try again.")
+# --------------------------------------------------------------
 #                      COINFLIP
 # --------------------------------------------------------------
+
+
 @bot.command(aliases=["cf"])
 async def coinflip(ctx, bet: str, choice: str):
     ensure_user(ctx.author.id)
@@ -7436,6 +7757,7 @@ async def help(ctx):
             "**!slots amount** — Slot machine\n"
             "**!mines amount [mines]** — Mines game\n"
             "**!tower amount** — 10-floor tower\n"
+            "**!hilo amount** — Classic Hi-Lo with multipliers\n"
             "**!crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses.\n"
             "**!match** — 90-second live football match with Team A / Team B / Draw bets (2.5x payout on correct picks)\n"
             "Minimum bet: **1,000,000** gems • Maximum bet: **200,000,000** gems"
