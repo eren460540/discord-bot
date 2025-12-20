@@ -4468,6 +4468,7 @@ class HiLoView(View):
         self.session = session
         self.add_item(self.HiLoButton("higher", "🔼 Higher", discord.ButtonStyle.success))
         self.add_item(self.HiLoButton("lower", "🔽 Lower", discord.ButtonStyle.danger))
+        self.add_item(self.SkipButton())
         self.add_item(self.InfoButton())
         self.add_item(self.CashOutButton())
 
@@ -4492,6 +4493,13 @@ class HiLoView(View):
 
         async def callback(self, interaction: discord.Interaction):
             await self.view.session.show_info(interaction)
+
+    class SkipButton(Button):
+        def __init__(self):
+            super().__init__(label="⭐️ Skip", style=discord.ButtonStyle.primary)
+
+        async def callback(self, interaction: discord.Interaction):
+            await self.view.session.skip_card(interaction)
 
 
 class HiLoExit(Button):
@@ -4523,6 +4531,8 @@ class HiLoSession:
         self.message: discord.Message | None = None
         self.info_unlocked = False
         self.info_fee_rate = 0.25
+        self.skip_fee_rate = 0.05
+        self.skip_uses = 0
 
     def _draw_card(self, allowed_values: list[int] | None = None) -> int:
         pool: list[int] = []
@@ -4583,28 +4593,50 @@ class HiLoSession:
 
     def _build_embed(self, status: str, final: bool = False, final_card: int | None = None, payout_override: int | None = None):
         payout = payout_override if payout_override is not None else int(self.amount * self.multiplier)
+        base_fee_rate = (self.skip_fee_rate * self.skip_uses) + (self.info_fee_rate if self.info_unlocked else 0)
         description = (
-            f"💵 Bet: **{fmt(self.amount)}**\n"
-            f"🔥 Multiplier: **{self.multiplier:.2f}x**\n"
-            f"💰 Payout: **{fmt(payout)}**\n"
-            f"📦 Cards Left: **{self._remaining_cards()}**\n"
-            f"🃏 Current Card: **{_hilo_card_label(self.current_card)}**"
+            "🌌 **Astral Stack**\n"
+            f"💵 Bet: **{fmt(self.amount)}** — **{self.multiplier:.2f}x** run\n"
+            f"💰 Projected: **{fmt(payout)}**\n"
+            f"⭐️ Fees locked in: **-{base_fee_rate * 100:.0f}%** on final cashout\n"
+            "\n"
+            "🎴 **Table State**\n"
+            f"🃏 Current: **{_hilo_card_label(self.current_card)}**\n"
+            f"📦 Cards Left: **{self._remaining_cards()}**"
         )
         if self.last_draw is not None:
             description += f"\n🎴 Last Draw: **{_hilo_card_label(self.last_draw)}**"
         if final and final_card is not None:
             description += f"\n🏁 Final Card: **{_hilo_card_label(final_card)}**"
+        if self.skip_uses:
+            description += f"\n⭐️ Skips used: **{self.skip_uses}×** (-{self.skip_fee_rate * self.skip_uses * 100:.0f}%)"
+
         if self.info_unlocked:
-            estimated_fee = int(payout * self.info_fee_rate)
+            higher_prob = self._success_probability("higher") * 100
+            lower_prob = self._success_probability("lower") * 100
+            tie_prob = max(100 - higher_prob - lower_prob, 0)
+            higher_mult = self._round_multiplier("higher")
+            lower_mult = self._round_multiplier("lower")
             description += (
-                f"\n🔍 Info Unlocked: **Yes** (≈**{fmt(estimated_fee)}** deducted from final payout)"
+                "\n\n📊 **Live Insights (auto-updating)**\n"
+                f"🔼 Higher: **{higher_prob:.2f}%** | **{higher_mult:.2f}x**\n"
+                f"🔽 Lower: **{lower_prob:.2f}%** | **{lower_mult:.2f}x**\n"
+                f"⚖️ Tie chance: **{tie_prob:.2f}%** (tie loses)\n"
+                f"🔍 Insight fee: **-{self.info_fee_rate * 100:.0f}%** on final cashout"
             )
+        else:
+            description += (
+                "\n\n🔒 Insights locked — tap **🔍 Unlock Info** to reveal live odds (25% fee applied once)."
+            )
+
         if status:
             description += f"\n\n{status}"
 
         title = f"♦️ Galaxy Hi-Lo | {self.ctx.author.name}"
         color = galaxy_color()
-        return discord.Embed(title=title, description=description, color=color)
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.set_footer(text="Galaxy Hi-Lo • Ride the cosmic ladder ⭐️")
+        return embed
 
     async def handle_guess(self, prediction: str, interaction: discord.Interaction):
         if self.ended:
@@ -4697,6 +4729,38 @@ class HiLoSession:
         except Exception:
             pass
 
+    async def skip_card(self, interaction: discord.Interaction):
+        if self.ended:
+            return await interaction.response.send_message("❌ Game already ended.", ephemeral=True)
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+        if self._remaining_cards() == 0:
+            payout = int(self.amount * self.multiplier)
+            status = "📦 No cards left — automatically cashing out."
+            final_payout, status = await self._end_game(status, payout=payout, final_card=self.current_card)
+            try:
+                await interaction.response.edit_message(
+                    embed=self._build_embed(status, True, self.current_card, payout_override=final_payout),
+                    view=self._end_view(),
+                )
+            except Exception:
+                pass
+            return
+
+        self.skip_uses += 1
+        next_card = self._draw_card()
+        self.last_draw = next_card
+        self.current_card = next_card
+        status = (
+            "⭐️ Skip activated! Paid a **5%** cashout fee to move past this card.\n"
+            f"🃏 New card: **{_hilo_card_label(next_card)}**"
+        )
+
+        try:
+            await interaction.response.edit_message(embed=self._build_embed(status), view=self.view)
+        except Exception:
+            pass
+
     async def _send_info_embed(self, interaction: discord.Interaction, *, unlocked_now: bool = False):
         higher_prob = self._success_probability("higher") * 100
         lower_prob = self._success_probability("lower") * 100
@@ -4745,6 +4809,7 @@ class HiLoSession:
                 if isinstance(child, HiLoView.InfoButton):
                     child.label = "📊 View Info"
         await self._send_info_embed(interaction, unlocked_now=True)
+        await self._refresh_main_embed("🔓 Insights unlocked — live odds now pinned above.")
 
     async def show_info(self, interaction: discord.Interaction):
         if self.ended:
@@ -4796,6 +4861,14 @@ class HiLoSession:
             return
 
         await self._send_info_embed(interaction)
+
+    async def _refresh_main_embed(self, status: str = ""):
+        if not self.message:
+            return
+        try:
+            await self.message.edit(embed=self._build_embed(status), view=self.view)
+        except Exception:
+            pass
 
     async def cash_out(self, interaction: discord.Interaction):
         if self.ended:
@@ -4857,11 +4930,20 @@ class HiLoSession:
         ensure_user(self.user_id)
 
         fee_applied = 0
+        skip_fee = 0
         final_payout = payout
+        base_payout = payout
         if self.info_unlocked:
-            fee_applied = int(payout * self.info_fee_rate)
-            final_payout = max(payout - fee_applied, 0)
+            fee_applied = int(base_payout * self.info_fee_rate)
+        if self.skip_uses:
+            skip_fee = int(base_payout * self.skip_fee_rate * self.skip_uses)
+
+        total_fee = fee_applied + skip_fee
+        final_payout = max(base_payout - total_fee, 0)
+        if fee_applied:
             status += f"\n🔍 Info unlock fee: **{fmt(fee_applied)}** deducted from payout."
+        if skip_fee:
+            status += f"\n⭐️ Skip fees: **{fmt(skip_fee)}** deducted ({self.skip_uses}× at 5% each)."
 
         user = data[str(self.user_id)]
         user["gems"] += final_payout
