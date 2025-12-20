@@ -4468,6 +4468,7 @@ class HiLoView(View):
         self.session = session
         self.add_item(self.HiLoButton("higher", "🔼 Higher", discord.ButtonStyle.success))
         self.add_item(self.HiLoButton("lower", "🔽 Lower", discord.ButtonStyle.danger))
+        self.add_item(self.InfoButton())
         self.add_item(self.CashOutButton())
 
     class HiLoButton(Button):
@@ -4484,6 +4485,13 @@ class HiLoView(View):
 
         async def callback(self, interaction: discord.Interaction):
             await self.view.session.cash_out(interaction)
+
+    class InfoButton(Button):
+        def __init__(self):
+            super().__init__(label="🔍 Unlock Info", style=discord.ButtonStyle.secondary)
+
+        async def callback(self, interaction: discord.Interaction):
+            await self.view.session.show_info(interaction)
 
 
 class HiLoExit(Button):
@@ -4506,44 +4514,66 @@ class HiLoSession:
         self.amount = int(amount)
         self.bet_input = bet_input
         self.rig = rig
-        self.current_card = random.randint(1, 13)
+        self.deck: dict[int, int] = {value: 4 for value in range(1, 14)}
+        self.current_card = self._draw_card()
         self.last_draw: int | None = None
         self.multiplier = 1.0
         self.ended = False
         self.view = HiLoView(self)
         self.message: discord.Message | None = None
+        self.info_unlocked = False
+        self.info_fee = int(self.amount * 0.25)
+
+    def _draw_card(self, allowed_values: list[int] | None = None) -> int:
+        pool: list[int] = []
+        for value, count in self.deck.items():
+            if count <= 0:
+                continue
+            if allowed_values is None or value in allowed_values:
+                pool.extend([value] * count)
+
+        if not pool:
+            raise RuntimeError("No cards left in the deck.")
+
+        chosen = random.choice(pool)
+        self.deck[chosen] -= 1
+        return chosen
+
+    def _remaining_cards(self) -> int:
+        return sum(self.deck.values())
 
     # -------------------- Card + odds helpers --------------------
-    def _losing_cards(self, prediction: str) -> list[int]:
+    def _losing_count(self, prediction: str) -> int:
         if prediction == "higher":
-            return list(range(1, self.current_card + 1))
-        return list(range(self.current_card, 14))
+            return sum(count for value, count in self.deck.items() if value <= self.current_card)
+        return sum(count for value, count in self.deck.items() if value >= self.current_card)
 
-    def _winning_cards(self, prediction: str) -> list[int]:
+    def _winning_count(self, prediction: str) -> int:
         if prediction == "higher":
-            return list(range(self.current_card + 1, 14))
-        return list(range(1, self.current_card))
+            return sum(count for value, count in self.deck.items() if value > self.current_card)
+        return sum(count for value, count in self.deck.items() if value < self.current_card)
 
-    def _hardness(self, prediction: str) -> tuple[float, int]:
-        losing = len(self._losing_cards(prediction))
-        hardness = losing / 12
-        return hardness, losing
+    def _success_probability(self, prediction: str) -> float:
+        remaining = self._remaining_cards()
+        if remaining == 0:
+            return 0.0
+        return self._winning_count(prediction) / remaining
 
     def _round_multiplier(self, prediction: str) -> float:
-        hardness, _ = self._hardness(prediction)
+        if self._is_guaranteed(prediction):
+            return HILO_GUARANTEED_MULTIPLIER
+        losing = self._losing_count(prediction)
+        remaining = self._remaining_cards()
+        if remaining == 0:
+            return 1.0
+        hardness = losing / remaining
         return 1 + (hardness * 1.5)
 
     def _is_impossible(self, prediction: str) -> bool:
-        return (
-            (self.current_card == 1 and prediction == "lower")
-            or (self.current_card == 13 and prediction == "higher")
-        )
+        return self._winning_count(prediction) == 0
 
     def _is_guaranteed(self, prediction: str) -> bool:
-        return (
-            (self.current_card == 1 and prediction == "higher")
-            or (self.current_card == 13 and prediction == "lower")
-        )
+        return self._losing_count(prediction) == 0 and self._winning_count(prediction) > 0
 
     # -------------------- Game flow --------------------
     async def start(self):
@@ -4557,12 +4587,17 @@ class HiLoSession:
             f"💵 Bet: **{fmt(self.amount)}**\n"
             f"🔥 Multiplier: **{self.multiplier:.2f}x**\n"
             f"💰 Payout: **{fmt(payout)}**\n"
+            f"📦 Cards Left: **{self._remaining_cards()}**\n"
             f"🃏 Current Card: **{_hilo_card_label(self.current_card)}**"
         )
         if self.last_draw is not None:
             description += f"\n🎴 Last Draw: **{_hilo_card_label(self.last_draw)}**"
         if final and final_card is not None:
             description += f"\n🏁 Final Card: **{_hilo_card_label(final_card)}**"
+        if self.info_unlocked:
+            description += (
+                f"\n🔍 Info Unlocked: **Yes** (fee **{fmt(self.info_fee)}** deducted from final payout)"
+            )
         if status:
             description += f"\n\n{status}"
 
@@ -4575,11 +4610,30 @@ class HiLoSession:
             return await interaction.response.send_message("❌ Game already ended.", ephemeral=True)
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+        if self._remaining_cards() == 0:
+            payout = int(self.amount * self.multiplier)
+            status = "📦 No cards left — automatically cashing out."
+            final_payout, status = await self._end_game(status, payout=payout, final_card=self.current_card)
+            try:
+                await interaction.response.edit_message(
+                    embed=self._build_embed(status, True, self.current_card, payout_override=final_payout),
+                    view=self._end_view(),
+                )
+            except Exception:
+                pass
+            return
 
         status = ""
         next_card = self.current_card
         round_multiplier = None
         result = ""
+
+        winning_values = [value for value, count in self.deck.items() if count > 0 and ((prediction == "higher" and value > self.current_card) or (prediction == "lower" and value < self.current_card))]
+        losing_values = [
+            value
+            for value, count in self.deck.items()
+            if count > 0 and ((prediction == "higher" and value <= self.current_card) or (prediction == "lower" and value >= self.current_card))
+        ]
 
         if self._is_impossible(prediction):
             result = "lose"
@@ -4588,19 +4642,24 @@ class HiLoSession:
             result = "win"
             round_multiplier = HILO_GUARANTEED_MULTIPLIER
             status = "✅ Guaranteed success."
-            next_card = random.choice(self._winning_cards(prediction))
+            next_card = self._draw_card(winning_values)
         elif self.rig == "curse":
             result = "lose"
-            next_card = random.choice(self._losing_cards(prediction))
+            try:
+                next_card = self._draw_card(losing_values)
+            except RuntimeError:
+                next_card = self._draw_card()
             status = "☠️ You were cursed — prediction failed."
         elif self.rig == "bless":
             result = "win"
             round_multiplier = self._round_multiplier(prediction)
-            winners = self._winning_cards(prediction)
-            next_card = random.choice(winners) if winners else self.current_card
+            try:
+                next_card = self._draw_card(winning_values)
+            except RuntimeError:
+                next_card = self._draw_card()
             status = "✨ Blessing ensured your success."
         else:
-            next_card = random.randint(1, 13)
+            next_card = self._draw_card()
             if (prediction == "higher" and next_card > self.current_card) or (
                 prediction == "lower" and next_card < self.current_card
             ):
@@ -4627,9 +4686,57 @@ class HiLoSession:
                 pass
             return
 
-        await self._end_game(status + f" Drew **{_hilo_card_label(next_card)}**.", payout=0, final_card=next_card)
+        final_payout, status = await self._end_game(
+            status + f" Drew **{_hilo_card_label(next_card)}**.", payout=0, final_card=next_card
+        )
         try:
-            await interaction.response.edit_message(embed=self._build_embed(status, True, next_card), view=self._end_view())
+            await interaction.response.edit_message(
+                embed=self._build_embed(status, True, next_card, payout_override=final_payout), view=self._end_view()
+            )
+        except Exception:
+            pass
+
+    async def show_info(self, interaction: discord.Interaction):
+        if self.ended:
+            return await interaction.response.send_message("❌ Game already ended.", ephemeral=True)
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
+
+        unlocked_now = False
+        if not self.info_unlocked:
+            self.info_unlocked = True
+            unlocked_now = True
+            for child in self.view.children:
+                if isinstance(child, HiLoView.InfoButton):
+                    child.label = "📊 View Info"
+
+        higher_prob = self._success_probability("higher") * 100
+        lower_prob = self._success_probability("lower") * 100
+        higher_mult = self._round_multiplier("higher")
+        lower_mult = self._round_multiplier("lower")
+
+        lines = []
+        if unlocked_now:
+            lines.append(
+                f"🔓 Info unlocked for **{fmt(self.info_fee)}**. The fee will be deducted from your final payout."
+            )
+        lines.append(f"📦 Cards remaining: **{self._remaining_cards()}**")
+        lines.append(f"🔼 Higher chance: **{higher_prob:.2f}%** | Multiplier: **{higher_mult:.2f}x**")
+        lines.append(f"🔽 Lower chance: **{lower_prob:.2f}%** | Multiplier: **{lower_mult:.2f}x**")
+
+        embed = discord.Embed(
+            title="🔍 Hi-Lo Insights",
+            description="\n".join(lines),
+            color=galaxy_color(),
+        )
+
+        try:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            return
+        try:
+            if self.message:
+                await self.message.edit(view=self.view)
         except Exception:
             pass
 
@@ -4641,11 +4748,12 @@ class HiLoSession:
 
         payout = int(self.amount * self.multiplier)
         status = f"💸 Cashed out at **{self.multiplier:.2f}x**."
-        await self._end_game(status, payout=payout, final_card=self.current_card)
+        final_payout, status = await self._end_game(status, payout=payout, final_card=self.current_card)
 
         try:
             await interaction.response.edit_message(
-                embed=self._build_embed(status, True, self.current_card), view=self._end_view()
+                embed=self._build_embed(status, True, self.current_card, payout_override=final_payout),
+                view=self._end_view(),
             )
         except Exception:
             pass
@@ -4654,13 +4762,18 @@ class HiLoSession:
         if self.ended:
             return await ctx.send("ℹ️ Your Hi-Lo game already ended.")
         payout = int(self.amount * self.multiplier)
-        await self._end_game(f"⛔ Stopped via !stop. Payout: **{fmt(payout)}**", payout=payout)
+        final_payout, status = await self._end_game(
+            f"⛔ Stopped via !stop. Payout: **{fmt(payout)}**", payout=payout
+        )
         try:
             if self.message:
-                await self.message.edit(embed=self._build_embed("Game stopped.", True, self.current_card), view=self._end_view())
+                await self.message.edit(
+                    embed=self._build_embed("Game stopped.", True, self.current_card, payout_override=final_payout),
+                    view=self._end_view(),
+                )
         except Exception:
             pass
-        await ctx.send(f"✅ Stopped your Hi-Lo game. You received **{fmt(payout)}** gems.")
+        await ctx.send(f"✅ Stopped your Hi-Lo game. You received **{fmt(final_payout)}** gems.")
 
     async def force_terminate(self):
         if self.ended:
@@ -4681,32 +4794,47 @@ class HiLoSession:
 
     async def _end_game(self, status: str, payout: int, final_card: int | None = None):
         if self.ended:
-            return
+            return 0, status
         self.ended = True
         hilo_sessions.pop(self.user_id, None)
         ensure_user(self.user_id)
+
+        fee_applied = 0
+        final_payout = payout
+        if self.info_unlocked:
+            fee_applied = self.info_fee
+            final_payout = max(payout - fee_applied, 0)
+            status += f"\n🔍 Info unlock fee: **{fmt(fee_applied)}** deducted from payout."
+
         user = data[str(self.user_id)]
-        user["gems"] += payout
+        user["gems"] += final_payout
         save_data(data)
 
-        profit = payout - self.amount
+        profit = final_payout - self.amount
         add_history(
             self.user_id,
             {
                 "game": "hilo",
                 "bet": self.amount,
-                "result": "win" if payout > 0 else "lose",
+                "result": "win" if final_payout > 0 else "lose",
                 "earned": profit,
                 "timestamp": time.time(),
             },
         )
         await release_active_game([self.user_id])
 
+        self.final_payout = final_payout
+
         if self.message:
             try:
-                await self.message.edit(embed=self._build_embed(status, True, final_card), view=self._end_view())
+                await self.message.edit(
+                    embed=self._build_embed(status, True, final_card, payout_override=final_payout),
+                    view=self._end_view(),
+                )
             except Exception:
                 pass
+
+        return final_payout, status
 
     def _end_view(self):
         view = View(timeout=None)
@@ -4777,6 +4905,8 @@ def _build_hilo_help_embed() -> discord.Embed:
         "• Making an impossible prediction instantly loses (Ace→Lower or King→Higher).\n"
         "• Bless/Curse rigs override luck with forced wins or losses.\n"
         "• Use the 💸 Cash Out button anytime to lock in your current payout.\n"
+        "• Cards are drawn from a single deck — once a value appears, it's removed from future odds.\n"
+        "• Pay 25% of your original bet with 🔍 Unlock Info to reveal live odds and multipliers.\n"
         "• If the next card matches your current card, it's an automatic loss."
     )
 
@@ -4793,7 +4923,7 @@ def _build_hilo_help_embed() -> discord.Embed:
     embed.add_field(
         name="Pro tips",
         value=(
-            "• Odds are based on a 13-card spread with no deck exhaustion.\n"
+            "• The table below assumes a fresh deck; unlock info mid-game for exact odds.\n"
             "• Riskier calls (fewer winning cards) pay higher round multipliers.\n"
             "• Cashing out pays **bet × current multiplier** — perfect for banking big streaks."
         ),
@@ -4806,13 +4936,6 @@ def _build_hilo_help_embed() -> discord.Embed:
 @bot.command()
 async def hilocards(ctx):
     """Show Hi-Lo odds, multipliers, and gameplay tips."""
-
-    await ctx.send(embed=_build_hilo_help_embed())
-
-
-@bot.command()
-async def hilohelp(ctx):
-    """Alias for !hilocards so players can quickly learn Hi-Lo."""
 
     await ctx.send(embed=_build_hilo_help_embed())
 
@@ -7882,7 +8005,7 @@ async def help(ctx):
             "**!mines amount [mines]** — Mines game\n"
             "**!tower amount** — 10-floor tower\n"
             "**!hilo amount** — Classic Hi-Lo with multipliers\n"
-            "**!hilohelp** — Hi-Lo odds, payouts, and cash-out guide\n"
+            "**!hilocards** — Hi-Lo odds, payouts, and cash-out guide\n"
             "**!crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses.\n"
             "**!match** — 90-second live football match with Team A / Team B / Draw bets (2.5x payout on correct picks)\n"
             "Minimum bet: **1,000,000** gems • Maximum bet: **200,000,000** gems"
