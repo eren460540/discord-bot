@@ -14,6 +14,7 @@ import tempfile
 from ytmusicapi import YTMusic
 import yt_dlp
 import shutil
+from discord.errors import HTTPException
 
 
 
@@ -8318,4 +8319,48 @@ async def giveall(ctx, amount: str):
     await ctx.send(embed=embed)
 
 
-bot.run(TOKEN)
+
+async def start_bot_with_backoff(token: str):
+    """
+    Login helper that respects Discord's global rate limits by backing off
+    before retrying authentication. This prevents rapid reconnect loops from
+    repeatedly hitting the 429 response seen during login.
+    """
+
+    if not token:
+        raise RuntimeError("TOKEN environment variable is not set.")
+
+    backoff = 5
+    max_backoff = 300
+
+    while True:
+        try:
+            await bot.start(token)
+            break
+        except HTTPException as exc:
+            if exc.status != 429:
+                raise
+
+            retry_after_header = None
+            if exc.response is not None:
+                retry_after_header = exc.response.headers.get("Retry-After")
+
+            try:
+                retry_after = float(retry_after_header) if retry_after_header else None
+            except (TypeError, ValueError):
+                retry_after = None
+
+            wait_time = retry_after if retry_after and retry_after > 0 else backoff
+            wait_time = min(max_backoff, max(wait_time, backoff))
+
+            print(
+                f"Hit Discord login rate limit (HTTP 429). "
+                f"Waiting {wait_time:.0f} seconds before retrying."
+            )
+            await asyncio.sleep(wait_time)
+            backoff = min(backoff * 2, max_backoff)
+        except Exception:
+            raise
+
+
+asyncio.run(start_bot_with_backoff(TOKEN))
