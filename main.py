@@ -16,6 +16,7 @@ import yt_dlp
 import shutil
 from discord.errors import HTTPException
 from supabase import create_client, Client
+import logging
 
 
 
@@ -253,11 +254,14 @@ LOAN_LOG_CHANNEL_ID = 1440730206187950122
 loan_log_queue: asyncio.Queue = asyncio.Queue()
 loan_log_worker_started = False
 
-# --------------------------------------------------------------
-#                       INTENTS & BOT INIT
-# --------------------------------------------------------------
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.message_content = True
+
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+logger = logging.getLogger(__name__)
 
 ytmusic_client = YTMusic()
 
@@ -8170,9 +8174,14 @@ async def start_bot_with_backoff(token: str):
     while True:
         try:
             await bot.start(token)
-            break
+            return
+        except discord.errors.PrivilegedIntentsRequired as exc:
+            logger.error("Privileged intents misconfigured. Shutting down.")
+            await bot.close()
+            raise SystemExit(1) from exc
         except HTTPException as exc:
             if exc.status != 429:
+                await bot.close()
                 raise
 
             retry_after_header = None
@@ -8194,7 +8203,11 @@ async def start_bot_with_backoff(token: str):
             await asyncio.sleep(wait_time)
             backoff = min(backoff * 2, max_backoff)
         except Exception:
+            await bot.close()
             raise
+        finally:
+            if not bot.is_closed():
+                await bot.close()
 
 
 asyncio.run(start_bot_with_backoff(TOKEN))
