@@ -7,8 +7,6 @@ from discord.ui import Button, View
 import time
 import io
 import asyncio
-import threading
-import contextvars
 from datetime import datetime
 import aiohttp  # NEW: for Roblox API
 from discord.ui import Button, View, Modal, TextInput
@@ -24,7 +22,6 @@ from supabase import create_client, Client
 TOKEN = os.getenv("TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-SUPABASE_STATE_ID = "bot_state"
 supabase: Client | None = None
 if SUPABASE_URL and SUPABASE_SERVICE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -68,144 +65,6 @@ WITHDRAW_COOLDOWN = 30 * 60               # 30 minutes
 # --------------------------------------------------------------
 #                    DATA MANAGEMENT (SUPABASE)
 # --------------------------------------------------------------
-class UserState(dict):
-    def __init__(self, uid: str, initial: dict, proxy: "StateProxy"):
-        super().__init__(initial)
-        self._uid = uid
-        self._proxy = proxy
-
-    def __setitem__(self, key, value):
-        super().__setitem__(key, value)
-        self._proxy.mark_dirty(self._uid)
-
-    def setdefault(self, key, default=None):
-        if key not in self:
-            self._proxy.mark_dirty(self._uid)
-        return super().setdefault(key, default)
-
-    def update(self, *args, **kwargs):
-        if args or kwargs:
-            self._proxy.mark_dirty(self._uid)
-        return super().update(*args, **kwargs)
-
-
-class StateProxy:
-    def __init__(self):
-        self._global_state: dict = {}
-        self._cache_var = contextvars.ContextVar("stateproxy_cache", default=None)
-        self._dirty_var = contextvars.ContextVar("stateproxy_dirty", default=None)
-
-    def _get_cache(self) -> dict:
-        cache = self._cache_var.get()
-        if cache is None:
-            cache = {}
-            self._cache_var.set(cache)
-        return cache
-
-    def _get_dirty(self) -> set:
-        dirty = self._dirty_var.get()
-        if dirty is None:
-            dirty = set()
-            self._dirty_var.set(dirty)
-        return dirty
-
-    def mark_dirty(self, uid: str):
-        self._get_dirty().add(uid)
-
-    def _run_async(self, coro):
-        return asyncio.run_coroutine_threadsafe(coro, _supabase_loop).result()
-
-    async def _fetch_user_state(self, uid: str) -> dict:
-        if not supabase:
-            return {}
-        response = await run_supabase(
-            supabase.table("users")
-            .select("data")
-            .eq("discord_id", uid)
-            .maybe_single()
-            .execute
-        )
-        if response.data and response.data.get("data"):
-            return response.data["data"]
-        default_state = _default_user_data()
-        await run_supabase(
-            supabase.table("users")
-            .upsert({"discord_id": uid, "data": default_state})
-            .execute
-        )
-        return default_state
-
-    async def _write_user_state(self, uid: str, state: dict) -> None:
-        if not supabase:
-            return
-        await run_supabase(
-            supabase.table("users")
-            .upsert({"discord_id": uid, "data": state})
-            .execute
-        )
-
-    def flush(self):
-        cache = self._get_cache()
-        dirty = self._get_dirty()
-        for uid in list(dirty):
-            state = cache.get(uid)
-            if state is None:
-                continue
-            self._run_async(self._write_user_state(uid, dict(state)))
-        dirty.clear()
-
-    def _is_user_key(self, key) -> bool:
-        return isinstance(key, str) and key.isdigit()
-
-    def __getitem__(self, key):
-        if self._is_user_key(key):
-            cache = self._get_cache()
-            if key in cache:
-                return cache[key]
-            state = self._run_async(self._fetch_user_state(key))
-            wrapped = UserState(key, state, self)
-            cache[key] = wrapped
-            return wrapped
-        return self._global_state[key]
-
-    def __setitem__(self, key, value):
-        if self._is_user_key(key):
-            cache = self._get_cache()
-            wrapped = UserState(key, value, self)
-            cache[key] = wrapped
-            self.mark_dirty(key)
-            self._run_async(self._write_user_state(key, dict(wrapped)))
-            return
-        self._global_state[key] = value
-
-    def get(self, key, default=None):
-        try:
-            return self.__getitem__(key)
-        except KeyError:
-            return default
-
-    def setdefault(self, key, default=None):
-        if self._is_user_key(key):
-            cache = self._get_cache()
-            if key in cache:
-                return cache[key]
-            wrapped = UserState(key, default or {}, self)
-            cache[key] = wrapped
-            self.mark_dirty(key)
-            self._run_async(self._write_user_state(key, dict(wrapped)))
-            return wrapped
-        return self._global_state.setdefault(key, default)
-
-
-def load_state() -> StateProxy:
-    return StateProxy()
-
-
-def persist_state(state) -> None:
-    if isinstance(state, StateProxy):
-        state.flush()
-
-
 async def send_response(interaction: discord.Interaction, *args, **kwargs):
     if interaction.response.is_done():
         return await interaction.followup.send(*args, **kwargs)
@@ -218,7 +77,6 @@ def _default_user_data() -> dict:
         "gems": 25.0,
         "last_daily": 0.0,
         "last_work": 0.0,
-        "history": [],
         "bless_infinite": False,
         "curse_infinite": False,
         "bless_charges": 0,
@@ -226,8 +84,17 @@ def _default_user_data() -> dict:
         "lifetime_wagered": 0,
         "loan": None,
         "achievements": {},
-        "redeemed_codes": [],
         "last_withdraw_cmd": 0,
+        "free_income": 0,
+        "daily_streak": 0,
+        "deposit_bonus": 0,
+        "wheel_last_spin": 0,
+        "wheel_extra_spins": 0,
+        "quest_earn": 0,
+        "quest_deposit": 0,
+        "quest_wager": 0,
+        "quest_completed": False,
+        "quest_last_reset": 0,
     }
 
 
@@ -257,6 +124,13 @@ async def ensure_user(discord_id):
     return payload
 
 
+async def get_user_or_create(discord_id):
+    user = await get_user(discord_id)
+    if user:
+        return user
+    return await ensure_user(discord_id)
+
+
 async def update_user(discord_id, patch):
     if not supabase:
         return None
@@ -269,6 +143,21 @@ async def update_user(discord_id, patch):
     if response.data:
         return response.data[0]
     return None
+
+
+async def update_user_field(discord_id, key, value):
+    return await update_user(discord_id, {key: value})
+
+
+async def adjust_user_gems(discord_id, delta):
+    user = await get_user_or_create(discord_id)
+    if not user:
+        return None
+    new_balance = float(user.get("gems", 0)) + float(delta)
+    return await update_user(discord_id, {"gems": new_balance})
+
+
+ 
 
 
 async def create_withdraw(data):
@@ -356,79 +245,6 @@ async def log_history(discord_id, action, data):
     return response.data[0] if response.data else None
 
 
-_supabase_loop = asyncio.new_event_loop()
-
-
-def _run_supabase_loop():
-    asyncio.set_event_loop(_supabase_loop)
-    _supabase_loop.run_forever()
-
-
-threading.Thread(target=_run_supabase_loop, daemon=True).start()
-
-
-def ensure_user_sync(discord_id):
-    uid = str(discord_id)
-    if uid not in data:
-        data[uid] = {}
-    u = data[uid]
-    for key, value in _default_user_data().items():
-        u.setdefault(key, value)
-    persist_state(data)
-    future = asyncio.run_coroutine_threadsafe(ensure_user(discord_id), _supabase_loop)
-    return future.result()
-
-
-# Load data *after* load_state() exists
-data = StateProxy()
-
-# --------------------------------------------------------------
-#           GLOBAL DEFAULTS / SAFETY (NO DUPLICATES)
-# --------------------------------------------------------------
-data.setdefault("next_deposit_id", 1)
-data.setdefault("next_withdraw_id", 1)
-data.setdefault("deposits", [])
-data.setdefault("withdrawals", [])
-data.setdefault("deposit_bonuses", {})
-data.setdefault("wheel_last_spin", {})
-data.setdefault("wheel_extra_spins", {})
-data.setdefault("quests", {})
-data.setdefault("quest_last_reset", 0)
-data.setdefault("codes", {})
-
-
-
-# --- Withdraw / Deposit system defaults ---
-data.setdefault("withdrawals", [])
-data.setdefault("deposits", [])
-data.setdefault("next_withdraw_id", 1)
-data.setdefault("next_deposit_id", 1)
-
-# Per-user withdraw tracking
-data.setdefault("withdraw_history", {})   # {uid: [ {ts, amount, kind}, ... ]}
-data.setdefault("withdraw_last_time", {}) # {uid: ts-of-last-withdraw}
-
-persist_state(data)
-
-
-
-
-
-# Roblox link store (Discord ↔ Roblox)
-# {
-#   "<discord_id>": {
-#       "username": "eren460540",
-#       "user_id": 123456,
-#       "display_name": "Eren",
-#       "avatar_url": "https://...",
-#       "last_verified": 1733300000.0
-#   }
-# }
-data.setdefault("roblox_links", {})
-
-# Save after setting defaults
-persist_state(data)
-
 # --------------------------------------------------------------
 #                          OWNER
 # --------------------------------------------------------------
@@ -451,7 +267,6 @@ ytmusic_client = YTMusic()
 MAX_BET = 200_000_000
 MIN_GAMBLE_AMOUNT = 1_000_000
 LOTTERY_BONUS = 0.10
-CODE_REWARD_GEMS = 100_000_000
 PLAY_AGAIN_DISABLED_GAMES = {"coinflip", "cf", "match", "pvpcoinflip", "pvpcf", "pvp_coinflip"}
 HILO_GUARANTEED_MULTIPLIER = 1.05
 
@@ -575,12 +390,11 @@ async def stop_active_games(interaction):
         if bet_amount <= 0:
             continue
 
-        ensure_user_sync(uid)
-        data[str(uid)]["gems"] += bet_amount
+        await adjust_user_gems(uid, bet_amount)
         total_refund += bet_amount
         refunded_users += 1
 
-        add_history(uid, {
+        await add_history(uid, {
             "game": info.get("game", "active_game"),
             "bet": bet_amount,
             "result": "stopped",
@@ -592,8 +406,6 @@ async def stop_active_games(interaction):
     sessions = list(hilo_sessions.values())
     for session in sessions:
         await session.force_terminate()
-
-    persist_state(data)
 
     await send_response(interaction, 
         "⛔ All active games have been force-stopped. "
@@ -656,15 +468,23 @@ class ConfirmRobloxView(View):
 
     async def _create_withdraw(self, interaction: discord.Interaction):
         uid = str(self.requester_id)
-        ensure_user_sync(self.requester_id)
-        u = data[uid]
+        user = await get_user_or_create(self.requester_id)
 
-        # Check if already has pending withdraw
-        pending = any(
-            w.get("user_id") == self.requester_id and w.get("status") == "pending"
-            for w in data.get("withdrawals", [])
+        if not supabase:
+            return await interaction.response.edit_message(
+                content="❌ Database unavailable. Please try again later.",
+                embed=None,
+                view=None,
+            )
+
+        pending_resp = await run_supabase(
+            supabase.table("withdrawals")
+            .select("id")
+            .eq("user_id", int(uid))
+            .eq("status", "pending")
+            .execute
         )
-        if pending:
+        if pending_resp.data:
             return await interaction.response.edit_message(
                 content="❌ You already have a **pending withdraw**. Wait until it is processed.",
                 embed=None,
@@ -672,7 +492,7 @@ class ConfirmRobloxView(View):
             )
 
         # Limits / cooldown
-        ok, reason = _can_withdraw_now(uid, self.amount)
+        ok, reason = await _can_withdraw_now(uid, self.amount)
         if not ok:
             return await interaction.response.edit_message(
                 content=reason,
@@ -683,22 +503,19 @@ class ConfirmRobloxView(View):
         # Cost factor 1.2x
         cost = int(self.amount * 1.2)
 
-        if u["gems"] < cost:
+        if user.get("gems", 0) < cost:
             return await interaction.response.edit_message(
                 content=(
                     f"❌ You don't have enough gems.\n"
-                    f"Needed: **{fmt(cost)}**, you have: **{fmt(u['gems'])}**."
+                    f"Needed: **{fmt(cost)}**, you have: **{fmt(user.get('gems', 0))}**."
                 ),
                 embed=None,
                 view=None,
             )
 
-        u["gems"] -= cost
-        persist_state(data)
+        await update_user(uid, {"gems": float(user.get("gems", 0)) - cost})
 
-        wid = data.get("next_withdraw_id", 1)
         entry = {
-            "id": wid,
             "user_id": self.requester_id,
             # modern fields expected by admin panels
             "type": "gems",
@@ -713,13 +530,13 @@ class ConfirmRobloxView(View):
             "status": "pending",
             "reason": None,
         }
-        data["next_withdraw_id"] = wid + 1
-        data.setdefault("withdrawals", []).append(entry)
-        persist_state(data)
+        created = await create_withdraw(entry)
+        wid = created.get("id") if created else entry.get("id", "?")
+        entry["id"] = wid
 
-        _mark_withdraw_used(uid, self.amount)
+        await _mark_withdraw_used(uid)
 
-        add_history(self.requester_id, {
+        await add_history(self.requester_id, {
             "game": "withdraw_gems",
             "bet": cost,
             "result": "pending",
@@ -750,11 +567,9 @@ class ConfirmRobloxView(View):
 
     async def _create_deposit(self, interaction: discord.Interaction):
         uid = str(self.requester_id)
-        ensure_user_sync(self.requester_id)
+        await get_user_or_create(self.requester_id)
 
-        did = data.get("next_deposit_id", 1)
         entry = {
-            "id": did,
             "user_id": self.requester_id,
             # modern fields expected by admin panels
             "type": "gems",
@@ -767,11 +582,11 @@ class ConfirmRobloxView(View):
             "status": "pending",
             "reason": None,
         }
-        data["next_deposit_id"] = did + 1
-        data.setdefault("deposits", []).append(entry)
-        persist_state(data)
+        created = await create_deposit(entry)
+        did = created.get("id") if created else entry.get("id", "?")
+        entry["id"] = did
 
-        add_history(self.requester_id, {
+        await add_history(self.requester_id, {
             "game": "deposit_gems",
             "bet": 0,
             "result": "pending",
@@ -876,56 +691,39 @@ async def dm_owner_new_request(kind: str, entry: dict):
 
 
 
-def _record_withdraw(uid: str, amount: int):
-    """
-    Store withdraw amounts for last 2 days check.
-    amount: requested amount (NOT 1.2x cost).
-    """
-    now = time.time()
-    hist = data.setdefault("withdraw_history", {})
-    user_hist = hist.setdefault(uid, [])
-    user_hist.append({"ts": now, "kind": "gems", "amount": int(amount)})
-
-    # clean >2 days old
-    cutoff = now - WITHDRAW_WINDOW_SECONDS
-    user_hist = [e for e in user_hist if e["ts"] >= cutoff]
-    hist[uid] = user_hist
-    persist_state(data)
-
-
-def _get_withdraw_totals(uid: str):
-    """
-    Return gems_total_last2d based on withdraw_history.
-    """
+async def _get_withdraw_totals(uid: str):
     now = time.time()
     cutoff = now - WITHDRAW_WINDOW_SECONDS
-    hist = data.get("withdraw_history", {}).get(uid, [])
+    if not supabase:
+        return 0
+    response = await run_supabase(
+        supabase.table("withdrawals")
+        .select("amount, created_at, status, type")
+        .eq("user_id", int(uid))
+        .gte("created_at", cutoff)
+        .execute
+    )
     gems_total = 0
-    for e in hist:
-        if e["ts"] < cutoff:
+    for row in response.data or []:
+        if row.get("status") not in ("pending", "accepted"):
             continue
-        if e["kind"] == "gems":
-            gems_total += int(e["amount"])
+        if row.get("type") == "gems":
+            gems_total += int(row.get("amount", 0) or 0)
     return gems_total
 
 
-def _can_withdraw_now(uid: str, amount: int):
-    """
-    Check 30 min cooldown and 2-day caps.
-    Returns (ok: bool, reason: str | None)
-    """
+async def _can_withdraw_now(uid: str, amount: int):
     now = time.time()
-    last_map = data.setdefault("withdraw_last_time", {})
-    last_ts = last_map.get(uid, 0)
+    user = await get_user_or_create(uid)
+    last_ts = user.get("last_withdraw_cmd", 0)
 
-    # 30 min cooldown
     if now - last_ts < WITHDRAW_COOLDOWN:
         remaining = int(WITHDRAW_COOLDOWN - (now - last_ts))
         mins = remaining // 60
         secs = remaining % 60
         return False, f"⏳ You must wait **{mins}m {secs}s** before making another withdraw."
 
-    gems_total = _get_withdraw_totals(uid)
+    gems_total = await _get_withdraw_totals(uid)
     amount = int(amount)
 
     if gems_total + amount > WITHDRAW_GEMS_LIMIT:
@@ -938,12 +736,8 @@ def _can_withdraw_now(uid: str, amount: int):
     return True, None
 
 
-def _mark_withdraw_used(uid: str, amount: int):
-    """Updates last_withdraw time + history."""
-    uid = str(uid)
-    data.setdefault("withdraw_last_time", {})[uid] = time.time()
-    _record_withdraw(uid, amount)
-    persist_state(data)
+async def _mark_withdraw_used(uid: str):
+    await update_user(uid, {"last_withdraw_cmd": time.time()})
 
 
 
@@ -991,14 +785,23 @@ ACHIEVEMENT_DEFS = {
 HIGH_ROLLER_WAGER = 1_000_000_000
 
 
-def compute_gamble_ratio(user_id):
-    ensure_user_sync(user_id)
-    hist = data[str(user_id)].get("history", [])
+async def compute_gamble_ratio(user_id):
+    await get_user_or_create(user_id)
+    if not supabase:
+        return 0, 0, 0
+    response = await run_supabase(
+        supabase.table("user_history")
+        .select("data")
+        .eq("discord_id", str(user_id))
+        .execute
+    )
+    history = response.data or []
 
     free_total = 0
     gambled_total = 0
 
-    for e in hist:
+    for row in history:
+        e = row.get("data") or {}
         game = e.get("game", "")
         bet = e.get("bet", 0) or 0
         earned = e.get("earned", 0) or 0
@@ -1188,62 +991,62 @@ async def download_youtube_audio(video_id: str, title: str) -> str | None:
 
     return await loop.run_in_executor(None, _download)
 
-def _loan_record(uid: str):
-    ensure_user_sync(uid)
-    return data[str(uid)].get("loan")
+async def _loan_record(uid: str):
+    user = await get_user_or_create(uid)
+    return user.get("loan")
 
 
-def _set_loan(uid: str, loan):
-    ensure_user_sync(uid)
-    data[str(uid)]["loan"] = loan
-    persist_state(data)
+async def _set_loan(uid: str, loan):
+    await update_user(uid, {"loan": loan})
 
 
-def _loan_is_restricted(uid: str):
-    loan = _loan_record(uid)
+async def _loan_is_restricted(uid: str):
+    loan = await _loan_record(uid)
     if not loan:
         return False
     return loan.get("status") in {"active", "defaulted"}
 
 
-def achievement_record(uid: str):
-    ensure_user_sync(uid)
-    return data[str(uid)].setdefault("achievements", {})
+async def achievement_record(uid: str):
+    user = await get_user_or_create(uid)
+    achievements = user.get("achievements") or {}
+    if achievements != user.get("achievements"):
+        await update_user(uid, {"achievements": achievements})
+    return achievements
 
 
-def grant_achievement(uid: str, key: str) -> bool:
+async def grant_achievement(uid: str, key: str) -> bool:
     if key not in ACHIEVEMENT_DEFS:
         return False
-    ach = achievement_record(uid)
+    ach = await achievement_record(uid)
     if ach.get(key):
         return False
     ach[key] = True
-    persist_state(data)
+    await update_user(uid, {"achievements": ach})
     return True
 
 
-def refresh_achievements(uid: str):
-    ensure_user_sync(uid)
-    u = data[str(uid)]
+async def refresh_achievements(uid: str):
+    u = await get_user_or_create(uid)
 
     if u.get("lifetime_wagered", 0) >= HIGH_ROLLER_WAGER:
-        grant_achievement(uid, "high_roller")
+        await grant_achievement(uid, "high_roller")
 
     loan = u.get("loan")
     if loan and loan.get("status") == "paid":
-        grant_achievement(uid, "paid_first_loan")
+        await grant_achievement(uid, "paid_first_loan")
     if not loan or loan.get("status") == "paid":
-        grant_achievement(uid, "debt_free")
+        await grant_achievement(uid, "debt_free")
 
     # Daily streak achievement is optional; only award if a streak counter exists.
     if "daily_streak" in u and u.get("daily_streak", 0) >= 7:
-        grant_achievement(uid, "daily_streak_7")
+        await grant_achievement(uid, "daily_streak_7")
 
 
 async def _apply_wager_roles(user_id: int):
     await bot.wait_until_ready()
-    ensure_user_sync(user_id)
-    total = data[str(user_id)].get("lifetime_wagered", 0)
+    user = await get_user_or_create(user_id)
+    total = user.get("lifetime_wagered", 0)
 
     target_role_id = None
     for threshold, role_id in WAGER_ROLE_TIERS:
@@ -1272,28 +1075,23 @@ async def _apply_wager_roles(user_id: int):
                     pass
 
 
-def add_history(user_id, entry):
-    ensure_user_sync(user_id)
+async def add_history(user_id, entry):
     uid = str(user_id)
+    await log_history(uid, entry.get("game", "unknown"), entry)
 
     game = entry.get("game")
     bet = int(entry.get("bet", 0) or 0)
     earned = int(entry.get("earned", 0) or 0)
 
     if earned > 0:
-        _quest_add_earn(uid, earned)
+        await _quest_add_earn(uid, earned)
     if bet > 0 and game in GAMBLE_GAMES:
-        _quest_add_wager(uid, bet)
-        data[uid]["lifetime_wagered"] = data[uid].get("lifetime_wagered", 0) + bet
-        refresh_achievements(uid)
+        await _quest_add_wager(uid, bet)
+        user = await get_user_or_create(uid)
+        lifetime = user.get("lifetime_wagered", 0) + bet
+        await update_user(uid, {"lifetime_wagered": lifetime})
+        await refresh_achievements(uid)
         asyncio.create_task(_apply_wager_roles(int(uid)))
-
-    hist = data[uid].get("history", [])
-    hist.append(entry)
-    if len(hist) > 50:
-        hist = hist[-50:]
-    data[uid]["history"] = hist
-    persist_state(data)
 
 
 def play_again_enabled(game_key: str) -> bool:
@@ -1311,8 +1109,7 @@ def create_play_again_button(interaction, game_key: str, bet_amount: float, rest
         async def callback(self, interaction):
             if interaction.user.id != interaction.user.id:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
-            ensure_user_sync(interaction.user.id)
-            user = data[str(interaction.user.id)]
+            user = await get_user_or_create(interaction.user.id)
             if user.get("gems", 0) < bet_amount:
                 try:
                     await interaction.response.edit_message(view=self.view)
@@ -1387,10 +1184,6 @@ def parse_duration(d: str):
     return None
 
 
-def normalize_code_name(code_name: str) -> str:
-    return code_name.strip().lower()
-
-
 LOAN_MAX_RATIO = 0.10
 LOAN_DURATION_SECONDS = 72 * 3600
 LOAN_REMINDER_SECONDS = 24 * 3600
@@ -1449,18 +1242,28 @@ def find_role_by_query(guild: discord.Guild, query: str):
     return None
 
 
-def consume_rig(u):
+async def consume_rig(user_id: int):
+    user = await get_user_or_create(user_id)
     mode = None
-    if u.get("curse_infinite") or u.get("curse_charges", 0) > 0:
-        mode = "curse"
-        if u.get("curse_charges", 0) > 0:
-            u["curse_charges"] -= 1
-    elif u.get("bless_infinite") or u.get("bless_charges", 0) > 0:
-        mode = "bless"
-        if u.get("bless_charges", 0) > 0:
-            u["bless_charges"] -= 1
+    curse_charges = user.get("curse_charges", 0)
+    bless_charges = user.get("bless_charges", 0)
 
-    persist_state(data)
+    if user.get("curse_infinite") or curse_charges > 0:
+        mode = "curse"
+        if curse_charges > 0:
+            curse_charges -= 1
+    elif user.get("bless_infinite") or bless_charges > 0:
+        mode = "bless"
+        if bless_charges > 0:
+            bless_charges -= 1
+
+    await update_user(
+        user_id,
+        {
+            "curse_charges": curse_charges,
+            "bless_charges": bless_charges,
+        },
+    )
     return mode
 
 
@@ -1580,15 +1383,20 @@ async def _send_loan_notification(user_identifier, loan: dict, action: str, amou
 @tasks.loop(minutes=30)
 async def loan_watchdog():
     now = time.time()
-    dirty = False
+    if not supabase:
+        return
 
-    for uid, u in list(data.items()):
-        if not uid.isdigit():
-            continue
+    response = await run_supabase(
+        supabase.table("users")
+        .select("discord_id, loan")
+        .neq("loan", None)
+        .execute
+    )
 
-        ensure_user_sync(uid)
-        loan = u.get("loan")
-        if not loan:
+    for row in response.data or []:
+        uid = row.get("discord_id")
+        loan = row.get("loan")
+        if not uid or not loan:
             continue
 
         status = loan.get("status")
@@ -1597,23 +1405,19 @@ async def loan_watchdog():
             if now - last_ping >= LOAN_REMINDER_SECONDS:
                 await _dm_loan_reminder(uid, loan)
                 loan["last_reminder"] = now
-                dirty = True
 
             if now >= loan.get("due_at", 0):
                 loan["status"] = "defaulted"
                 loan["last_default_log"] = now
-                dirty = True
                 await _dm_loan_default(uid, loan)
 
         elif status == "defaulted":
             last_default_log = loan.get("last_default_log", loan.get("due_at", now))
             if now - last_default_log >= LOAN_REMINDER_SECONDS:
                 loan["last_default_log"] = now
-                dirty = True
                 await _dm_loan_default(uid, loan)
 
-    if dirty:
-        persist_state(data)
+        await update_user(uid, {"loan": loan})
 
 
 @bot.tree.error
@@ -1764,8 +1568,7 @@ async def roblox_verification_flow(interaction: discord.Interaction, roblox_user
         return None
 
     uid = str(interaction.user.id)
-    links = data.get("roblox_links", {})
-    old_link = links.get(uid)
+    old_link = await get_roblox_link(uid)
 
     # Detect username change → DM owner
     if old_link and old_link["username"].lower() != profile["username"].lower():
@@ -1891,67 +1694,22 @@ async def roblox_verification_flow(interaction: discord.Interaction, roblox_user
     await view.wait()
 
     if view.result is True:
-        # Save / update link
-        links[uid] = {
-            "username": profile["username"],
-            "user_id": profile["user_id"],
-            "display_name": profile["display_name"],
-            "avatar_url": profile["avatar_url"],
-            "last_verified": time.time(),
-        }
-        data["roblox_links"] = links
-        persist_state(data)
+        await set_roblox_link(
+            uid,
+            {
+                "username": profile["username"],
+                "user_id": profile["user_id"],
+                "display_name": profile["display_name"],
+                "avatar_url": profile["avatar_url"],
+                "last_verified": time.time(),
+            },
+        )
         return profile
 
     return None
 
 
 
-
-
-# ==============================================================
-#                 DEPOSIT / WITHDRAW DATA DEFAULTS
-# ==============================================================
-
-# Core defaults
-data.setdefault("withdrawals", [])
-data.setdefault("deposits", [])
-data.setdefault("next_withdraw_id", 1)
-data.setdefault("next_deposit_id", 1)
-data.setdefault("roblox_links", {})          # discord_id -> {username, user_id, avatar_url}
-data.setdefault("wheel_last_spin", {})
-data.setdefault("wheel_extra_spins", {})
-persist_state(data)
-
-# Safety: if old code left dicts here, force them to lists
-if not isinstance(data.get("withdrawals"), list):
-    data["withdrawals"] = []
-if not isinstance(data.get("deposits"), list):
-    data["deposits"] = []
-persist_state(data)
-
-# --- MIGRATION PATCH FOR OLD ENTRIES (fix KeyError: 'type') ---
-changed = False
-
-for w in data.get("withdrawals", []):
-    if "type" not in w:
-        # Best guess: old system probably only had gems
-        w["type"] = "gems"
-        changed = True
-    if "status" not in w:
-        w["status"] = "pending"
-        changed = True
-
-for d in data.get("deposits", []):
-    if "type" not in d:
-        d["type"] = "gems"
-        changed = True
-    if "status" not in d:
-        d["status"] = "pending"
-        changed = True
-
-if changed:
-    persist_state(data)
 
 
 # ==============================================================
@@ -2046,44 +1804,46 @@ async def roblox_lookup(username: str):
         return None, None, None
 
 
-def get_roblox_link_for(discord_id: int):
-    return data.get("roblox_links", {}).get(str(discord_id))
+async def get_roblox_link_for(discord_id: int):
+    return await get_roblox_link(discord_id)
 
 
-def set_roblox_link_for(discord_id: int, username: str, roblox_id: int, avatar_url: str | None):
-    links = data.setdefault("roblox_links", {})
-    links[str(discord_id)] = {
-        "username": username,
-        "user_id": roblox_id,
-        "avatar_url": avatar_url,
-    }
-    persist_state(data)
+async def set_roblox_link_for(discord_id: int, username: str, roblox_id: int, avatar_url: str | None):
+    await set_roblox_link(
+        discord_id,
+        {
+            "username": username,
+            "user_id": roblox_id,
+            "avatar_url": avatar_url,
+        },
+    )
 
 
 # ==============================================================
 #      HELPERS: FIND DUPLICATE ROBLOX ACCOUNTS (MULTI DISCORD)
 # ==============================================================
 
-def find_roblox_duplicates():
+async def find_roblox_duplicates():
     """
     Returns dict[roblox_id] -> list[discord_id] where same roblox_id
     is linked by 2+ different Discord accounts.
     """
-    links = data.get("roblox_links", {})
+    if not supabase:
+        return {}
+    response = await run_supabase(supabase.table("roblox_links").select("*").execute)
     by_rid: dict[int, list[int]] = {}
-
-    for did_str, info in links.items():
+    for info in response.data or []:
+        rid = info.get("user_id")
+        did = info.get("discord_id")
+        if not rid or not did:
+            continue
         try:
-            did = int(did_str)
+            did_int = int(did)
         except ValueError:
             continue
-        rid = info.get("user_id")
-        if not rid:
-            continue
-        by_rid.setdefault(rid, []).append(did)
+        by_rid.setdefault(int(rid), []).append(did_int)
 
-    duplicates = {rid: dids for rid, dids in by_rid.items() if len(dids) > 1}
-    return duplicates
+    return {rid: dids for rid, dids in by_rid.items() if len(dids) > 1}
 
 
 @bot.tree.command()
@@ -2095,7 +1855,7 @@ async def robloxdupes(interaction: discord.Interaction):
     Admin command: show all Roblox accounts linked by multiple Discord users.
     Usage: /robloxdupes
     """
-    duplicates = find_roblox_duplicates()
+    duplicates = await find_roblox_duplicates()
     if not duplicates:
         return await send_response(interaction, "✅ No duplicated Roblox links found.")
 
@@ -2116,42 +1876,49 @@ async def robloxdupes(interaction: discord.Interaction):
 #                WITHDRAW LIMIT / COOLDOWN HELPERS
 # ==============================================================
 
-def get_user_withdraws_last_2d(user_id: int):
+async def get_user_withdraws_last_2d(user_id: int):
     """
     Sum amount (base amount, not fee) of this user's withdraws
     in the last 48h (pending + accepted).
     """
     now = time.time()
     cutoff = now - WITHDRAW_WINDOW_SEC
+    if not supabase:
+        return 0
+    response = await run_supabase(
+        supabase.table("withdrawals")
+        .select("amount, created_at, status")
+        .eq("user_id", user_id)
+        .gte("created_at", cutoff)
+        .execute
+    )
     total = 0
-    for w in data.get("withdrawals", []):
-        if w.get("user_id") != user_id:
-            continue
-        if w.get("created_at", 0) < cutoff:
-            continue
+    for w in response.data or []:
         if w.get("status") not in ("pending", "accepted"):
             continue
         total += int(w.get("amount", 0) or 0)
     return total
 
 
-def has_pending_withdraw(user_id: int) -> bool:
-    for w in data.get("withdrawals", []):
-        if w.get("user_id") == user_id and w.get("status") == "pending":
-            return True
-    return False
+async def has_pending_withdraw(user_id: int) -> bool:
+    if not supabase:
+        return False
+    response = await run_supabase(
+        supabase.table("withdrawals")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("status", "pending")
+        .execute
+    )
+    return bool(response.data)
 
 
-def record_withdraw_cooldown(user_id: int):
-    ensure_user_sync(user_id)
-    u = data[str(user_id)]
-    u["last_withdraw_cmd"] = time.time()
-    persist_state(data)
+async def record_withdraw_cooldown(user_id: int):
+    await update_user(user_id, {"last_withdraw_cmd": time.time()})
 
 
-def check_withdraw_cooldown(user_id: int):
-    ensure_user_sync(user_id)
-    u = data[str(user_id)]
+async def check_withdraw_cooldown(user_id: int):
+    u = await get_user_or_create(user_id)
     last = u.get("last_withdraw_cmd", 0)
     if last == 0:
         return 0
@@ -2164,11 +1931,9 @@ def check_withdraw_cooldown(user_id: int):
 #              INTERNAL CREATORS (NO UI, JUST LOGIC)
 # ==============================================================
 
-def _create_withdraw_entry(user: discord.User, amount: int,
-                           deducted: int, roblox_username: str | None):
-    wid = data.get("next_withdraw_id", 1)
+async def _create_withdraw_entry(user: discord.User, amount: int,
+                                 deducted: int, roblox_username: str | None):
     entry = {
-        "id": wid,
         "user_id": user.id,
         "discord_tag": str(user),
         "type": "gems",
@@ -2178,18 +1943,15 @@ def _create_withdraw_entry(user: discord.User, amount: int,
         "status": "pending",           # pending / accepted / denied
         "created_at": time.time(),
     }
-    arr = data.setdefault("withdrawals", [])
-    arr.append(entry)
-    data["next_withdraw_id"] = wid + 1
-    persist_state(data)
+    created = await create_withdraw(entry)
+    if created and created.get("id") is not None:
+        entry["id"] = created["id"]
     return entry
 
 
-def _create_deposit_entry(user: discord.User, amount: int,
-                          roblox_username: str | None):
-    did = data.get("next_deposit_id", 1)
+async def _create_deposit_entry(user: discord.User, amount: int,
+                                roblox_username: str | None):
     entry = {
-        "id": did,
         "user_id": user.id,
         "discord_tag": str(user),
         "type": "gems",
@@ -2198,10 +1960,9 @@ def _create_deposit_entry(user: discord.User, amount: int,
         "status": "pending",          # pending / accepted / denied
         "created_at": time.time(),
     }
-    arr = data.setdefault("deposits", [])
-    arr.append(entry)
-    data["next_deposit_id"] = did + 1
-    persist_state(data)
+    created = await create_deposit(entry)
+    if created and created.get("id") is not None:
+        entry["id"] = created["id"]
     return entry
 
 
@@ -2216,8 +1977,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
     """
     Shared withdraw logic once avatar is confirmed.
     """
-    ensure_user_sync(user.id)
-    u = data[str(user.id)]
+    u = await get_user_or_create(user.id)
 
     # parse amount
     amount = parse_amount(amount_str, u.get("gems", 0), allow_all=False)
@@ -2227,7 +1987,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
         )
 
     # cooldown check
-    remain = check_withdraw_cooldown(user.id)
+    remain = await check_withdraw_cooldown(user.id)
     if remain > 0:
         mins = int(remain // 60)
         secs = int(remain % 60)
@@ -2247,7 +2007,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
         return
 
     # one pending only
-    if has_pending_withdraw(user.id):
+    if await has_pending_withdraw(user.id):
         await interaction.response.send_message(
             "❌ You already have a pending withdraw. Wait for staff to handle it first.",
             ephemeral=True
@@ -2264,7 +2024,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
         return
 
     # 48h limit
-    used = get_user_withdraws_last_2d(user.id)
+    used = await get_user_withdraws_last_2d(user.id)
     limit = WITHDRAW_GEMS_LIMIT_2D
 
     if used + amount > limit:
@@ -2301,13 +2061,11 @@ async def finalize_withdraw(interaction: discord.Interaction,
         return
 
     # deduct
-    u["gems"] = balance - deducted
-    persist_state(data)
+    await update_user(user.id, {"gems": balance - deducted})
 
-    record_withdraw_cooldown(user.id)
+    await record_withdraw_cooldown(user.id)
 
-    # queue entry
-    entry = _create_withdraw_entry(
+    entry = await _create_withdraw_entry(
         user=user,
         amount=int(amount),
         deducted=int(deducted),
@@ -2315,7 +2073,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
     )
 
     # history
-    add_history(user.id, {
+    await add_history(user.id, {
         "game": "withdraw_gems",
         "bet": deducted,
         "result": "pending",
@@ -2341,7 +2099,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
             ("Amount", fmt(amount), True),
             ("Deducted", fmt(deducted), True),
             ("Roblox Username", roblox_username or "None", False),
-            ("Entry ID", f"#{entry['id']}", True),
+            ("Entry ID", f"#{entry.get('id', '?')}", True),
         ],
     )
 
@@ -2354,8 +2112,7 @@ async def finalize_deposit(interaction: discord.Interaction,
     Create a pending deposit request.
     No balance changes here. Staff adds on accept.
     """
-    ensure_user_sync(user.id)
-    u = data[str(user.id)]
+    u = await get_user_or_create(user.id)
 
     amount = parse_amount(amount_str, u.get("gems", 0), allow_all=False)
     if amount is None or amount <= 0:
@@ -2363,14 +2120,14 @@ async def finalize_deposit(interaction: discord.Interaction,
             "❌ Invalid amount.", ephemeral=True
         )
 
-    entry = _create_deposit_entry(
+    entry = await _create_deposit_entry(
         user=user,
         amount=int(amount),
         roblox_username=roblox_username,
     )
 
     # history (info only)
-    add_history(user.id, {
+    await add_history(user.id, {
         "game": "deposit_gems",
         "bet": 0,
         "result": "pending",
@@ -2395,7 +2152,7 @@ async def finalize_deposit(interaction: discord.Interaction,
             ("Type", "gems", True),
             ("Amount", fmt(amount), True),
             ("Roblox Username", roblox_username or "None", False),
-            ("Entry ID", f"#{entry['id']}", True),
+            ("Entry ID", f"#{entry.get('id', '?')}", True),
         ],
     )
 
@@ -2431,7 +2188,7 @@ class RobloxConfirmView(discord.ui.View):
         After a user links a Roblox account, check if same roblox_id
         is used by multiple Discord users and DM owner.
         """
-        duplicates = find_roblox_duplicates()
+        duplicates = await find_roblox_duplicates()
         if self.roblox_id not in duplicates:
             return
 
@@ -2452,7 +2209,7 @@ class RobloxConfirmView(discord.ui.View):
     @discord.ui.button(label="✅ Yes, that's me", style=discord.ButtonStyle.success)
     async def yes_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # store link
-        set_roblox_link_for(
+        await set_roblox_link_for(
             discord_id=self.target.id,
             username=self.username,
             roblox_id=self.roblox_id,
@@ -2527,7 +2284,7 @@ class WithdrawGemsModal(discord.ui.Modal, title="Gems Withdraw"):
         amount_str = str(self.amount.value).strip()
 
         # Check if user is changing username vs stored one (for DM to owner)
-        existing = get_roblox_link_for(self.target.id)
+        existing = await get_roblox_link_for(self.target.id)
         if existing:
             old_username = existing.get("username", "")
             if old_username and old_username.lower() != username.lower():
@@ -2598,8 +2355,8 @@ async def withdraw(interaction):
     Player command:
     /withdraw  -> opens panel with Gems withdraw (forms)
     """
-    ensure_user_sync(interaction.user.id)
-    if _loan_is_restricted(interaction.user.id):
+    await get_user_or_create(interaction.user.id)
+    if await _loan_is_restricted(interaction.user.id):
         embed = discord.Embed(
             title="🚫 Withdraw Locked — Active Debt",
             description=(
@@ -2653,7 +2410,7 @@ class DepositGemsModal(discord.ui.Modal, title="Gems Deposit"):
         amount_str = str(self.amount.value).strip()
 
         # Check if user is changing username vs stored one (DM owner)
-        existing = get_roblox_link_for(self.target.id)
+        existing = await get_roblox_link_for(self.target.id)
         if existing:
             old_username = existing.get("username", "")
             if old_username and old_username.lower() != username.lower():
@@ -2724,8 +2481,8 @@ async def deposit(interaction):
     Player command:
     /deposit  -> opens panel with Gems deposit (forms)
     """
-    ensure_user_sync(interaction.user.id)
-    if _loan_is_restricted(interaction.user.id):
+    await get_user_or_create(interaction.user.id)
+    if await _loan_is_restricted(interaction.user.id):
         embed = discord.Embed(
             title="🚫 Deposits Locked — Active Debt",
             description=(
@@ -2758,8 +2515,7 @@ async def deposit(interaction):
 
 @bot.tree.command()
 async def loan(interaction, amount: str):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
+    u = await get_user_or_create(interaction.user.id)
     limit = _loan_limit(u)
     if u.get("lifetime_wagered", 0) <= 0 or limit <= 0:
         return await send_response(interaction, embed=_loan_embed(
@@ -2799,14 +2555,13 @@ async def loan(interaction, amount: str):
         "last_reminder": now,
     }
 
-    _set_loan(interaction.user.id, loan_data)
-    u["gems"] = u.get("gems", 0) + val
-    persist_state(data)
+    await _set_loan(interaction.user.id, loan_data)
+    await update_user(interaction.user.id, {"gems": u.get("gems", 0) + val})
 
     await _send_loan_notification(interaction.user, loan_data, "taken", val)
 
-    grant_achievement(interaction.user.id, "first_loan")
-    refresh_achievements(interaction.user.id)
+    await grant_achievement(interaction.user.id, "first_loan")
+    await refresh_achievements(interaction.user.id)
 
     embed = discord.Embed(
         title="💠 Loan Approved",
@@ -2834,8 +2589,7 @@ async def payback(interaction, member: discord.Member = None):
             discord.Color.red(),
         ))
 
-    ensure_user_sync(target.id)
-    u = data[str(target.id)]
+    u = await get_user_or_create(target.id)
     loan = u.get("loan")
 
     if not loan or loan.get("status") not in {"active", "defaulted"}:
@@ -2853,12 +2607,12 @@ async def payback(interaction, member: discord.Member = None):
             discord.Color.red(),
         ))
 
-    u["gems"] -= needed
+    await update_user(target.id, {"gems": u.get("gems", 0) - needed})
     loan["status"] = "paid"
     loan["paid_at"] = time.time()
-    persist_state(data)
+    await update_user(target.id, {"loan": loan})
 
-    add_history(target.id, {
+    await add_history(target.id, {
         "game": "loan_payback",
         "bet": needed,
         "result": "paid",
@@ -2866,7 +2620,7 @@ async def payback(interaction, member: discord.Member = None):
         "timestamp": time.time(),
     })
 
-    refresh_achievements(str(target.id))
+    await refresh_achievements(str(target.id))
 
     description = (
         f"💎 Paid **{fmt(needed)}** gems from <@{target.id}>'s balance.\n"
@@ -2893,9 +2647,9 @@ async def payback(interaction, member: discord.Member = None):
 @bot.tree.command(name="achievements")
 async def achievements_cmd(interaction, member: discord.Member = None):
     target = member or interaction.user
-    ensure_user_sync(target.id)
-    refresh_achievements(target.id)
-    ach = achievement_record(target.id)
+    await get_user_or_create(target.id)
+    await refresh_achievements(target.id)
+    ach = await achievement_record(target.id)
 
     lines = []
     for key, meta in ACHIEVEMENT_DEFS.items():
@@ -2993,8 +2747,8 @@ class WithdrawAdminView(discord.ui.View):
         if cur["status"] != "pending":
             return await interaction.response.send_message("Already handled.", ephemeral=True)
 
+        await set_withdraw_status(cur["id"], "accepted", None)
         cur["status"] = "accepted"
-        persist_state(data)
 
         await interaction.response.send_message(
             f"✅ Withdraw **#{cur['id']}** marked as **ACCEPTED**.\n"
@@ -3024,15 +2778,10 @@ class WithdrawAdminView(discord.ui.View):
         if cur["status"] != "pending":
             return await interaction.response.send_message("Already handled.", ephemeral=True)
 
-        # Refund deducted amount
         uid = str(cur["user_id"])
-        ensure_user_sync(uid)
-        u = data[uid]
-        u["gems"] = float(u.get("gems", 0)) + cur["deducted"]
-        persist_state(data)
-
+        await adjust_user_gems(uid, cur["deducted"])
+        await set_withdraw_status(cur["id"], "denied", None)
         cur["status"] = "denied"
-        persist_state(data)
 
         await interaction.response.send_message(
             f"❌ Withdraw **#{cur['id']}** denied. "
@@ -3070,7 +2819,7 @@ async def withdrawpanel(interaction: discord.Interaction):
     Admin command:
     /withdrawpanel  -> open admin viewer for pending withdraws
     """
-    pending = [w for w in data.get("withdrawals", []) if w.get("status") == "pending"]
+    pending = await list_pending_withdraws()
     if not pending:
         return await send_response(interaction, "✅ No pending withdraws.")
 
@@ -3158,14 +2907,10 @@ class DepositAdminView(discord.ui.View):
             return await interaction.response.send_message("Already handled.", ephemeral=True)
 
         uid = str(cur["user_id"])
-        ensure_user_sync(uid)
-        u = data[uid]
+        await adjust_user_gems(uid, cur["amount"])
 
-        u["gems"] = float(u.get("gems", 0)) + cur["amount"]
-        persist_state(data)
-
+        await set_deposit_status(cur["id"], "accepted", None)
         cur["status"] = "accepted"
-        persist_state(data)
 
         await interaction.response.send_message(
             f"✅ Deposit **#{cur['id']}** accepted.\n"
@@ -3193,8 +2938,8 @@ class DepositAdminView(discord.ui.View):
         if cur["status"] != "pending":
             return await interaction.response.send_message("Already handled.", ephemeral=True)
 
+        await set_deposit_status(cur["id"], "denied", None)
         cur["status"] = "denied"
-        persist_state(data)
 
         await interaction.response.send_message(
             f"❌ Deposit **#{cur['id']}** denied. No balance change.",
@@ -3230,7 +2975,7 @@ async def depositpanel(interaction: discord.Interaction):
     Admin command:
     /depositpanel  -> open admin viewer for pending deposits
     """
-    pending = [d for d in data.get("deposits", []) if d.get("status") == "pending"]
+    pending = await list_pending_deposits()
     if not pending:
         return await send_response(interaction, "✅ No pending deposits.")
 
@@ -3255,60 +3000,60 @@ QUEST_RESET_INTERVAL = 24 * 60 * 60  # 24 hours
 # --------------------------------------------------------------
 #      Get/Create Quest Data for a User
 # --------------------------------------------------------------
-def get_user_quests(uid):
-    q = data["quests"].get(uid)
-    if not q:
-        q = {
-            "earn": 0,
-            "earn_goal": 50_000_000,
-
-            "deposit": 0,
-            "deposit_goal": 50_000_000,
-
-            "wager": 0,
-            "wager_goal": 100_000_000,
-
-            "completed": False
-        }
-        data["quests"][uid] = q
-        persist_state(data)
-    return q
+async def get_user_quests(uid):
+    user = await get_user_or_create(uid)
+    await check_daily_reset(uid)
+    user = await get_user_or_create(uid)
+    return {
+        "earn": user.get("quest_earn", 0),
+        "earn_goal": 50_000_000,
+        "deposit": user.get("quest_deposit", 0),
+        "deposit_goal": 50_000_000,
+        "wager": user.get("quest_wager", 0),
+        "wager_goal": 100_000_000,
+        "completed": user.get("quest_completed", False),
+    }
 
 
 # --------------------------------------------------------------
 #                      Quest Reset
 # --------------------------------------------------------------
-def reset_quests():
-    data["quests"] = {}
-    data["quest_last_reset"] = time.time()
-    persist_state(data)
+async def reset_quests(uid):
+    await update_user(
+        uid,
+        {
+            "quest_earn": 0,
+            "quest_deposit": 0,
+            "quest_wager": 0,
+            "quest_completed": False,
+            "quest_last_reset": time.time(),
+        },
+    )
 
-def check_daily_reset():
-    last = data.get("quest_last_reset", 0)
+async def check_daily_reset(uid):
+    user = await get_user_or_create(uid)
+    last = user.get("quest_last_reset", 0)
     if time.time() - last >= QUEST_RESET_INTERVAL:
-        reset_quests()
+        await reset_quests(uid)
 
 
 # --------------------------------------------------------------
 #                  Quest Progress Adders
 # --------------------------------------------------------------
-def _quest_add_earn(uid, amount):
-    check_daily_reset()
-    q = get_user_quests(uid)
-    q["earn"] += amount
-    persist_state(data)
+async def _quest_add_earn(uid, amount):
+    await check_daily_reset(uid)
+    user = await get_user_or_create(uid)
+    await update_user(uid, {"quest_earn": user.get("quest_earn", 0) + amount})
 
-def _quest_add_deposit(uid, amount):
-    check_daily_reset()
-    q = get_user_quests(uid)
-    q["deposit"] += amount
-    persist_state(data)
+async def _quest_add_deposit(uid, amount):
+    await check_daily_reset(uid)
+    user = await get_user_or_create(uid)
+    await update_user(uid, {"quest_deposit": user.get("quest_deposit", 0) + amount})
 
-def _quest_add_wager(uid, amount):
-    check_daily_reset()
-    q = get_user_quests(uid)
-    q["wager"] += amount
-    persist_state(data)
+async def _quest_add_wager(uid, amount):
+    await check_daily_reset(uid)
+    user = await get_user_or_create(uid)
+    await update_user(uid, {"quest_wager": user.get("quest_wager", 0) + amount})
 
 
  # --------------------------------------------------------------
@@ -3317,9 +3062,9 @@ def _quest_add_wager(uid, amount):
 @bot.tree.command()
 async def quest(interaction):
 
-    check_daily_reset()
     uid = str(interaction.user.id)
-    q = get_user_quests(uid)
+    await check_daily_reset(uid)
+    q = await get_user_quests(uid)
 
     def bar(current, goal):
         percent = min(100, int((current / goal) * 100))
@@ -3378,9 +3123,9 @@ async def quest(interaction):
 @bot.tree.command()
 async def questclaim(interaction):
 
-    check_daily_reset()
     uid = str(interaction.user.id)
-    q = get_user_quests(uid)
+    await check_daily_reset(uid)
+    q = await get_user_quests(uid)
 
     # Already claimed
     if q["completed"]:
@@ -3395,17 +3140,16 @@ async def questclaim(interaction):
         return await send_response(interaction, "❌ You haven't completed all quests yet.")
 
     # Reward
-    ensure_user_sync(uid)
-    data[uid]["gems"] += 100_000_000
-
-    # Count quest reward as free income
-    data[uid]["free_income"] = data[uid].get("free_income", 0) + 100_000_000
-
-    # Deposit bonus +10%
-    data["deposit_bonuses"][uid] = data["deposit_bonuses"].get(uid, 0) + 10
-
-    q["completed"] = True
-    persist_state(data)
+    user = await get_user_or_create(uid)
+    await update_user(
+        uid,
+        {
+            "gems": user.get("gems", 0) + 100_000_000,
+            "free_income": user.get("free_income", 0) + 100_000_000,
+            "deposit_bonus": user.get("deposit_bonus", 0) + 10,
+            "quest_completed": True,
+        },
+    )
 
     await send_response(interaction, "🎉 You claimed **100m gems + 10% deposit bonus**! Nice work!")
 
@@ -3496,33 +3240,20 @@ async def wheel(interaction):
     """
 
     uid = str(interaction.user.id)
-    ensure_user_sync(uid)
+    user = await get_user_or_create(uid)
 
-    # ---------------------------
-    # SAFETY: Ensure structures exist
-    # ---------------------------
-    if "wheel_extra_spins" not in data or not isinstance(data["wheel_extra_spins"], dict):
-        data["wheel_extra_spins"] = {}
-
-    if "wheel_last_spin" not in data or not isinstance(data["wheel_last_spin"], dict):
-        data["wheel_last_spin"] = {}
-
-    # --------------------------------------------------
-    # EXTRA SPINS (no cooldown)
-    # --------------------------------------------------
-    extra_spins = data["wheel_extra_spins"].get(uid, 0)
+    extra_spins = user.get("wheel_extra_spins", 0)
     bypass_cooldown = False
 
     if extra_spins > 0:
-        data["wheel_extra_spins"][uid] = extra_spins - 1
-        persist_state(data)
+        await update_user(uid, {"wheel_extra_spins": extra_spins - 1})
         bypass_cooldown = True
 
     # --------------------------------------------------
     # NORMAL COOLDOWN (24h)
     # --------------------------------------------------
     now = time.time()
-    last = data["wheel_last_spin"].get(uid, 0)
+    last = user.get("wheel_last_spin", 0)
 
     if not bypass_cooldown:
         if now - last < WHEEL_COOLDOWN:
@@ -3534,8 +3265,7 @@ async def wheel(interaction):
                 f"Next spin in **{h}h {m}m {s}s**."
             )
 
-        data["wheel_last_spin"][uid] = now
-        persist_state(data)
+        await update_user(uid, {"wheel_last_spin": now})
 
     # --------------------------------------------------
     # SPIN ANIMATION SETUP
@@ -3587,10 +3317,9 @@ async def wheel(interaction):
     # APPLY PRIZE
     # --------------------------------------------------
     if prize_obj["type"] == "gems":
-        data[uid]["gems"] = data[uid].get("gems", 0) + prize_obj["amount"]
-        persist_state(data)
+        await adjust_user_gems(uid, prize_obj["amount"])
 
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "wheel",
             "bet": 0,
             "result": prize_obj["name"],
@@ -3599,14 +3328,10 @@ async def wheel(interaction):
         })
 
     elif prize_obj["type"] == "bonus":
-        if "deposit_bonuses" not in data:
-            data["deposit_bonuses"] = {}
+        user = await get_user_or_create(uid)
+        await update_user(uid, {"deposit_bonus": user.get("deposit_bonus", 0) + prize_obj["bonus"]})
 
-        bonus_map = data["deposit_bonuses"]
-        bonus_map[uid] = bonus_map.get(uid, 0) + prize_obj["bonus"]
-        persist_state(data)
-
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "wheel",
             "bet": 0,
             "result": f"deposit_bonus_{prize_obj['bonus']}%",
@@ -3650,12 +3375,6 @@ async def adminwheel(interaction: discord.Interaction, spins: int, member: disco
       /adminwheel spins:2 everyone:true
     """
 
-    # -------------------------
-    # SAFETY: ensure structure
-    # -------------------------
-    if "wheel_extra_spins" not in data or not isinstance(data["wheel_extra_spins"], dict):
-        data["wheel_extra_spins"] = {}
-
     if spins <= 0:
         return await send_response(interaction, "❌ Spins must be a positive number.")
 
@@ -3668,12 +3387,9 @@ async def adminwheel(interaction: discord.Interaction, spins: int, member: disco
             if member.bot:
                 continue
             uid = str(member.id)
-            ensure_user_sync(uid)
-
-            data["wheel_extra_spins"][uid] = data["wheel_extra_spins"].get(uid, 0) + spins
+            user = await get_user_or_create(uid)
+            await update_user(uid, {"wheel_extra_spins": user.get("wheel_extra_spins", 0) + spins})
             count += 1
-
-        persist_state(data)
         return await send_response(interaction, 
             f"🌍 Gave **{spins} extra spins** to **{count} users**."
         )
@@ -3686,10 +3402,8 @@ async def adminwheel(interaction: discord.Interaction, spins: int, member: disco
 
     user = member
     uid = str(user.id)
-    ensure_user_sync(uid)
-
-    data["wheel_extra_spins"][uid] = data["wheel_extra_spins"].get(uid, 0) + spins
-    persist_state(data)
+    user_data = await get_user_or_create(uid)
+    await update_user(uid, {"wheel_extra_spins": user_data.get("wheel_extra_spins", 0) + spins})
 
     await send_response(interaction, 
         f"🎡 Gave **{spins} extra spins** to {user.mention}."
@@ -3760,11 +3474,9 @@ async def guessthenumber(interaction, prize: str):
 
         # CORRECT GUESS
         winner = msg.author
-        ensure_user_sync(winner.id)
-        data[str(winner.id)]["gems"] += parsed_prize
-        persist_state(data)
+        await adjust_user_gems(winner.id, parsed_prize)
 
-        add_history(winner.id, {
+        await add_history(winner.id, {
             "game": "guess_number",
             "bet": 0,
             "result": f"win_{secret}",
@@ -3910,31 +3622,33 @@ async def cleanhistory(interaction, time_str: str):
             continue
 
         uid = str(member.id)
-        if uid not in data:
+        user_data = await get_user_or_create(uid)
+
+        if not supabase:
             continue
 
-        user_data = data[uid]
-        history_list = user_data.get("history", [])
+        history_resp = await run_supabase(
+            supabase.table("user_history")
+            .select("data")
+            .eq("discord_id", uid)
+            .execute
+        )
+        history_list = [row.get("data") or {} for row in history_resp.data or []]
 
-        # No history → inactive entire time
         if not history_list:
             removed = user_data.get("gems", 0)
             total_gems_removed += removed
-            user_data["gems"] = 0
+            await update_user(uid, {"gems": 0})
             cleaned.append((member, removed))
             continue
 
-        # Determine last command timestamp
         last_time = max(e.get("timestamp", 0) for e in history_list)
 
-        # Too old → inactive
         if last_time < limit:
             removed = user_data.get("gems", 0)
             total_gems_removed += removed
-            user_data["gems"] = 0
+            await update_user(uid, {"gems": 0})
             cleaned.append((member, removed))
-
-    persist_state(data)
 
     if not cleaned:
         embed = discord.Embed(
@@ -4070,7 +3784,7 @@ async def sell(interaction, name: str, income: str, price: str):
     except:
         return await send_response(interaction, "❌ Invalid number. Use: 5m, 10m, 250k, 1b, etc.")
 
-    ensure_user_sync(interaction.user.id)
+    await get_user_or_create(interaction.user.id)
 
     income_disp = short(income_val) + "/s"
     price_disp = short(price_val)
@@ -4102,23 +3816,20 @@ async def sell(interaction, name: str, income: str, price: str):
         @discord.ui.button(label="🛒 Buy", style=discord.ButtonStyle.blurple)
         async def buy(self, interaction: discord.Interaction, button):
             buyer = interaction.user
-            ensure_user_sync(buyer.id)
-            ensure_user_sync(self.owner_id)
-
-            buyer_data = data[str(buyer.id)]
+            buyer_data = await get_user_or_create(buyer.id)
+            await get_user_or_create(self.owner_id)
 
             # --- NO X50 RULE ---
             required = self.price_raw
 
-            if buyer_data["gems"] < required:
+            if buyer_data.get("gems", 0) < required:
                 return await interaction.response.send_message(
                     f"❌ You need **{fmt(required)}** gems to buy this.",
                     ephemeral=True
                 )
 
             # Remove gems from buyer
-            buyer_data["gems"] -= required
-            persist_state(data)
+            await update_user(buyer.id, {"gems": buyer_data.get("gems", 0) - required})
 
             guild = interaction.guild
             seller = guild.get_member(self.owner_id)
@@ -4185,9 +3896,8 @@ async def balance(interaction, member: discord.Member = None):
     /balance @user -> other's balance
     """
     target = member or interaction.user
-    ensure_user_sync(target.id)
-    u = data[str(target.id)]
-    gems = u["gems"]
+    u = await get_user_or_create(target.id)
+    gems = u.get("gems", 0)
 
     if target.id == interaction.user.id:
         desc = f"✨ {target.mention}\nYou currently hold **{fmt(gems)}** gems."
@@ -4208,8 +3918,7 @@ async def balance(interaction, member: discord.Member = None):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def daily(interaction):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
+    u = await get_user_or_create(interaction.user.id)
     now = time.time()
     cooldown = 24 * 3600
     last = u.get("last_daily", 0)
@@ -4227,11 +3936,12 @@ async def daily(interaction):
         return
 
     reward = 25_000_000  # 25m
-    u["gems"] += reward
-    u["last_daily"] = now
-    persist_state(data)
+    await update_user(
+        interaction.user.id,
+        {"gems": u.get("gems", 0) + reward, "last_daily": now},
+    )
 
-    add_history(interaction.user.id, {
+    await add_history(interaction.user.id, {
         "game": "daily",
         "bet": 0,
         "result": "claim",
@@ -4245,100 +3955,6 @@ async def daily(interaction):
         color=galaxy_color()
     )
     await send_response(interaction, embed=embed)
-
-
-# --------------------------------------------------------------
-#                      ADMIN CODE SYSTEM
-# --------------------------------------------------------------
-@bot.tree.command()
-@app_commands.default_permissions(manage_guild=True)
-@app_commands.checks.has_permissions(manage_guild=True)
-@app_commands.guild_only()
-async def code(interaction, code_name: str, max_claims: str, reward_amount: str):
-    code_name = code_name.strip()
-    if not code_name:
-        return await send_response(interaction, "❌ Code name cannot be empty.")
-
-    claims_value = parse_amount(max_claims)
-    if claims_value is None or claims_value <= 0 or not float(claims_value).is_integer():
-        return await send_response(interaction, "❌ Usage amount must be a positive whole number.")
-
-    reward_value = parse_amount(reward_amount)
-    if reward_value is None or reward_value <= 0:
-        return await send_response(interaction, "❌ Reward amount must be a positive number.")
-
-    normalized = normalize_code_name(code_name)
-    data.setdefault("codes", {})[normalized] = {
-        "name": code_name,
-        "max_claims": int(claims_value),
-        "current_claims": 0,
-        "redeemed_users": [],
-        "active": True,
-        "reward": int(reward_value),
-    }
-    persist_state(data)
-
-    announcement = (
-        "🎉 NEW CODE AVAILABLE 🎉\n"
-        f"Code: {code_name}\n"
-        f"Claims remaining: {int(claims_value)}\n"
-        f"Reward: {fmt(int(reward_value))} gems"
-    )
-    await send_response(interaction, announcement)
-
-
-@bot.tree.command()
-async def redeem(interaction, code_name: str):
-    normalized = normalize_code_name(code_name)
-    codes = data.get("codes", {})
-    code_entry = codes.get(normalized)
-
-    if not code_entry or not code_entry.get("active", True):
-        return await send_response(interaction, "❌ That code doesn't exist or is no longer active.")
-
-    ensure_user_sync(interaction.user.id)
-    uid = str(interaction.user.id)
-    u = data[uid]
-
-    if (
-        uid in code_entry.get("redeemed_users", [])
-        or normalize_code_name(code_entry.get("name", "")) in
-        {normalize_code_name(c) for c in u.get("redeemed_codes", [])}
-    ):
-        return await send_response(interaction, "❌ You already redeemed this code.")
-
-    remaining = code_entry.get("max_claims", 0) - code_entry.get("current_claims", 0)
-    if remaining <= 0:
-        code_entry["active"] = False
-        persist_state(data)
-        return await send_response(interaction, "❌ This code has expired.")
-
-    reward_amount = int(code_entry.get("reward", CODE_REWARD_GEMS))
-    u["gems"] = float(u.get("gems", 0)) + reward_amount
-    code_entry["current_claims"] = code_entry.get("current_claims", 0) + 1
-    code_entry.setdefault("redeemed_users", []).append(interaction.user.id)
-    if code_entry.get("name") not in u.get("redeemed_codes", []):
-        u.setdefault("redeemed_codes", []).append(code_entry.get("name"))
-
-    if code_entry["current_claims"] >= code_entry.get("max_claims", 0):
-        code_entry["active"] = False
-
-    persist_state(data)
-
-    claims_left = max(0, code_entry.get("max_claims", 0) - code_entry.get("current_claims", 0))
-    await send_response(interaction, 
-        f"✅ Code **{code_entry.get('name')}** redeemed!\n"
-        f"You received **{fmt(reward_amount)}** gems.\n"
-        f"Claims remaining: **{claims_left}**"
-    )
-
-    add_history(interaction.user.id, {
-        "game": "code_redeem",
-        "bet": 0,
-        "result": code_entry.get("name", normalized),
-        "earned": reward_amount,
-        "timestamp": time.time(),
-    })
 
 
 # --------------------------------------------------------------
@@ -4402,11 +4018,9 @@ async def guessthecolor(interaction, prize: str):
 
         # CORRECT GUESS
         winner = msg.author
-        ensure_user_sync(winner.id)
-        data[str(winner.id)]["gems"] += parsed_prize
-        persist_state(data)
+        await adjust_user_gems(winner.id, parsed_prize)
 
-        add_history(winner.id, {
+        await add_history(winner.id, {
             "game": "guess_color",
             "bet": 0,
             "result": "win",
@@ -4432,30 +4046,27 @@ async def guessthecolor(interaction, prize: str):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def gift(interaction, member: discord.Member, amount: str):
-    ensure_user_sync(interaction.user.id)
-    ensure_user_sync(member.id)
-    sender = data[str(interaction.user.id)]
-    receiver = data[str(member.id)]
+    sender = await get_user_or_create(interaction.user.id)
+    receiver = await get_user_or_create(member.id)
 
-    val = parse_amount(amount, sender["gems"], allow_all=False)
+    val = parse_amount(amount, sender.get("gems", 0), allow_all=False)
     if val is None or val <= 0:
         return await send_response(interaction, "❌ Invalid amount.")
-    if val > sender["gems"]:
+    if val > sender.get("gems", 0):
         return await send_response(interaction, "❌ You don't have enough gems.")
 
-    sender["gems"] -= val
-    receiver["gems"] += val
-    persist_state(data)
+    await update_user(interaction.user.id, {"gems": sender.get("gems", 0) - val})
+    await update_user(member.id, {"gems": receiver.get("gems", 0) + val})
 
     now = time.time()
-    add_history(interaction.user.id, {
+    await add_history(interaction.user.id, {
         "game": "gift",
         "bet": val,
         "result": f"gift_to_{member.id}",
         "earned": -val,
         "timestamp": now
     })
-    add_history(member.id, {
+    await add_history(member.id, {
         "game": "gift_received",
         "bet": val,
         "result": f"gift_from_{interaction.user.id}",
@@ -4947,7 +4558,7 @@ class HiLoSession:
             return 0, status
         self.ended = True
         hilo_sessions.pop(self.user_id, None)
-        ensure_user_sync(self.user_id)
+        user = await get_user_or_create(self.user_id)
 
         fee_applied = 0
         skip_fee = 0
@@ -4965,12 +4576,10 @@ class HiLoSession:
         if skip_fee:
             status += f"\n⭐️ Skip fees: **{fmt(skip_fee)}** deducted ({self.skip_uses}× at 5% each)."
 
-        user = data[str(self.user_id)]
-        user["gems"] += final_payout
-        persist_state(data)
+        await update_user(self.user_id, {"gems": user.get("gems", 0) + final_payout})
 
         profit = final_payout - self.amount
-        add_history(
+        await add_history(
             self.user_id,
             {
                 "game": "hilo",
@@ -5101,8 +4710,7 @@ async def hilocards(interaction):
 
 @bot.tree.command()
 async def hilo(interaction, bet: str):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
+    u = await get_user_or_create(interaction.user.id)
 
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
@@ -5128,18 +4736,16 @@ async def hilo(interaction, bet: str):
         return await send_response(interaction, active_game_blocked_message(conflicts))
 
     try:
-        u["gems"] -= amount
-        persist_state(data)
+        await update_user(interaction.user.id, {"gems": u.get("gems", 0) - amount})
 
         if not ignore_active:
             await register_active_bet([interaction.user.id], "hilo", amount)
 
-        rig = consume_rig(u)
+        rig = await consume_rig(interaction.user.id)
         session = HiLoSession(interaction, amount, bet, rig)
         await session.start()
     except Exception:
-        u["gems"] += amount
-        persist_state(data)
+        await update_user(interaction.user.id, {"gems": u.get("gems", 0)})
         await release_active_game([interaction.user.id])
         return await send_response(interaction, "❌ Failed to start Hi-Lo. Please try again.")
 # --------------------------------------------------------------
@@ -5149,9 +4755,8 @@ async def hilo(interaction, bet: str):
 
 @bot.tree.command(name="coinflip")
 async def coinflip(interaction, bet: str, choice: str):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
-    amount = parse_amount(bet, u["gems"], allow_all=True)
+    u = await get_user_or_create(interaction.user.id)
+    amount = parse_amount(bet, u.get("gems", 0), allow_all=True)
     if amount is None or amount <= 0:
         return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
@@ -5162,7 +4767,7 @@ async def coinflip(interaction, bet: str, choice: str):
         return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
-    if amount > u["gems"]:
+    if amount > u.get("gems", 0):
         return await send_response(interaction, "❌ You don't have enough gems.")
 
     choice = choice.lower()
@@ -5178,13 +4783,12 @@ async def coinflip(interaction, bet: str, choice: str):
         return await send_response(interaction, active_game_blocked_message(conflicts))
 
     try:
-        u["gems"] -= amount
-        persist_state(data)
+        await update_user(interaction.user.id, {"gems": u.get("gems", 0) - amount})
 
         if not ignore_active:
             await register_active_bet([interaction.user.id], "coinflip", amount)
 
-        rig = consume_rig(u)
+        rig = await consume_rig(interaction.user.id)
 
         if rig == "curse":
             result = "tails" if choice == "heads" else "heads"
@@ -5194,7 +4798,7 @@ async def coinflip(interaction, bet: str, choice: str):
             result = random.choice(["heads", "tails"])
 
         if result == choice:
-            u["gems"] += amount * 2
+            await adjust_user_gems(interaction.user.id, amount * 2)
             profit = amount
             res = "win"
             title = "🪙 Coinflip — You Won!"
@@ -5204,8 +4808,6 @@ async def coinflip(interaction, bet: str, choice: str):
             res = "lose"
             title = "🪙 Coinflip — You Lost"
             color = discord.Color.red()
-
-        persist_state(data)
 
         embed = discord.Embed(
             title=title,
@@ -5219,7 +4821,7 @@ async def coinflip(interaction, bet: str, choice: str):
         embed.set_footer(text="Galaxy Coinflip • 50/50 in the void 🌌")
         await send_response(interaction, embed=embed)
 
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "coinflip",
             "bet": amount,
             "result": res,
@@ -5232,10 +4834,9 @@ async def coinflip(interaction, bet: str, choice: str):
 
 @bot.tree.command(name="pvpcf")
 async def pvpcoinflip(interaction, amount: str, side: str | None = None):
-    ensure_user_sync(interaction.user.id)
-    requester = data[str(interaction.user.id)]
+    requester = await get_user_or_create(interaction.user.id)
 
-    bet_amount = parse_amount(amount, requester["gems"], allow_all=False)
+    bet_amount = parse_amount(amount, requester.get("gems", 0), allow_all=False)
     if bet_amount is None or bet_amount <= 0:
         return await send_response(interaction, "❌ Invalid bet.")
     if side is None:
@@ -5248,7 +4849,7 @@ async def pvpcoinflip(interaction, amount: str, side: str | None = None):
         return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
-    if bet_amount > requester["gems"]:
+    if bet_amount > requester.get("gems", 0):
         return await send_response(interaction, "❌ You don't have enough gems.")
 
     chosen_side = side.lower()
@@ -5305,10 +4906,10 @@ async def pvpcoinflip(interaction, amount: str, side: str | None = None):
             await release_active_game([self.requester_id])
 
         async def finalize_match(self, interaction: discord.Interaction, joiner_id: int):
-            requester_user = data[str(interaction.user.id)]
-            joiner_user = data[str(joiner_id)]
+            requester_user = await get_user_or_create(interaction.user.id)
+            joiner_user = await get_user_or_create(joiner_id)
 
-            if requester_user["gems"] < bet_amount:
+            if requester_user.get("gems", 0) < bet_amount:
                 await release_active_game([self.requester_id, joiner_id])
                 self._set_disabled(False)
                 if self.message:
@@ -5321,7 +4922,7 @@ async def pvpcoinflip(interaction, amount: str, side: str | None = None):
                 except Exception:
                     pass
                 return
-            if joiner_user["gems"] < bet_amount:
+            if joiner_user.get("gems", 0) < bet_amount:
                 await release_active_game([joiner_id])
                 self._set_disabled(False)
                 if self.message:
@@ -5331,9 +4932,8 @@ async def pvpcoinflip(interaction, amount: str, side: str | None = None):
                         pass
                 return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
 
-            requester_user["gems"] -= bet_amount
-            joiner_user["gems"] -= bet_amount
-            persist_state(data)
+            await update_user(interaction.user.id, {"gems": requester_user.get("gems", 0) - bet_amount})
+            await update_user(joiner_id, {"gems": joiner_user.get("gems", 0) - bet_amount})
 
             if not ignore_active:
                 await register_active_bet([self.requester_id, joiner_id], "pvp_coinflip", bet_amount)
@@ -5351,10 +4951,9 @@ async def pvpcoinflip(interaction, amount: str, side: str | None = None):
                 loser_id = interaction.user.id
                 winner_side = joiner_side
 
-            data[str(winner_id)]["gems"] += bet_amount * 2
-            persist_state(data)
+            await adjust_user_gems(winner_id, bet_amount * 2)
 
-            add_history(interaction.user.id, {
+            await add_history(interaction.user.id, {
                 "game": "pvp_coinflip",
                 "bet": bet_amount,
                 "result": "win" if winner_id == interaction.user.id else "loss",
@@ -5363,7 +4962,7 @@ async def pvpcoinflip(interaction, amount: str, side: str | None = None):
                 "side": requester_side,
             })
 
-            add_history(joiner_id, {
+            await add_history(joiner_id, {
                 "game": "pvp_coinflip",
                 "bet": bet_amount,
                 "result": "win" if winner_id == joiner_id else "loss",
@@ -5404,8 +5003,7 @@ async def pvpcoinflip(interaction, amount: str, side: str | None = None):
             if any(getattr(child, "disabled", False) for child in self.children):
                 return await interaction.response.send_message("❌ This match is already taken.", ephemeral=True)
 
-            ensure_user_sync(interaction.user.id)
-            joiner_data = data[str(interaction.user.id)]
+            joiner_data = await get_user_or_create(interaction.user.id)
             if joiner_data.get("gems", 0) < bet_amount:
                 return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
 
@@ -5435,10 +5033,9 @@ async def pvpcoinflip(interaction, amount: str, side: str | None = None):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def crash(interaction, bet: str):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
+    u = await get_user_or_create(interaction.user.id)
 
-    amount = parse_amount(bet, u["gems"], allow_all=True)
+    amount = parse_amount(bet, u.get("gems", 0), allow_all=True)
     if amount is None or amount <= 0:
         return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
@@ -5449,7 +5046,7 @@ async def crash(interaction, bet: str):
         return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
-    if amount > u["gems"]:
+    if amount > u.get("gems", 0):
         return await send_response(interaction, "❌ You don't have enough gems.")
 
     ignore_active = skip_active_game_tracking(interaction)
@@ -5460,13 +5057,12 @@ async def crash(interaction, bet: str):
     if not success:
         return await send_response(interaction, active_game_blocked_message(conflicts))
 
-    u["gems"] -= amount
-    persist_state(data)
+    await update_user(interaction.user.id, {"gems": u.get("gems", 0) - amount})
 
     if not ignore_active:
         await register_active_bet([interaction.user.id], "crash", amount)
 
-    rig = consume_rig(u)
+    rig = await consume_rig(interaction.user.id)
 
     owner = interaction.user.id
     CRASH_STEPS = [
@@ -5528,7 +5124,7 @@ async def crash(interaction, bet: str):
         game_over = True
         for child in view.children:
             child.disabled = True
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "crash",
             "bet": amount,
             "result": "crash",
@@ -5590,12 +5186,11 @@ async def crash(interaction, bet: str):
             game_over = True
             reward = int(amount * multiplier)
             profit = reward - amount
-            u["gems"] += reward
-            persist_state(data)
+            await adjust_user_gems(interaction.user.id, reward)
             for child in view.children:
                 child.disabled = True
 
-            add_history(interaction.user.id, {
+            await add_history(interaction.user.id, {
                 "game": "crash",
                 "bet": amount,
                 "result": "cashout",
@@ -5626,9 +5221,8 @@ async def crash(interaction, bet: str):
                     game_over = True
                     for child in view.children:
                         child.disabled = True
-                    u["gems"] += amount
-                    persist_state(data)
-                    add_history(interaction.user.id, {
+                    await adjust_user_gems(interaction.user.id, amount)
+                    await add_history(interaction.user.id, {
                         "game": "crash",
                         "bet": amount,
                         "result": "timeout",
@@ -5659,10 +5253,9 @@ async def crash(interaction, bet: str):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def slots(interaction, bet: str):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
+    u = await get_user_or_create(interaction.user.id)
 
-    amount = parse_amount(bet, u["gems"], allow_all=True)
+    amount = parse_amount(bet, u.get("gems", 0), allow_all=True)
     if amount is None or amount <= 0:
         return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
@@ -5673,7 +5266,7 @@ async def slots(interaction, bet: str):
         return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
-    if amount > u["gems"]:
+    if amount > u.get("gems", 0):
         return await send_response(interaction, "❌ You don't have enough gems.")
 
     ignore_active = skip_active_game_tracking(interaction)
@@ -5685,13 +5278,12 @@ async def slots(interaction, bet: str):
         return await send_response(interaction, active_game_blocked_message(conflicts))
 
     try:
-        u["gems"] -= amount
-        persist_state(data)
+        await update_user(interaction.user.id, {"gems": u.get("gems", 0) - amount})
 
         if not ignore_active:
             await register_active_bet([interaction.user.id], "slots", amount)
 
-        rig = consume_rig(u)
+        rig = await consume_rig(interaction.user.id)
 
         symbols = ["🍒", "🍋", "⭐", "💎"]
 
@@ -5744,7 +5336,7 @@ async def slots(interaction, bet: str):
             multiplier = 2.0
             reward = amount * multiplier
             profit = reward - amount
-            u["gems"] += reward
+            await adjust_user_gems(interaction.user.id, reward)
             result_text = f"3x {best_symbol}! You win."
             res = "win"
         else:
@@ -5753,8 +5345,6 @@ async def slots(interaction, bet: str):
             profit = -amount
             result_text = "No match."
             res = "lose"
-
-        persist_state(data)
 
         grid = (
             f"{row1[0]} {row1[1]} {row1[2]} {row1[3]}\n"
@@ -5778,7 +5368,7 @@ async def slots(interaction, bet: str):
         play_again_view = build_play_again_view(interaction, "slots", amount, lambda: slots(interaction, bet))
         await send_response(interaction, embed=embed, view=play_again_view)
 
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "slots",
             "bet": amount,
             "result": res,
@@ -5794,10 +5384,9 @@ async def slots(interaction, bet: str):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def mines(interaction, bet: str, mines: int = 3):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
+    u = await get_user_or_create(interaction.user.id)
 
-    amount = parse_amount(bet, u["gems"], allow_all=True)
+    amount = parse_amount(bet, u.get("gems", 0), allow_all=True)
     if amount is None or amount <= 0:
         return await send_response(interaction, "❌ Invalid bet!")
     if amount < MIN_GAMBLE_AMOUNT:
@@ -5808,7 +5397,7 @@ async def mines(interaction, bet: str, mines: int = 3):
         return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
-    if amount > u["gems"]:
+    if amount > u.get("gems", 0):
         return await send_response(interaction, "❌ You don't have enough gems.")
     if not 1 <= mines <= 15:
         return await send_response(interaction, "❌ Mines must be between **1 and 15**.")
@@ -5821,13 +5410,12 @@ async def mines(interaction, bet: str, mines: int = 3):
     if not success:
         return await send_response(interaction, active_game_blocked_message(conflicts))
 
-    u["gems"] -= amount
-    persist_state(data)
+    await update_user(interaction.user.id, {"gems": u.get("gems", 0) - amount})
 
     if not ignore_active:
         await register_active_bet([interaction.user.id], "mines", amount)
 
-    rig = consume_rig(u)  # 'bless', 'curse', or None
+    rig = await consume_rig(interaction.user.id)  # 'bless', 'curse', or None
     owner = interaction.user.id
 
     TOTAL = 24
@@ -5920,9 +5508,8 @@ async def mines(interaction, bet: str, mines: int = 3):
                     finalize_board()
                     for child in view.children:
                         child.disabled = True
-                    u["gems"] += amount
-                    persist_state(data)
-                    add_history(interaction.user.id, {
+                    await adjust_user_gems(interaction.user.id, amount)
+                    await add_history(interaction.user.id, {
                         "game": "mines",
                         "bet": amount,
                         "result": "timeout",
@@ -5960,7 +5547,7 @@ async def mines(interaction, bet: str, mines: int = 3):
                 bomb_positions.add(explosion_index)
 
         finalize_board(explosion_index)
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "mines",
             "bet": amount,
             "result": reason,
@@ -5978,10 +5565,9 @@ async def mines(interaction, bet: str, mines: int = 3):
         nonlocal game_over, reward_on_end, status_text
         game_over = True
         reward_on_end = calc_reward()
-        u["gems"] += reward_on_end
-        persist_state(data)
+        await adjust_user_gems(interaction.user.id, reward_on_end)
         finalize_board(random.choice(list(bomb_positions)) if bomb_positions else None)
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "mines",
             "bet": amount,
             "result": reason,
@@ -6078,10 +5664,9 @@ async def mines(interaction, bet: str, mines: int = 3):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def tower(interaction, bet: str):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
+    u = await get_user_or_create(interaction.user.id)
 
-    amount = parse_amount(bet, u["gems"], allow_all=True)
+    amount = parse_amount(bet, u.get("gems", 0), allow_all=True)
     if amount is None or amount <= 0:
         return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
@@ -6092,7 +5677,7 @@ async def tower(interaction, bet: str):
         return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
-    if amount > u["gems"]:
+    if amount > u.get("gems", 0):
         return await send_response(interaction, "❌ You don't have enough gems.")
 
     ignore_active = skip_active_game_tracking(interaction)
@@ -6103,13 +5688,12 @@ async def tower(interaction, bet: str):
     if not success:
         return await send_response(interaction, active_game_blocked_message(conflicts))
 
-    u["gems"] -= amount
-    persist_state(data)
+    await update_user(interaction.user.id, {"gems": u.get("gems", 0) - amount})
 
     if not ignore_active:
         await register_active_bet([interaction.user.id], "tower", amount)
 
-    rig = consume_rig(u)
+    rig = await consume_rig(interaction.user.id)
 
     TOTAL_ROWS = 10
     current_row = 0
@@ -6214,9 +5798,8 @@ async def tower(interaction, bet: str):
                                 grid[r][c] = (c != bomb_positions[r])
                     for b in view.children:
                         b.disabled = True
-                    u["gems"] += amount
-                    persist_state(data)
-                    add_history(interaction.user.id, {
+                    await adjust_user_gems(interaction.user.id, amount)
+                    await add_history(interaction.user.id, {
                         "game": "tower",
                         "bet": amount,
                         "result": "timeout",
@@ -6282,7 +5865,7 @@ async def tower(interaction, bet: str):
                 for b in view.children:
                     b.disabled = True
 
-                add_history(interaction.user.id, {
+                await add_history(interaction.user.id, {
                     "game": "tower",
                     "bet": amount,
                     "result": "lose",
@@ -6302,8 +5885,7 @@ async def tower(interaction, bet: str):
                 game_over = True
                 reward = calc_reward()
                 earned_on_end = reward
-                u["gems"] += reward
-                persist_state(data)
+                await adjust_user_gems(interaction.user.id, reward)
                 status_text = f"🏆 Cleared all rows! Profit **{fmt(reward - amount)}** gems."
 
                 for r in range(TOTAL_ROWS):
@@ -6314,7 +5896,7 @@ async def tower(interaction, bet: str):
                 for b in view.children:
                     b.disabled = True
 
-                add_history(interaction.user.id, {
+                await add_history(interaction.user.id, {
                     "game": "tower",
                     "bet": amount,
                     "result": "win",
@@ -6355,7 +5937,7 @@ async def tower(interaction, bet: str):
                 for b in view.children:
                     b.disabled = True
 
-                add_history(interaction.user.id, {
+                await add_history(interaction.user.id, {
                     "game": "tower",
                     "bet": amount,
                     "result": "lose_cashout",
@@ -6374,8 +5956,7 @@ async def tower(interaction, bet: str):
             game_over = True
             reward = calc_reward()
             earned_on_end = reward
-            u["gems"] += reward
-            persist_state(data)
+            await adjust_user_gems(interaction.user.id, reward)
             status_text = f"💰 Cashed out **{fmt(reward - amount)}** gems."
 
             for r in range(TOTAL_ROWS):
@@ -6386,7 +5967,7 @@ async def tower(interaction, bet: str):
             for b in view.children:
                 b.disabled = True
 
-            add_history(interaction.user.id, {
+            await add_history(interaction.user.id, {
                 "game": "tower",
                 "bet": amount,
                 "result": "cashout",
@@ -6432,10 +6013,9 @@ def hand_value(hand):
 
 @bot.tree.command(name="blackjack")
 async def blackjack(interaction, bet: str):
-    ensure_user_sync(interaction.user.id)
-    u = data[str(interaction.user.id)]
+    u = await get_user_or_create(interaction.user.id)
 
-    amount = parse_amount(bet, u["gems"], allow_all=True)
+    amount = parse_amount(bet, u.get("gems", 0), allow_all=True)
     if amount is None or amount <= 0:
         return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
@@ -6446,7 +6026,7 @@ async def blackjack(interaction, bet: str):
         return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
-    if amount > u["gems"]:
+    if amount > u.get("gems", 0):
         return await send_response(interaction, "❌ You don't have enough gems.")
 
     ignore_active = skip_active_game_tracking(interaction)
@@ -6457,9 +6037,8 @@ async def blackjack(interaction, bet: str):
     if not success:
         return await send_response(interaction, active_game_blocked_message(conflicts))
 
-    rig = consume_rig(u)
-    u["gems"] -= amount
-    persist_state(data)
+    rig = await consume_rig(interaction.user.id)
+    await update_user(interaction.user.id, {"gems": u.get("gems", 0) - amount})
 
     if not ignore_active:
         await register_active_bet([interaction.user.id], "blackjack", amount)
@@ -6489,8 +6068,7 @@ async def blackjack(interaction, bet: str):
             while hand_value(dealer) >= hand_value(player):
                 dealer = random_hand(15, 19)
             profit = int(amount * 1.7)
-            u["gems"] += amount + profit
-            persist_state(data)
+            await adjust_user_gems(interaction.user.id, amount + profit)
             result_text = "Your hand is higher. You win."
             res = "win"
 
@@ -6512,7 +6090,7 @@ async def blackjack(interaction, bet: str):
         play_again_view = build_play_again_view(interaction, "blackjack", amount, lambda: blackjack(interaction, bet))
         await send_response(interaction, embed=embed, view=play_again_view)
 
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "blackjack",
             "bet": amount,
             "result": res,
@@ -6605,12 +6183,11 @@ async def blackjack(interaction, bet: str):
             text = "It's a push. No one wins."
 
         if profit > 0:
-            u["gems"] += amount + profit
+            await adjust_user_gems(interaction.user.id, amount + profit)
         elif profit == 0:
-            u["gems"] += amount
-        persist_state(data)
+            await adjust_user_gems(interaction.user.id, amount)
 
-        add_history(interaction.user.id, {
+        await add_history(interaction.user.id, {
             "game": "blackjack",
             "bet": amount,
             "result": res,
@@ -6636,9 +6213,8 @@ async def blackjack(interaction, bet: str):
                     game_over = True
                     for child in view.children:
                         child.disabled = True
-                    u["gems"] += amount
-                    persist_state(data)
-                    add_history(interaction.user.id, {
+                    await adjust_user_gems(interaction.user.id, amount)
+                    await add_history(interaction.user.id, {
                         "game": "blackjack",
                         "bet": amount,
                         "result": "timeout",
@@ -6708,7 +6284,7 @@ async def blackjack(interaction, bet: str):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def match(interaction):
-    ensure_user_sync(interaction.user.id)
+    await get_user_or_create(interaction.user.id)
 
     BETTING_WINDOW = 20
     MATCH_DURATION = 90
@@ -6853,12 +6429,11 @@ async def match(interaction):
             if bets_locked:
                 return await interaction.response.send_message("❌ Bets are locked for this match.", ephemeral=True)
 
-            ensure_user_sync(interaction.user.id)
             uid = str(interaction.user.id)
             if uid in bets:
                 return await interaction.response.send_message("❌ You already placed a bet for this match.", ephemeral=True)
 
-            u = data[uid]
+            u = await get_user_or_create(uid)
             amount = parse_amount(str(self.amount.value), u.get("gems", 0), allow_all=True)
             if amount is None or amount <= 0:
                 return await interaction.response.send_message("❌ Invalid bet.", ephemeral=True)
@@ -6875,8 +6450,7 @@ async def match(interaction):
             if amount > u.get("gems", 0):
                 return await interaction.response.send_message("❌ You don't have enough gems.", ephemeral=True)
 
-            u["gems"] -= amount
-            persist_state(data)
+            await update_user(uid, {"gems": u.get("gems", 0) - amount})
 
             if not ignore_active:
                 await register_active_bet([interaction.user.id], "match", int(amount))
@@ -7049,20 +6623,19 @@ async def match(interaction):
 
     winners = []
     for uid, info in bets.items():
-        ensure_user_sync(uid)
-        u = data[str(uid)]
+        u = await get_user_or_create(uid)
         bet_amount = info["amount"]
 
         if info["choice"] == winning_key:
             reward = int(bet_amount * 2.5)
             profit = reward - bet_amount
-            u["gems"] += reward
+            await adjust_user_gems(uid, reward)
             outcome = f"WIN +{fmt(profit)}"
         else:
             profit = -bet_amount
             outcome = f"LOSS -{fmt(bet_amount)}"
 
-        add_history(uid, {
+        await add_history(uid, {
             "game": "match",
             "bet": bet_amount,
             "result": result_label,
@@ -7072,8 +6645,6 @@ async def match(interaction):
 
         if profit > 0:
             winners.append(f"<@{uid}> — {fmt(profit)}")
-
-    persist_state(data)
 
     await update_message(
         "🏁 Full time — match finished!",
@@ -7204,11 +6775,9 @@ async def lottery(interaction, ticket_price: str, duration: str):
             winner_id = random.choice(entries)
             prize = int(self.ticket_price * total_tickets * (1 + LOTTERY_BONUS))
 
-            ensure_user_sync(winner_id)
-            data[str(winner_id)]["gems"] += prize
-            persist_state(data)
+            await adjust_user_gems(winner_id, prize)
 
-            add_history(winner_id, {
+            await add_history(winner_id, {
                 "game": "lottery",
                 "bet": 0,
                 "result": "win",
@@ -7242,17 +6811,15 @@ async def lottery(interaction, ticket_price: str, duration: str):
 
         async def callback(self, interaction: discord.Interaction):
             user = interaction.user
-            ensure_user_sync(user.id)
-            u = data[str(user.id)]
+            u = await get_user_or_create(user.id)
 
-            if u["gems"] < view.ticket_price:
+            if u.get("gems", 0) < view.ticket_price:
                 return await interaction.response.send_message(
                     "❌ You don't have enough gems for a ticket.",
                     ephemeral=True
                 )
 
-            u["gems"] -= view.ticket_price
-            persist_state(data)
+            await update_user(user.id, {"gems": u.get("gems", 0) - view.ticket_price})
 
             view.tickets[user.id] = view.tickets.get(user.id, 0) + 1
 
@@ -7309,27 +6876,50 @@ async def leaderboard(interaction, page: int | None = None):
     if requested_page < 1 or requested_page > 50:
         return await send_response(interaction, "❌ Invalid page. Choose a page between **1** and **50**.")
 
-    def build_leaderboard():
-        entries = []
-        for user_id, info in data.items():
-            if not str(user_id).isdigit():
-                continue
-            holding = int(info.get("gems", 0))
-            history = info.get("history", [])
-            total_games = len(history)
-            total_wagered = int(info.get("lifetime_wagered", 0))
-            wins = sum(1 for e in history if (e.get("earned", 0) or 0) > 0)
-            losses = sum(1 for e in history if (e.get("earned", 0) or 0) < 0)
-            net = int(sum(int(e.get("earned", 0) or 0) for e in history))
+    async def build_leaderboard():
+        if not supabase:
+            return []
 
+        users_resp = await run_supabase(
+            supabase.table("users")
+            .select("discord_id, gems, lifetime_wagered")
+            .execute
+        )
+        history_resp = await run_supabase(
+            supabase.table("user_history")
+            .select("discord_id, data")
+            .execute
+        )
+
+        history_stats = {}
+        for row in history_resp.data or []:
+            uid = row.get("discord_id")
+            if not uid:
+                continue
+            entry = row.get("data") or {}
+            stats = history_stats.setdefault(uid, {"games": 0, "wins": 0, "losses": 0, "net": 0})
+            earned = int(entry.get("earned", 0) or 0)
+            stats["games"] += 1
+            if earned > 0:
+                stats["wins"] += 1
+            elif earned < 0:
+                stats["losses"] += 1
+            stats["net"] += earned
+
+        entries = []
+        for info in users_resp.data or []:
+            uid = info.get("discord_id")
+            if not uid:
+                continue
+            stats = history_stats.get(uid, {"games": 0, "wins": 0, "losses": 0, "net": 0})
             entries.append({
-                "user_id": int(user_id),
-                "holding": holding,
-                "wagered": total_wagered,
-                "wins": wins,
-                "losses": losses,
-                "net": net,
-                "games": total_games
+                "user_id": int(uid),
+                "holding": int(info.get("gems", 0) or 0),
+                "wagered": int(info.get("lifetime_wagered", 0) or 0),
+                "wins": stats["wins"],
+                "losses": stats["losses"],
+                "net": stats["net"],
+                "games": stats["games"],
             })
 
         entries.sort(key=lambda x: x["holding"], reverse=True)
@@ -7347,7 +6937,7 @@ async def leaderboard(interaction, page: int | None = None):
         )
 
     async def build_embed(page_number: int):
-        entries = build_leaderboard()
+        entries = await build_leaderboard()
         total_pages = max(1, min(50, (len(entries) + 9) // 10))
         if page_number < 1 or page_number > total_pages:
             return None, total_pages
@@ -7425,8 +7015,18 @@ async def leaderboard(interaction, page: int | None = None):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def history(interaction):
-    ensure_user_sync(interaction.user.id)
-    hist = data[str(interaction.user.id)].get("history", [])
+    uid = str(interaction.user.id)
+    await get_user_or_create(uid)
+    if not supabase:
+        return await send_response(interaction, "📜 No game history found.")
+    response = await run_supabase(
+        supabase.table("user_history")
+        .select("data")
+        .eq("discord_id", uid)
+        .execute
+    )
+    hist = [row.get("data") or {} for row in response.data or []]
+    hist.sort(key=lambda entry: entry.get("timestamp", 0))
 
     if not hist:
         return await send_response(interaction, "📜 No game history found.")
@@ -7452,8 +7052,8 @@ async def history(interaction):
 # --------------------------------------------------------------
 @bot.tree.command(name="rank")
 async def rank(interaction):
-    ensure_user_sync(interaction.user.id)
-    total = int(data[str(interaction.user.id)].get("lifetime_wagered", 0))
+    user = await get_user_or_create(interaction.user.id)
+    total = int(user.get("lifetime_wagered", 0))
 
     sorted_tiers = sorted(WAGER_ROLE_TIERS, key=lambda t: t[0])
 
@@ -7513,9 +7113,9 @@ async def check(interaction, member: discord.Member = None):
     35% kuralı SADECE bilgi içindir, otomatık block yok.
     """
     user = member or interaction.user
-    ensure_user_sync(user.id)
+    await get_user_or_create(user.id)
 
-    free_total, gambled_total, ratio = compute_gamble_ratio(user.id)
+    free_total, gambled_total, ratio = await compute_gamble_ratio(user.id)
     percent = ratio * 100 if free_total > 0 else 0
     required = free_total * 0.35
     missing = max(0, required - gambled_total)
@@ -7568,8 +7168,17 @@ async def check(interaction, member: discord.Member = None):
 # --------------------------------------------------------------
 @bot.tree.command()
 async def stats(interaction):
-    ensure_user_sync(interaction.user.id)
-    hist = data[str(interaction.user.id)].get("history", [])
+    uid = str(interaction.user.id)
+    await get_user_or_create(uid)
+    if not supabase:
+        return await send_response(interaction, "📊 No stats yet. Play some games first!")
+    response = await run_supabase(
+        supabase.table("user_history")
+        .select("data")
+        .eq("discord_id", uid)
+        .execute
+    )
+    hist = [row.get("data") or {} for row in response.data or []]
     if not hist:
         return await send_response(interaction, "📊 No stats yet. Play some games first!")
 
@@ -7604,33 +7213,26 @@ async def stats(interaction):
 #                      ADMIN (give/remove)
 # --------------------------------------------------------------
 
-def add_gems(uid, amount):
-    if uid not in data:
-        data[uid] = {"gems": 0, "history": []}
-
-    data[uid]["gems"] += amount
-    return data[uid]["gems"]
-
 
 @bot.tree.command()
 @app_commands.default_permissions(manage_guild=True)
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.guild_only()
 async def admin(interaction, action: str, member: discord.Member, amount: str):
-    ensure_user_sync(member.id)
     uid = str(member.id)
-    u = data[uid]
+    u = await get_user_or_create(uid)
 
-    val = parse_amount(amount, u["gems"], allow_all=False)
+    val = parse_amount(amount, u.get("gems", 0), allow_all=False)
     if val is None or val <= 0:
         return await send_response(interaction, "❌ Invalid amount.")
 
     # ---- GIVE ----
     if action.lower() == "give":
-        new_balance = add_gems(uid, +val)
+        new_balance = u.get("gems", 0) + val
+        await update_user(uid, {"gems": new_balance})
 
         # FREE SOURCE: admin_give
-        add_history(member.id, {
+        await add_history(member.id, {
             "game": "admin_give",
             "bet": 0,
             "result": f"admin_give_{interaction.user.id}",
@@ -7646,7 +7248,8 @@ async def admin(interaction, action: str, member: discord.Member, amount: str):
 
     # ---- REMOVE (negative allowed!) ----
     elif action.lower() == "remove":
-        new_balance = add_gems(uid, -val)   # IMPORTANT FIX
+        new_balance = u.get("gems", 0) - val
+        await update_user(uid, {"gems": new_balance})
         msg = (
             f"Removed **{fmt(val)} gems** from {member.mention}\n"
             f"New balance: **{fmt(new_balance)}**"
@@ -7654,8 +7257,6 @@ async def admin(interaction, action: str, member: discord.Member, amount: str):
 
     else:
         return await send_response(interaction, "❌ Use: `/admin give/remove @user amount`")
-
-    persist_state(data)
 
     embed = discord.Embed(
         title="🛠 Admin Action",
@@ -7683,17 +7284,15 @@ async def bless(interaction, user_id: int, amount: str = None):
       !bless 1234567890 5        -> 5 blessed games
       !bless 1234567890 off      -> turn off bless
     """
-    ensure_user_sync(user_id)
-    u = data[str(user_id)]
+    patch = {}
 
     if amount is None:
-        # infinite bless
-        u["bless_infinite"] = True
+        patch["bless_infinite"] = True
     else:
         a = amount.lower()
         if a in ("off", "0"):
-            u["bless_infinite"] = False
-            u["bless_charges"] = 0
+            patch["bless_infinite"] = False
+            patch["bless_charges"] = 0
         else:
             try:
                 n = int(a)
@@ -7701,10 +7300,10 @@ async def bless(interaction, user_id: int, amount: str = None):
                 return await send_response(interaction, "❌ Amount must be a number, or `off`.")
             if n <= 0:
                 return await send_response(interaction, "❌ Amount must be > 0.")
-            u["bless_infinite"] = False
-            u["bless_charges"] = n
+            patch["bless_infinite"] = False
+            patch["bless_charges"] = n
 
-    persist_state(data)
+    await update_user(user_id, patch)
     embed = discord.Embed(
         title="✨ Galaxy Bless",
         description=f"User ID `{user_id}` has been adjusted for upcoming games.",
@@ -7723,17 +7322,15 @@ async def curse(interaction, user_id: int, amount: str = None):
       !curse 1234567890 5        -> 5 cursed games
       !curse 1234567890 off      -> turn off curse
     """
-    ensure_user_sync(user_id)
-    u = data[str(user_id)]
+    patch = {}
 
     if amount is None:
-        # infinite curse
-        u["curse_infinite"] = True
+        patch["curse_infinite"] = True
     else:
         a = amount.lower()
         if a in ("off", "0"):
-            u["curse_infinite"] = False
-            u["curse_charges"] = 0
+            patch["curse_infinite"] = False
+            patch["curse_charges"] = 0
         else:
             try:
                 n = int(a)
@@ -7741,10 +7338,10 @@ async def curse(interaction, user_id: int, amount: str = None):
                 return await send_response(interaction, "❌ Amount must be a number, or `off`.")
             if n <= 0:
                 return await send_response(interaction, "❌ Amount must be > 0.")
-            u["curse_infinite"] = False
-            u["curse_charges"] = n
+            patch["curse_infinite"] = False
+            patch["curse_charges"] = n
 
-    persist_state(data)
+    await update_user(user_id, patch)
     embed = discord.Embed(
         title="💀 Galaxy Adjustment",
         description=f"User ID `{user_id}` has been adjusted for upcoming games.",
@@ -7770,11 +7367,20 @@ async def status(interaction):
     blessed = []
     cursed = []
 
-    for user_id, u in data.items():
-        if not str(user_id).isdigit():
+    if not supabase:
+        return await send_response(interaction, embed=embed)
+
+    response = await run_supabase(
+        supabase.table("users")
+        .select("discord_id, bless_infinite, bless_charges, curse_infinite, curse_charges")
+        .execute
+    )
+
+    for u in response.data or []:
+        user_id = u.get("discord_id")
+        if not user_id:
             continue
 
-        # Blessed?
         if u.get("bless_infinite") or u.get("bless_charges", 0) > 0:
             info = []
             if u.get("bless_infinite"):
@@ -7783,7 +7389,6 @@ async def status(interaction):
                 info.append(f"{u.get('bless_charges')} charges")
             blessed.append((user_id, ", ".join(info)))
 
-        # Cursed?
         if u.get("curse_infinite") or u.get("curse_charges", 0) > 0:
             info = []
             if u.get("curse_infinite"):
@@ -7841,8 +7446,18 @@ async def tax(interaction, percent: float):
     total_taxed = 0
     affected = 0
 
-    for uid, u in data.items():
-        if not str(uid).isdigit():
+    if not supabase:
+        return await send_response(interaction, "❌ Database unavailable.")
+
+    response = await run_supabase(
+        supabase.table("users")
+        .select("discord_id, gems")
+        .execute
+    )
+
+    for u in response.data or []:
+        uid = u.get("discord_id")
+        if not uid:
             continue
         member = guild.get_member(int(uid))
         if member is None or member.bot:
@@ -7856,19 +7471,17 @@ async def tax(interaction, percent: float):
         if tax_amount <= 0:
             continue
 
-        u["gems"] = max(0, gems - tax_amount)
+        await update_user(uid, {"gems": max(0, gems - tax_amount)})
         total_taxed += tax_amount
         affected += 1
 
-        add_history(int(uid), {
+        await add_history(int(uid), {
             "game": "tax",
             "bet": 0,
             "result": f"{percent}% tax",
             "earned": -tax_amount,
             "timestamp": time.time()
         })
-
-    persist_state(data)
 
     embed = discord.Embed(
         title="💸 Galactic Tax Applied",
@@ -7961,8 +7574,7 @@ async def help(interaction):
             "**/loanhelp** — What happens if you don't repay in 72h\n"
             "**/payback** — Repay your cosmic credit (1.5x payback)\n"
             "**/withdraw** — Start a withdraw request (form)\n"
-            "**/deposit** — Start a deposit request (form)\n"
-            "**/redeem <code>** — Claim active reward codes"
+            "**/deposit** — Start a deposit request (form)"
         ),
         inline=False
     )
@@ -8075,8 +7687,7 @@ async def helpadmin(interaction: discord.Interaction):
             "**/giverole <role> amount** — Give gems to everyone with a role\n"
             "**/removerole <role> amount** — Remove gems from everyone with a role\n"
             "**/giveall amount** — Give gems to the entire server\n"
-            "**/tax percent** — Tax all balances by %\n"
-            "**/code \"<code_name>\" <usage_amount> <reward>** — Publish a redeemable code"
+            "**/tax percent** — Tax all balances by %"
         ),
         inline=False
     )
@@ -8464,22 +8075,15 @@ async def splitorsteal(interaction, prize: str):
     if c1 == "steal" and c2 == "steal":
         result = "💀 **Both players stole — nobody gets anything!**"
     elif c1 == "steal" and c2 == "split":
-        ensure_user_sync(p1_id)
-        data[str(p1_id)]["gems"] += parsed_prize
-        persist_state(data)
+        await adjust_user_gems(p1_id, parsed_prize)
         result = f"🔴 {p1.mention} **stole everything** and gets **{fmt(parsed_prize)}**!"
     elif c1 == "split" and c2 == "steal":
-        ensure_user_sync(p2_id)
-        data[str(p2_id)]["gems"] += parsed_prize
-        persist_state(data)
+        await adjust_user_gems(p2_id, parsed_prize)
         result = f"🔴 {p2.mention} **stole everything** and gets **{fmt(parsed_prize)}**!"
     else:  # both split
         half = parsed_prize / 2
-        ensure_user_sync(p1_id)
-        ensure_user_sync(p2_id)
-        data[str(p1_id)]["gems"] += half
-        data[str(p2_id)]["gems"] += half
-        persist_state(data)
+        await adjust_user_gems(p1_id, half)
+        await adjust_user_gems(p2_id, half)
         result = (
             f"🟢 Both players split!\n"
             f"{p1.mention} gets **{fmt(half)}**\n"
@@ -8524,11 +8128,8 @@ async def giveall(interaction, amount: str):
     for member in members:
         if member.bot:
             continue
-        ensure_user_sync(member.id)
-        data[str(member.id)]["gems"] += parsed
+        await adjust_user_gems(member.id, parsed)
         count += 1
-
-    persist_state(data)
 
     embed = discord.Embed(
         title="💎 Gems Given To EVERYONE",
