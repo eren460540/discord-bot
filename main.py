@@ -3728,15 +3728,21 @@ async def unlockcat(interaction, category_id: int):
 # --------------------------------------------------------------
 #              GLOBAL COMMAND BLOCKER (AUTO DELETE)
 # --------------------------------------------------------------
-@bot.tree.check
 async def block_commands_in_locked_category(interaction: discord.Interaction):
+
+    if not interaction.guild or not interaction.channel:
+        return True
 
     # Admins can always use commands
     if interaction.user.guild_permissions.manage_guild:
         return True
 
+    category_id = getattr(interaction.channel, "category_id", None)
+    if category_id is None:
+        return True
+
     # Category locked?
-    if interaction.channel.category_id in DISABLED_CATEGORIES:
+    if category_id in DISABLED_CATEGORIES:
 
         embed = discord.Embed(
             title="🚫 Commands Disabled Here",
@@ -3745,7 +3751,7 @@ async def block_commands_in_locked_category(interaction: discord.Interaction):
                 "✨ **Admins** (Manage Server) can still use commands anywhere.\n"
                 "🛠 To re-enable commands here, an admin can use:\n"
                 "``/unlockcat <category_id>``\n\n"
-                f"📁 Category ID: `{interaction.channel.category_id}`\n\n"
+                f"📁 Category ID: `{category_id}`\n\n"
                 "Commands remain enabled in all other categories."
             ),
             color=discord.Color.red()
@@ -3764,6 +3770,9 @@ async def block_commands_in_locked_category(interaction: discord.Interaction):
         return False  # STOP the command from executing
 
     return True
+
+
+bot.tree.interaction_check = block_commands_in_locked_category
 
 
 
