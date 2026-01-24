@@ -1,12 +1,14 @@
 import discord
 from discord.ext import commands, tasks
-import json
+from discord import app_commands
 import os
 import random
 from discord.ui import Button, View
 import time
 import io
 import asyncio
+import threading
+import contextvars
 from datetime import datetime
 import aiohttp  # NEW: for Roblox API
 from discord.ui import Button, View, Modal, TextInput
@@ -15,20 +17,27 @@ from ytmusicapi import YTMusic
 import yt_dlp
 import shutil
 from discord.errors import HTTPException
+from supabase import create_client, Client
 
 
 
 TOKEN = os.getenv("TOKEN")
-DATA_FILE = "casino_data.json"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_STATE_ID = "bot_state"
+supabase: Client | None = None
+if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+async def run_supabase(callable_, *args, **kwargs):
+    return await asyncio.to_thread(callable_, *args, **kwargs)
+
 JOINS_CHANNEL = 1443625716859273406
 LEAVES_CHANNEL = 1443625744793342132
 SUSPICIOUS_SERVER = 1140681007197073468
 
 # Categories where commands are disabled
 DISABLED_CATEGORIES = {1431610646654488661}
-
-# Channel used for JSON backups
-BACKUP_CHANNEL_ID = 1431610647921295451
 
 GAMBLE_GAMES = [
     "slots",
@@ -46,7 +55,6 @@ GAMBLE_GAMES = [
 
 # ---------------- WITHDRAW LIMITS / COOLDOWN ----------------
 WITHDRAW_GEMS_LIMIT = 500_000_000     # 500m in 2 days
-WITHDRAW_EXP_LIMIT = 750_000_000      # 750m in 2 days
 WITHDRAW_WINDOW_SECONDS = 2 * 24 * 3600   # 2 days
 WITHDRAW_COOLDOWN = 30 * 60               # 30 minutes
 
@@ -58,42 +66,321 @@ WITHDRAW_COOLDOWN = 30 * 60               # 30 minutes
 
 
 # --------------------------------------------------------------
-#                    DATA MANAGEMENT (LOAD / SAVE)
+#                    DATA MANAGEMENT (SUPABASE)
 # --------------------------------------------------------------
-# Ensure file exists
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        json.dump({}, f, indent=4)
+class UserState(dict):
+    def __init__(self, uid: str, initial: dict, proxy: "StateProxy"):
+        super().__init__(initial)
+        self._uid = uid
+        self._proxy = proxy
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._proxy.mark_dirty(self._uid)
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self._proxy.mark_dirty(self._uid)
+        return super().setdefault(key, default)
+
+    def update(self, *args, **kwargs):
+        if args or kwargs:
+            self._proxy.mark_dirty(self._uid)
+        return super().update(*args, **kwargs)
 
 
-def load_data():
-    with open(DATA_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
+class StateProxy:
+    def __init__(self):
+        self._global_state: dict = {}
+        self._cache_var = contextvars.ContextVar("stateproxy_cache", default=None)
+        self._dirty_var = contextvars.ContextVar("stateproxy_dirty", default=None)
+
+    def _get_cache(self) -> dict:
+        cache = self._cache_var.get()
+        if cache is None:
+            cache = {}
+            self._cache_var.set(cache)
+        return cache
+
+    def _get_dirty(self) -> set:
+        dirty = self._dirty_var.get()
+        if dirty is None:
+            dirty = set()
+            self._dirty_var.set(dirty)
+        return dirty
+
+    def mark_dirty(self, uid: str):
+        self._get_dirty().add(uid)
+
+    def _run_async(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, _supabase_loop).result()
+
+    async def _fetch_user_state(self, uid: str) -> dict:
+        if not supabase:
             return {}
+        response = await run_supabase(
+            supabase.table("users")
+            .select("data")
+            .eq("discord_id", uid)
+            .maybe_single()
+            .execute
+        )
+        if response.data and response.data.get("data"):
+            return response.data["data"]
+        default_state = _default_user_data()
+        await run_supabase(
+            supabase.table("users")
+            .upsert({"discord_id": uid, "data": default_state})
+            .execute
+        )
+        return default_state
+
+    async def _write_user_state(self, uid: str, state: dict) -> None:
+        if not supabase:
+            return
+        await run_supabase(
+            supabase.table("users")
+            .upsert({"discord_id": uid, "data": state})
+            .execute
+        )
+
+    def flush(self):
+        cache = self._get_cache()
+        dirty = self._get_dirty()
+        for uid in list(dirty):
+            state = cache.get(uid)
+            if state is None:
+                continue
+            self._run_async(self._write_user_state(uid, dict(state)))
+        dirty.clear()
+
+    def _is_user_key(self, key) -> bool:
+        return isinstance(key, str) and key.isdigit()
+
+    def __getitem__(self, key):
+        if self._is_user_key(key):
+            cache = self._get_cache()
+            if key in cache:
+                return cache[key]
+            state = self._run_async(self._fetch_user_state(key))
+            wrapped = UserState(key, state, self)
+            cache[key] = wrapped
+            return wrapped
+        return self._global_state[key]
+
+    def __setitem__(self, key, value):
+        if self._is_user_key(key):
+            cache = self._get_cache()
+            wrapped = UserState(key, value, self)
+            cache[key] = wrapped
+            self.mark_dirty(key)
+            self._run_async(self._write_user_state(key, dict(wrapped)))
+            return
+        self._global_state[key] = value
+
+    def get(self, key, default=None):
+        try:
+            return self.__getitem__(key)
+        except KeyError:
+            return default
+
+    def setdefault(self, key, default=None):
+        if self._is_user_key(key):
+            cache = self._get_cache()
+            if key in cache:
+                return cache[key]
+            wrapped = UserState(key, default or {}, self)
+            cache[key] = wrapped
+            self.mark_dirty(key)
+            self._run_async(self._write_user_state(key, dict(wrapped)))
+            return wrapped
+        return self._global_state.setdefault(key, default)
 
 
-def save_data(d):
-    with open(DATA_FILE, "w") as f:
-        json.dump(d, f, indent=4)
+def load_state() -> StateProxy:
+    return StateProxy()
 
 
-# Load data *after* load_data() exists
-data = load_data()
+def persist_state(state) -> None:
+    if isinstance(state, StateProxy):
+        state.flush()
 
 
-data = load_data()
-
-# place patch HERE, NOT ABOVE
-for w in data.get("withdrawals", []):
-    w.setdefault("type", "gems")
-    w.setdefault("roblox_user", None)
-    w.setdefault("roblox_avatar", None)
-
-save_data(data)
+async def send_response(interaction: discord.Interaction, *args, **kwargs):
+    if interaction.response.is_done():
+        return await interaction.followup.send(*args, **kwargs)
+    await interaction.response.send_message(*args, **kwargs)
+    return await interaction.original_response()
 
 
+def _default_user_data() -> dict:
+    return {
+        "gems": 25.0,
+        "last_daily": 0.0,
+        "last_work": 0.0,
+        "history": [],
+        "bless_infinite": False,
+        "curse_infinite": False,
+        "bless_charges": 0,
+        "curse_charges": 0,
+        "lifetime_wagered": 0,
+        "loan": None,
+        "achievements": {},
+        "redeemed_codes": [],
+        "last_withdraw_cmd": 0,
+    }
+
+
+async def get_user(discord_id):
+    if not supabase:
+        return None
+    response = await run_supabase(
+        supabase.table("users")
+        .select("*")
+        .eq("discord_id", str(discord_id))
+        .maybe_single()
+        .execute
+    )
+    return response.data if response.data else None
+
+
+async def ensure_user(discord_id):
+    existing = await get_user(discord_id)
+    if existing:
+        return existing
+    if not supabase:
+        return None
+    payload = {"discord_id": str(discord_id), **_default_user_data()}
+    response = await run_supabase(supabase.table("users").insert(payload).execute)
+    if response.data:
+        return response.data[0]
+    return payload
+
+
+async def update_user(discord_id, patch):
+    if not supabase:
+        return None
+    response = await run_supabase(
+        supabase.table("users")
+        .update(patch)
+        .eq("discord_id", str(discord_id))
+        .execute
+    )
+    if response.data:
+        return response.data[0]
+    return None
+
+
+async def create_withdraw(data):
+    if not supabase:
+        return None
+    response = await run_supabase(supabase.table("withdrawals").insert(data).execute)
+    return response.data[0] if response.data else None
+
+
+async def create_deposit(data):
+    if not supabase:
+        return None
+    response = await run_supabase(supabase.table("deposits").insert(data).execute)
+    return response.data[0] if response.data else None
+
+
+async def list_pending_withdraws():
+    if not supabase:
+        return []
+    response = await run_supabase(
+        supabase.table("withdrawals").select("*").eq("status", "pending").execute
+    )
+    return response.data or []
+
+
+async def list_pending_deposits():
+    if not supabase:
+        return []
+    response = await run_supabase(
+        supabase.table("deposits").select("*").eq("status", "pending").execute
+    )
+    return response.data or []
+
+
+async def set_withdraw_status(id, status, reason):
+    if not supabase:
+        return None
+    response = await run_supabase(
+        supabase.table("withdrawals")
+        .update({"status": status, "reason": reason})
+        .eq("id", id)
+        .execute
+    )
+    return response.data[0] if response.data else None
+
+
+async def set_deposit_status(id, status, reason):
+    if not supabase:
+        return None
+    response = await run_supabase(
+        supabase.table("deposits")
+        .update({"status": status, "reason": reason})
+        .eq("id", id)
+        .execute
+    )
+    return response.data[0] if response.data else None
+
+
+async def get_roblox_link(discord_id):
+    if not supabase:
+        return None
+    response = await run_supabase(
+        supabase.table("roblox_links")
+        .select("*")
+        .eq("discord_id", str(discord_id))
+        .maybe_single()
+        .execute
+    )
+    return response.data if response.data else None
+
+
+async def set_roblox_link(discord_id, data):
+    if not supabase:
+        return None
+    payload = {"discord_id": str(discord_id), **data}
+    response = await run_supabase(supabase.table("roblox_links").upsert(payload).execute)
+    return response.data[0] if response.data else None
+
+
+async def log_history(discord_id, action, data):
+    if not supabase:
+        return None
+    payload = {"discord_id": str(discord_id), "action": action, "data": data}
+    response = await run_supabase(supabase.table("user_history").insert(payload).execute)
+    return response.data[0] if response.data else None
+
+
+_supabase_loop = asyncio.new_event_loop()
+
+
+def _run_supabase_loop():
+    asyncio.set_event_loop(_supabase_loop)
+    _supabase_loop.run_forever()
+
+
+threading.Thread(target=_run_supabase_loop, daemon=True).start()
+
+
+def ensure_user_sync(discord_id):
+    uid = str(discord_id)
+    if uid not in data:
+        data[uid] = {}
+    u = data[uid]
+    for key, value in _default_user_data().items():
+        u.setdefault(key, value)
+    persist_state(data)
+    future = asyncio.run_coroutine_threadsafe(ensure_user(discord_id), _supabase_loop)
+    return future.result()
+
+
+# Load data *after* load_state() exists
+data = StateProxy()
 
 # --------------------------------------------------------------
 #           GLOBAL DEFAULTS / SAFETY (NO DUPLICATES)
@@ -121,15 +408,11 @@ data.setdefault("next_deposit_id", 1)
 data.setdefault("withdraw_history", {})   # {uid: [ {ts, amount, kind}, ... ]}
 data.setdefault("withdraw_last_time", {}) # {uid: ts-of-last-withdraw}
 
-save_data(data)
+persist_state(data)
 
 
 
 
-
-# Anti abuse fingerprint store
-data.setdefault("_device_fingerprints", {})
-device_fp = data["_device_fingerprints"]
 
 # Roblox link store (Discord ↔ Roblox)
 # {
@@ -144,7 +427,7 @@ device_fp = data["_device_fingerprints"]
 data.setdefault("roblox_links", {})
 
 # Save after setting defaults
-save_data(data)
+persist_state(data)
 
 # --------------------------------------------------------------
 #                          OWNER
@@ -262,22 +545,22 @@ def active_game_blocked_message(conflicts: dict[int, str]) -> str:
     )
 
 
-def skip_active_game_tracking(ctx: commands.Context) -> bool:
+def skip_active_game_tracking(interaction: discord.Interaction) -> bool:
     """Whether active-game locks should be ignored for this channel."""
 
     try:
-        return ctx.channel and ctx.channel.category_id in DISABLED_CATEGORIES
+        return interaction.channel and interaction.channel.category_id in DISABLED_CATEGORIES
     except Exception:
         return False
 
 
-@bot.command(name="stop")
-async def stop_active_games(ctx):
-    if ctx.author.id != OWNER_ID:
-        session = hilo_sessions.get(ctx.author.id)
+@bot.tree.command(name="stop")
+async def stop_active_games(interaction):
+    if interaction.user.id != OWNER_ID:
+        session = hilo_sessions.get(interaction.user.id)
         if not session:
-            return await ctx.send("❌ You don't have an active Hi-Lo game.")
-        await session.stop_via_command(ctx)
+            return await send_response(interaction, "❌ You don't have an active Hi-Lo game.")
+        await session.stop_via_command(interaction)
         return
 
     refunds = await snapshot_active_bets()
@@ -292,7 +575,7 @@ async def stop_active_games(ctx):
         if bet_amount <= 0:
             continue
 
-        ensure_user(uid)
+        ensure_user_sync(uid)
         data[str(uid)]["gems"] += bet_amount
         total_refund += bet_amount
         refunded_users += 1
@@ -310,9 +593,9 @@ async def stop_active_games(ctx):
     for session in sessions:
         await session.force_terminate()
 
-    save_data(data)
+    persist_state(data)
 
-    await ctx.send(
+    await send_response(interaction, 
         "⛔ All active games have been force-stopped. "
         f"Released **{cleared_slots}** active slots and refunded **{refunded_users}** players "
         f"for **{fmt(total_refund)}** gems."
@@ -358,7 +641,7 @@ class ConfirmRobloxView(View):
                  is_withdraw: bool):
         """
         kind: "gems" (we only use this confirmation for gems)
-        currency: "gems" or "exp" string just for info text
+        currency: "gems" string just for info text
         is_withdraw: True = withdraw, False = deposit
         """
         super().__init__(timeout=60)
@@ -373,7 +656,7 @@ class ConfirmRobloxView(View):
 
     async def _create_withdraw(self, interaction: discord.Interaction):
         uid = str(self.requester_id)
-        ensure_user(self.requester_id)
+        ensure_user_sync(self.requester_id)
         u = data[uid]
 
         # Check if already has pending withdraw
@@ -389,7 +672,7 @@ class ConfirmRobloxView(View):
             )
 
         # Limits / cooldown
-        ok, reason = _can_withdraw_now(uid, "gems", self.amount)
+        ok, reason = _can_withdraw_now(uid, self.amount)
         if not ok:
             return await interaction.response.edit_message(
                 content=reason,
@@ -411,7 +694,7 @@ class ConfirmRobloxView(View):
             )
 
         u["gems"] -= cost
-        save_data(data)
+        persist_state(data)
 
         wid = data.get("next_withdraw_id", 1)
         entry = {
@@ -432,9 +715,9 @@ class ConfirmRobloxView(View):
         }
         data["next_withdraw_id"] = wid + 1
         data.setdefault("withdrawals", []).append(entry)
-        save_data(data)
+        persist_state(data)
 
-        _mark_withdraw_used(uid, "gems", self.amount)
+        _mark_withdraw_used(uid, self.amount)
 
         add_history(self.requester_id, {
             "game": "withdraw_gems",
@@ -467,7 +750,7 @@ class ConfirmRobloxView(View):
 
     async def _create_deposit(self, interaction: discord.Interaction):
         uid = str(self.requester_id)
-        ensure_user(self.requester_id)
+        ensure_user_sync(self.requester_id)
 
         did = data.get("next_deposit_id", 1)
         entry = {
@@ -486,7 +769,7 @@ class ConfirmRobloxView(View):
         }
         data["next_deposit_id"] = did + 1
         data.setdefault("deposits", []).append(entry)
-        save_data(data)
+        persist_state(data)
 
         add_history(self.requester_id, {
             "game": "deposit_gems",
@@ -584,7 +867,7 @@ async def dm_owner_new_request(kind: str, entry: dict):
         value=f"<t:{int(entry.get('created_at', time.time()))}:R>",
         inline=False
     )
-    embed.set_footer(text="Withdraw/Deposit panel: use !withdrawpanel / !depositpanel")
+    embed.set_footer(text="Withdraw/Deposit panel: use /withdrawpanel / /depositpanel")
     try:
         await owner.send(embed=embed)
     except Exception:
@@ -593,45 +876,40 @@ async def dm_owner_new_request(kind: str, entry: dict):
 
 
 
-def _record_withdraw(uid: str, kind: str, amount: int):
+def _record_withdraw(uid: str, amount: int):
     """
     Store withdraw amounts for last 2 days check.
-    kind: "gems" or "exp"
-    amount: requested amount (NOT 1.2x / 1.9x cost).
+    amount: requested amount (NOT 1.2x cost).
     """
     now = time.time()
     hist = data.setdefault("withdraw_history", {})
     user_hist = hist.setdefault(uid, [])
-    user_hist.append({"ts": now, "kind": kind, "amount": int(amount)})
+    user_hist.append({"ts": now, "kind": "gems", "amount": int(amount)})
 
     # clean >2 days old
     cutoff = now - WITHDRAW_WINDOW_SECONDS
     user_hist = [e for e in user_hist if e["ts"] >= cutoff]
     hist[uid] = user_hist
-    save_data(data)
+    persist_state(data)
 
 
 def _get_withdraw_totals(uid: str):
     """
-    Return (gems_total_last2d, exp_total_last2d)
-    based on withdraw_history.
+    Return gems_total_last2d based on withdraw_history.
     """
     now = time.time()
     cutoff = now - WITHDRAW_WINDOW_SECONDS
     hist = data.get("withdraw_history", {}).get(uid, [])
     gems_total = 0
-    exp_total = 0
     for e in hist:
         if e["ts"] < cutoff:
             continue
         if e["kind"] == "gems":
             gems_total += int(e["amount"])
-        elif e["kind"] == "exp":
-            exp_total += int(e["amount"])
-    return gems_total, exp_total
+    return gems_total
 
 
-def _can_withdraw_now(uid: str, kind: str, amount: int):
+def _can_withdraw_now(uid: str, amount: int):
     """
     Check 30 min cooldown and 2-day caps.
     Returns (ok: bool, reason: str | None)
@@ -647,33 +925,25 @@ def _can_withdraw_now(uid: str, kind: str, amount: int):
         secs = remaining % 60
         return False, f"⏳ You must wait **{mins}m {secs}s** before making another withdraw."
 
-    gems_total, exp_total = _get_withdraw_totals(uid)
+    gems_total = _get_withdraw_totals(uid)
     amount = int(amount)
 
-    if kind == "gems":
-        if gems_total + amount > WITHDRAW_GEMS_LIMIT:
-            return False, (
-                f"❌ 2-day **GEMS** withdraw cap reached.\n"
-                f"Limit: **{fmt(WITHDRAW_GEMS_LIMIT)}**, used: **{fmt(gems_total)}**, "
-                f"requested: **{fmt(amount)}**."
-            )
-    elif kind == "exp":
-        if exp_total + amount > WITHDRAW_EXP_LIMIT:
-            return False, (
-                f"❌ 2-day **EXP** withdraw cap reached.\n"
-                f"Limit: **{fmt(WITHDRAW_EXP_LIMIT)}**, used: **{fmt(exp_total)}**, "
-                f"requested: **{fmt(amount)}**."
-            )
+    if gems_total + amount > WITHDRAW_GEMS_LIMIT:
+        return False, (
+            f"❌ 2-day **GEMS** withdraw cap reached.\n"
+            f"Limit: **{fmt(WITHDRAW_GEMS_LIMIT)}**, used: **{fmt(gems_total)}**, "
+            f"requested: **{fmt(amount)}**."
+        )
 
     return True, None
 
 
-def _mark_withdraw_used(uid: str, kind: str, amount: int):
+def _mark_withdraw_used(uid: str, amount: int):
     """Updates last_withdraw time + history."""
     uid = str(uid)
     data.setdefault("withdraw_last_time", {})[uid] = time.time()
-    _record_withdraw(uid, kind, amount)
-    save_data(data)
+    _record_withdraw(uid, amount)
+    persist_state(data)
 
 
 
@@ -722,7 +992,7 @@ HIGH_ROLLER_WAGER = 1_000_000_000
 
 
 def compute_gamble_ratio(user_id):
-    ensure_user(user_id)
+    ensure_user_sync(user_id)
     hist = data[str(user_id)].get("history", [])
 
     free_total = 0
@@ -919,14 +1189,14 @@ async def download_youtube_audio(video_id: str, title: str) -> str | None:
     return await loop.run_in_executor(None, _download)
 
 def _loan_record(uid: str):
-    ensure_user(uid)
+    ensure_user_sync(uid)
     return data[str(uid)].get("loan")
 
 
 def _set_loan(uid: str, loan):
-    ensure_user(uid)
+    ensure_user_sync(uid)
     data[str(uid)]["loan"] = loan
-    save_data(data)
+    persist_state(data)
 
 
 def _loan_is_restricted(uid: str):
@@ -937,7 +1207,7 @@ def _loan_is_restricted(uid: str):
 
 
 def achievement_record(uid: str):
-    ensure_user(uid)
+    ensure_user_sync(uid)
     return data[str(uid)].setdefault("achievements", {})
 
 
@@ -948,12 +1218,12 @@ def grant_achievement(uid: str, key: str) -> bool:
     if ach.get(key):
         return False
     ach[key] = True
-    save_data(data)
+    persist_state(data)
     return True
 
 
 def refresh_achievements(uid: str):
-    ensure_user(uid)
+    ensure_user_sync(uid)
     u = data[str(uid)]
 
     if u.get("lifetime_wagered", 0) >= HIGH_ROLLER_WAGER:
@@ -970,30 +1240,9 @@ def refresh_achievements(uid: str):
         grant_achievement(uid, "daily_streak_7")
 
 
-def ensure_user(user_id):
-    uid = str(user_id)
-    if uid not in data:
-        data[uid] = {}
-    u = data[uid]
-    u.setdefault("gems", 25.0)
-    u.setdefault("exp", 0.0)
-    u.setdefault("last_daily", 0.0)
-    u.setdefault("last_work", 0.0)
-    u.setdefault("history", [])
-    u.setdefault("bless_infinite", False)
-    u.setdefault("curse_infinite", False)
-    u.setdefault("bless_charges", 0)
-    u.setdefault("curse_charges", 0)
-    u.setdefault("lifetime_wagered", 0)
-    u.setdefault("loan", None)
-    u.setdefault("achievements", {})
-    u.setdefault("redeemed_codes", [])
-    save_data(data)
-
-
 async def _apply_wager_roles(user_id: int):
     await bot.wait_until_ready()
-    ensure_user(user_id)
+    ensure_user_sync(user_id)
     total = data[str(user_id)].get("lifetime_wagered", 0)
 
     target_role_id = None
@@ -1024,7 +1273,7 @@ async def _apply_wager_roles(user_id: int):
 
 
 def add_history(user_id, entry):
-    ensure_user(user_id)
+    ensure_user_sync(user_id)
     uid = str(user_id)
 
     game = entry.get("game")
@@ -1044,14 +1293,14 @@ def add_history(user_id, entry):
     if len(hist) > 50:
         hist = hist[-50:]
     data[uid]["history"] = hist
-    save_data(data)
+    persist_state(data)
 
 
 def play_again_enabled(game_key: str) -> bool:
     return game_key not in PLAY_AGAIN_DISABLED_GAMES
 
 
-def create_play_again_button(ctx, game_key: str, bet_amount: float, restart_callable):
+def create_play_again_button(interaction, game_key: str, bet_amount: float, restart_callable):
     if not play_again_enabled(game_key):
         return None
 
@@ -1060,9 +1309,9 @@ def create_play_again_button(ctx, game_key: str, bet_amount: float, restart_call
             super().__init__(label="🔁 Play Again", style=discord.ButtonStyle.success)
 
         async def callback(self, interaction):
-            if interaction.user.id != ctx.author.id:
+            if interaction.user.id != interaction.user.id:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
-            ensure_user(interaction.user.id)
+            ensure_user_sync(interaction.user.id)
             user = data[str(interaction.user.id)]
             if user.get("gems", 0) < bet_amount:
                 try:
@@ -1083,8 +1332,8 @@ def create_play_again_button(ctx, game_key: str, bet_amount: float, restart_call
     return PlayAgain()
 
 
-def build_play_again_view(ctx, game_key: str, bet_amount: float, restart_callable):
-    button = create_play_again_button(ctx, game_key, bet_amount, restart_callable)
+def build_play_again_view(interaction, game_key: str, bet_amount: float, restart_callable):
+    button = create_play_again_button(interaction, game_key, bet_amount, restart_callable)
     if not button:
         return None
     view = View(timeout=None)
@@ -1211,165 +1460,9 @@ def consume_rig(u):
         if u.get("bless_charges", 0) > 0:
             u["bless_charges"] -= 1
 
-    save_data(data)
+    persist_state(data)
     return mode
 
-
-
-# ==============================================================
-#                 CRITICAL DATA PATCH FIX (RUN ONCE)
-# ==============================================================
-# This runs every startup and gently fixes old data formats.
-# It is SAFE to keep; it won't break anything if run again.
-
-# Ensure new global dicts exist
-if "wheel_extra_spins" not in data or not isinstance(data["wheel_extra_spins"], dict):
-    data["wheel_extra_spins"] = {}
-
-if "wheel_last_spin" not in data or not isinstance(data["wheel_last_spin"], dict):
-    data["wheel_last_spin"] = {}
-
-if "withdraw_history" not in data or not isinstance(data["withdraw_history"], dict):
-    data["withdraw_history"] = {}
-
-if "withdraw_last_time" not in data or not isinstance(data["withdraw_last_time"], dict):
-    data["withdraw_last_time"] = {}
-
-if "roblox_links" not in data or not isinstance(data["roblox_links"], dict):
-    data["roblox_links"] = {}
-
-# ---------------- FIX OLD WITHDRAW ENTRIES ----------------
-for w in data.get("withdrawals", []):
-    if not isinstance(w, dict):
-        continue
-
-    # New system expects w["type"] ("gems" / "exp")
-    if "type" not in w:
-        # migrate from old "currency" if exists, else default to "gems"
-        w["type"] = w.get("currency", "gems")
-
-    # If old field name "cost" was used, create "deducted" for the new code
-    if "deducted" not in w and "cost" in w:
-        w["deducted"] = w["cost"]
-
-# ---------------- FIX OLD DEPOSIT ENTRIES ----------------
-for d in data.get("deposits", []):
-    if not isinstance(d, dict):
-        continue
-
-    # New system expects d["type"]
-    if "type" not in d:
-        d["type"] = d.get("currency", "gems")
-
-# Save fixed structure
-save_data(data)
-# ==============================================================
-
-
-
-# ==============================================================
-# 🔧 HARD PATCH — FIX OLD WITHDRAW/DEPOSIT ENTRIES (type/status)
-# ==============================================================
-
-changed = False
-
-# --- Fix withdrawals ---
-if not isinstance(data.get("withdrawals"), list):
-    data["withdrawals"] = []
-    changed = True
-
-for w in data["withdrawals"]:
-    if "type" not in w:
-        w["type"] = "gems"   # DEFAULT → gems
-        changed = True
-    if "status" not in w:
-        w["status"] = "pending"
-        changed = True
-    if "deducted" not in w:
-        w["deducted"] = w.get("amount", 0)
-        changed = True
-
-# --- Fix deposits ---
-if not isinstance(data.get("deposits"), list):
-    data["deposits"] = []
-    changed = True
-
-for d in data["deposits"]:
-    if "type" not in d:
-        d["type"] = "gems"
-        changed = True
-    if "status" not in d:
-        d["status"] = "pending"
-        changed = True
-
-if changed:
-    print("⚠️ Patched old withdraw/deposit entries automatically.")
-    save_data(data)
-
-
-
-
-
-
-#  ---------------------- BACKUP SYSTEM ---------------------- #
-
-async def backup_to_channel(reason: str = "auto"):
-    channel = bot.get_channel(BACKUP_CHANNEL_ID)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
-        except Exception:
-            return
-
-    try:
-        stamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
-        payload = json.dumps(data, indent=2)
-        fp = io.BytesIO(payload.encode("utf-8"))
-        filename = f"casino_backup_{stamp}.json"
-
-        embed = discord.Embed(
-            title="💾 Galaxy Casino Backup",
-            description=f"Reason: **{reason}**\nTimestamp (UTC): `{stamp}`",
-            color=galaxy_color()
-        )
-        await channel.send(embed=embed, file=discord.File(fp, filename=filename))
-    except Exception:
-        pass
-
-
-def apply_restored_data(new_data: dict):
-    """Replace global data store from a backup while keeping defaults intact."""
-    if not isinstance(new_data, dict):
-        raise ValueError("Backup JSON must be a JSON object.")
-
-    global data, device_fp
-    data = new_data
-
-    # Re-apply required defaults so existing commands don't crash after a restore.
-    data.setdefault("next_deposit_id", 1)
-    data.setdefault("next_withdraw_id", 1)
-    data.setdefault("deposits", [])
-    data.setdefault("withdrawals", [])
-    data.setdefault("deposit_bonuses", {})
-    data.setdefault("wheel_last_spin", {})
-    data.setdefault("wheel_extra_spins", {})
-    data.setdefault("quests", {})
-    data.setdefault("quest_last_reset", 0)
-    data.setdefault("codes", {})
-    data.setdefault("withdraw_history", {})
-    data.setdefault("withdraw_last_time", {})
-    data.setdefault("roblox_links", {})
-    data.setdefault("_device_fingerprints", {})
-
-    # Refresh derived references that other helpers rely on.
-    device_fp = data["_device_fingerprints"]
-
-    save_data(data)
-
-
-@tasks.loop(minutes=10)
-async def auto_backup_task():
-    await backup_to_channel("auto")
 
 
 async def resolve_loan_log_channel():
@@ -1424,7 +1517,7 @@ async def _dm_loan_reminder(uid: str, loan: dict):
         description=(
             f"💎 Principal: **{fmt(loan['amount'])}** gems\n"
             f"🪐 Payback: **{fmt(loan['payback_amount'])}** gems\n"
-            f"⏳ Due: <t:{int(loan['due_at'])}:R> — pay with `!payback`"
+            f"⏳ Due: <t:{int(loan['due_at'])}:R> — pay with `/payback`"
         ),
         color=galaxy_color(),
     )
@@ -1493,7 +1586,7 @@ async def loan_watchdog():
         if not uid.isdigit():
             continue
 
-        ensure_user(uid)
+        ensure_user_sync(uid)
         loan = u.get("loan")
         if not loan:
             continue
@@ -1520,21 +1613,29 @@ async def loan_watchdog():
                 await _dm_loan_default(uid, loan)
 
     if dirty:
-        save_data(data)
+        persist_state(data)
 
 
-@auto_backup_task.before_loop
-async def before_auto_backup():
-    await bot.wait_until_ready()
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, (app_commands.MissingPermissions, app_commands.BotMissingPermissions)):
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+        return
+    raise error
 
 
 @bot.event
 async def on_ready():
-    if not auto_backup_task.is_running():
-        auto_backup_task.start()
     if not loan_watchdog.is_running():
         loan_watchdog.start()
     await ensure_loan_log_worker()
+    try:
+        await bot.tree.sync()
+    except Exception:
+        pass
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
@@ -1799,7 +1900,7 @@ async def roblox_verification_flow(interaction: discord.Interaction, roblox_user
             "last_verified": time.time(),
         }
         data["roblox_links"] = links
-        save_data(data)
+        persist_state(data)
         return profile
 
     return None
@@ -1820,14 +1921,14 @@ data.setdefault("next_deposit_id", 1)
 data.setdefault("roblox_links", {})          # discord_id -> {username, user_id, avatar_url}
 data.setdefault("wheel_last_spin", {})
 data.setdefault("wheel_extra_spins", {})
-save_data(data)
+persist_state(data)
 
 # Safety: if old code left dicts here, force them to lists
 if not isinstance(data.get("withdrawals"), list):
     data["withdrawals"] = []
 if not isinstance(data.get("deposits"), list):
     data["deposits"] = []
-save_data(data)
+persist_state(data)
 
 # --- MIGRATION PATCH FOR OLD ENTRIES (fix KeyError: 'type') ---
 changed = False
@@ -1850,7 +1951,7 @@ for d in data.get("deposits", []):
         changed = True
 
 if changed:
-    save_data(data)
+    persist_state(data)
 
 
 # ==============================================================
@@ -1858,14 +1959,10 @@ if changed:
 # ==============================================================
 
 WITHDRAW_GEMS_LIMIT_2D = 500_000_000     # 500m in 48h
-WITHDRAW_EXP_LIMIT_2D  = 750_000_000     # 750m in 48h
 WITHDRAW_WINDOW_SEC    = 2 * 24 * 3600   # 2 days
 WITHDRAW_COOLDOWN_SEC  = 30 * 60         # 30 minutes
 
 WITHDRAW_GEMS_FEE = 1.2      # 1.2x removed from gems  (20% penalty)
-WITHDRAW_EXP_FEE  = 1.9      # 1.9x removed from exp
-DEPOSIT_EXP_MULT_ROBLOX = WITHDRAW_GEMS_FEE
-DEPOSIT_EXP_MULT_OTHER = WITHDRAW_EXP_FEE
 
 
 # ==============================================================
@@ -1960,7 +2057,7 @@ def set_roblox_link_for(discord_id: int, username: str, roblox_id: int, avatar_u
         "user_id": roblox_id,
         "avatar_url": avatar_url,
     }
-    save_data(data)
+    persist_state(data)
 
 
 # ==============================================================
@@ -1989,16 +2086,18 @@ def find_roblox_duplicates():
     return duplicates
 
 
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def robloxdupes(ctx):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def robloxdupes(interaction: discord.Interaction):
     """
     Admin command: show all Roblox accounts linked by multiple Discord users.
-    Usage: !robloxdupes
+    Usage: /robloxdupes
     """
     duplicates = find_roblox_duplicates()
     if not duplicates:
-        return await ctx.send("✅ No duplicated Roblox links found.")
+        return await send_response(interaction, "✅ No duplicated Roblox links found.")
 
     desc_lines = []
     for rid, discord_ids in duplicates.items():
@@ -2010,25 +2109,23 @@ async def robloxdupes(ctx):
         description="\n".join(desc_lines),
         color=discord.Color.orange()
     )
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # ==============================================================
 #                WITHDRAW LIMIT / COOLDOWN HELPERS
 # ==============================================================
 
-def get_user_withdraws_last_2d(user_id: int, wtype: str):
+def get_user_withdraws_last_2d(user_id: int):
     """
     Sum amount (base amount, not fee) of this user's withdraws
-    of given type (gems/exp) in the last 48h (pending + accepted).
+    in the last 48h (pending + accepted).
     """
     now = time.time()
     cutoff = now - WITHDRAW_WINDOW_SEC
     total = 0
     for w in data.get("withdrawals", []):
         if w.get("user_id") != user_id:
-            continue
-        if w.get("type") != wtype:
             continue
         if w.get("created_at", 0) < cutoff:
             continue
@@ -2046,14 +2143,14 @@ def has_pending_withdraw(user_id: int) -> bool:
 
 
 def record_withdraw_cooldown(user_id: int):
-    ensure_user(user_id)
+    ensure_user_sync(user_id)
     u = data[str(user_id)]
     u["last_withdraw_cmd"] = time.time()
-    save_data(data)
+    persist_state(data)
 
 
 def check_withdraw_cooldown(user_id: int):
-    ensure_user(user_id)
+    ensure_user_sync(user_id)
     u = data[str(user_id)]
     last = u.get("last_withdraw_cmd", 0)
     if last == 0:
@@ -2067,14 +2164,14 @@ def check_withdraw_cooldown(user_id: int):
 #              INTERNAL CREATORS (NO UI, JUST LOGIC)
 # ==============================================================
 
-def _create_withdraw_entry(user: discord.User, wtype: str, amount: int,
+def _create_withdraw_entry(user: discord.User, amount: int,
                            deducted: int, roblox_username: str | None):
     wid = data.get("next_withdraw_id", 1)
     entry = {
         "id": wid,
         "user_id": user.id,
         "discord_tag": str(user),
-        "type": wtype,                 # "gems" or "exp"
+        "type": "gems",
         "amount": int(amount),         # base requested
         "deducted": int(deducted),     # what we removed from balance
         "roblox_username": roblox_username,
@@ -2084,18 +2181,18 @@ def _create_withdraw_entry(user: discord.User, wtype: str, amount: int,
     arr = data.setdefault("withdrawals", [])
     arr.append(entry)
     data["next_withdraw_id"] = wid + 1
-    save_data(data)
+    persist_state(data)
     return entry
 
 
-def _create_deposit_entry(user: discord.User, dtype: str, amount: int,
+def _create_deposit_entry(user: discord.User, amount: int,
                           roblox_username: str | None):
     did = data.get("next_deposit_id", 1)
     entry = {
         "id": did,
         "user_id": user.id,
         "discord_tag": str(user),
-        "type": dtype,                # "gems" or "exp"
+        "type": "gems",
         "amount": int(amount),
         "roblox_username": roblox_username,
         "status": "pending",          # pending / accepted / denied
@@ -2104,7 +2201,7 @@ def _create_deposit_entry(user: discord.User, dtype: str, amount: int,
     arr = data.setdefault("deposits", [])
     arr.append(entry)
     data["next_deposit_id"] = did + 1
-    save_data(data)
+    persist_state(data)
     return entry
 
 
@@ -2114,14 +2211,12 @@ def _create_deposit_entry(user: discord.User, dtype: str, amount: int,
 
 async def finalize_withdraw(interaction: discord.Interaction,
                             user: discord.User,
-                            wtype: str,
                             amount_str: str,
                             roblox_username: str | None):
     """
-    Shared withdraw logic once avatar is confirmed (for gems) or
-    directly for exp.
+    Shared withdraw logic once avatar is confirmed.
     """
-    ensure_user(user.id)
+    ensure_user_sync(user.id)
     u = data[str(user.id)]
 
     # parse amount
@@ -2145,7 +2240,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
             f"User {user.mention} tried to withdraw during cooldown.",
             [
                 ("User", f"{user.mention} (`{user.id}`)", False),
-                ("Type", wtype, True),
+                ("Type", "gems", True),
                 ("Amount", fmt(amount), True),
             ],
         )
@@ -2162,32 +2257,28 @@ async def finalize_withdraw(interaction: discord.Interaction,
             f"User {user.mention} tried to create a second withdraw while one is pending.",
             [
                 ("User", f"{user.mention} (`{user.id}`)", False),
-                ("Type", wtype, True),
+                ("Type", "gems", True),
                 ("Amount", fmt(amount), True),
             ],
         )
         return
 
     # 48h limit
-    if wtype == "gems":
-        used = get_user_withdraws_last_2d(user.id, "gems")
-        limit = WITHDRAW_GEMS_LIMIT_2D
-    else:
-        used = get_user_withdraws_last_2d(user.id, "exp")
-        limit = WITHDRAW_EXP_LIMIT_2D
+    used = get_user_withdraws_last_2d(user.id)
+    limit = WITHDRAW_GEMS_LIMIT_2D
 
     if used + amount > limit:
         await interaction.response.send_message(
-            f"❌ You reached the 2-day limit for {wtype} withdraws.\n"
+            "❌ You reached the 2-day limit for gems withdraws.\n"
             f"Used: **{fmt(used)}**, limit: **{fmt(limit)}**.",
             ephemeral=True
         )
         await notify_owner(
             "Withdraw blocked (48h limit)",
-            f"User {user.mention} hit the {wtype} withdraw limit.",
+            f"User {user.mention} hit the gems withdraw limit.",
             [
                 ("User", f"{user.mention} (`{user.id}`)", False),
-                ("Type", wtype, True),
+                ("Type", "gems", True),
                 ("Requested", fmt(amount), True),
                 ("Used (48h)", fmt(used), True),
                 ("Limit", fmt(limit), True),
@@ -2196,36 +2287,28 @@ async def finalize_withdraw(interaction: discord.Interaction,
         return
 
     # balance + fee (20% penalty for gems via 1.2x)
-    if wtype == "gems":
-        fee_mult = WITHDRAW_GEMS_FEE
-        balance = float(u.get("gems", 0))
-    else:
-        fee_mult = WITHDRAW_EXP_FEE
-        balance = float(u.get("exp", 0))
+    fee_mult = WITHDRAW_GEMS_FEE
+    balance = float(u.get("gems", 0))
 
     deducted = int(amount * fee_mult)
 
     if balance < deducted:
         await interaction.response.send_message(
-            f"❌ You don't have enough {wtype}.\n"
+            "❌ You don't have enough gems.\n"
             f"Needed (with fee): **{fmt(deducted)}**",
             ephemeral=True
         )
         return
 
     # deduct
-    if wtype == "gems":
-        u["gems"] = balance - deducted
-    else:
-        u["exp"] = balance - deducted
-    save_data(data)
+    u["gems"] = balance - deducted
+    persist_state(data)
 
     record_withdraw_cooldown(user.id)
 
     # queue entry
     entry = _create_withdraw_entry(
         user=user,
-        wtype=wtype,
         amount=int(amount),
         deducted=int(deducted),
         roblox_username=roblox_username,
@@ -2233,7 +2316,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
 
     # history
     add_history(user.id, {
-        "game": f"withdraw_{wtype}",
+        "game": "withdraw_gems",
         "bet": deducted,
         "result": "pending",
         "earned": 0,
@@ -2242,7 +2325,7 @@ async def finalize_withdraw(interaction: discord.Interaction,
 
     # user message
     await interaction.response.send_message(
-        f"✅ Your **{wtype}** withdraw request has been created.\n"
+        "✅ Your **gems** withdraw request has been created.\n"
         f"ID: **#{entry['id']}**\n"
         f"Amount requested: **{fmt(amount)}** (fee: {fee_mult}x → deducted **{fmt(deducted)}**).",
         ephemeral=True
@@ -2251,13 +2334,13 @@ async def finalize_withdraw(interaction: discord.Interaction,
     # owner DM (ALWAYS)
     await notify_owner(
         "New Withdraw Request",
-        f"User {user.mention} created a {wtype} withdraw.",
+        f"User {user.mention} created a gems withdraw.",
         [
             ("User", f"{user.mention} (`{user.id}`)", False),
-            ("Type", wtype, True),
+            ("Type", "gems", True),
             ("Amount", fmt(amount), True),
             ("Deducted", fmt(deducted), True),
-            ("Roblox Username", roblox_username or "None / EXP", False),
+            ("Roblox Username", roblox_username or "None", False),
             ("Entry ID", f"#{entry['id']}", True),
         ],
     )
@@ -2265,14 +2348,13 @@ async def finalize_withdraw(interaction: discord.Interaction,
 
 async def finalize_deposit(interaction: discord.Interaction,
                            user: discord.User,
-                           dtype: str,
                            amount_str: str,
                            roblox_username: str | None):
     """
     Create a pending deposit request.
     No balance changes here. Staff adds on accept.
     """
-    ensure_user(user.id)
+    ensure_user_sync(user.id)
     u = data[str(user.id)]
 
     amount = parse_amount(amount_str, u.get("gems", 0), allow_all=False)
@@ -2283,14 +2365,13 @@ async def finalize_deposit(interaction: discord.Interaction,
 
     entry = _create_deposit_entry(
         user=user,
-        dtype=dtype,
         amount=int(amount),
         roblox_username=roblox_username,
     )
 
     # history (info only)
     add_history(user.id, {
-        "game": f"deposit_{dtype}",
+        "game": "deposit_gems",
         "bet": 0,
         "result": "pending",
         "earned": 0,
@@ -2298,7 +2379,7 @@ async def finalize_deposit(interaction: discord.Interaction,
     })
 
     await interaction.response.send_message(
-        f"✅ Your **{dtype}** deposit request has been created.\n"
+        "✅ Your **gems** deposit request has been created.\n"
         f"ID: **#{entry['id']}**\n"
         f"Amount: **{fmt(amount)}**.\n"
         f"Staff will handle it soon.",
@@ -2308,12 +2389,12 @@ async def finalize_deposit(interaction: discord.Interaction,
     # owner DM (ALWAYS)
     await notify_owner(
         "New Deposit Request",
-        f"User {user.mention} created a {dtype} deposit.",
+        f"User {user.mention} created a gems deposit.",
         [
             ("User", f"{user.mention} (`{user.id}`)", False),
-            ("Type", dtype, True),
+            ("Type", "gems", True),
             ("Amount", fmt(amount), True),
-            ("Roblox Username", roblox_username or "None / EXP", False),
+            ("Roblox Username", roblox_username or "None", False),
             ("Entry ID", f"#{entry['id']}", True),
         ],
     )
@@ -2386,7 +2467,6 @@ class RobloxConfirmView(discord.ui.View):
             await finalize_withdraw(
                 interaction=interaction,
                 user=self.target,
-                wtype="gems",
                 amount_str=self.amount_str,
                 roblox_username=self.username
             )
@@ -2394,7 +2474,6 @@ class RobloxConfirmView(discord.ui.View):
             await finalize_deposit(
                 interaction=interaction,
                 user=self.target,
-                dtype="gems",
                 amount_str=self.amount_str,
                 roblox_username=self.username
             )
@@ -2494,29 +2573,6 @@ class WithdrawGemsModal(discord.ui.Modal, title="Gems Withdraw"):
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-class WithdrawExpModal(discord.ui.Modal, title="EXP Withdraw"):
-    def __init__(self, user: discord.User):
-        super().__init__(timeout=120)
-        self.target = user
-
-        self.amount = discord.ui.TextInput(
-            label="Amount (e.g. 100m, 250k)",
-            placeholder="Only the amount, no 'all'",
-        )
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        amount_str = str(self.amount.value).strip()
-        # No username needed here
-        await finalize_withdraw(
-            interaction=interaction,
-            user=self.target,
-            wtype="exp",
-            amount_str=amount_str,
-            roblox_username=None
-        )
-
-
 class WithdrawChoiceView(discord.ui.View):
     def __init__(self, user: discord.User):
         super().__init__(timeout=60)
@@ -2535,45 +2591,39 @@ class WithdrawChoiceView(discord.ui.View):
     async def gems_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(WithdrawGemsModal(self.target))
 
-    @discord.ui.button(label="⭐ EXP Withdraw", style=discord.ButtonStyle.secondary)
-    async def exp_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(WithdrawExpModal(self.target))
 
-
-@bot.command()
-async def withdraw(ctx):
+@bot.tree.command()
+async def withdraw(interaction):
     """
     Player command:
-    !withdraw  -> opens panel with Gems / EXP withdraw (forms)
+    /withdraw  -> opens panel with Gems withdraw (forms)
     """
-    ensure_user(ctx.author.id)
-    if _loan_is_restricted(ctx.author.id):
+    ensure_user_sync(interaction.user.id)
+    if _loan_is_restricted(interaction.user.id):
         embed = discord.Embed(
             title="🚫 Withdraw Locked — Active Debt",
             description=(
-                "🌌 Your cosmic credit tether is active. Clear your loan with `!payback` "
+                "🌌 Your cosmic credit tether is active. Clear your loan with `/payback` "
                 "before making withdrawals."
             ),
             color=discord.Color.red(),
         )
         embed.set_footer(text="Galaxy Treasury • Resolve debts to unlock the stars")
-        return await ctx.send(embed=embed)
+        return await send_response(interaction, embed=embed)
 
     embed = discord.Embed(
         title="🏦 Withdraw Panel",
         description=(
             "Choose what you want to withdraw:\n\n"
-            "💎 **Gems** — 1.2x fee (20% penalty; remove 1.2x from your gems balance)\n"
-            "⭐ **EXP** — 1.9x fee (remove 1.9x from your EXP balance)\n\n"
+            "💎 **Gems** — 1.2x fee (20% penalty; remove 1.2x from your gems balance)\n\n"
             "⚠ Only **one pending withdraw** at a time.\n"
-            f"⚠ Max per 48h: **{fmt(WITHDRAW_GEMS_LIMIT_2D)} gems**, "
-            f"**{fmt(WITHDRAW_EXP_LIMIT_2D)} EXP**.\n"
+            f"⚠ Max per 48h: **{fmt(WITHDRAW_GEMS_LIMIT_2D)} gems**.\n"
             "⚠ 30 minutes cooldown between withdraws."
         ),
         color=galaxy_color()
     )
-    view = WithdrawChoiceView(ctx.author)
-    await ctx.send(embed=embed, view=view)
+    view = WithdrawChoiceView(interaction.user)
+    await send_response(interaction, embed=embed, view=view)
 
 
 # ==============================================================
@@ -2649,28 +2699,6 @@ class DepositGemsModal(discord.ui.Modal, title="Gems Deposit"):
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-class DepositExpModal(discord.ui.Modal, title="EXP Deposit"):
-    def __init__(self, user: discord.User):
-        super().__init__(timeout=120)
-        self.target = user
-
-        self.amount = discord.ui.TextInput(
-            label="Amount (e.g. 100m, 250k)",
-            placeholder="Only the amount, no 'all'",
-        )
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        amount_str = str(self.amount.value).strip()
-        await finalize_deposit(
-            interaction=interaction,
-            user=self.target,
-            dtype="exp",
-            amount_str=amount_str,
-            roblox_username=None   # admin will manage for EXP in panel
-        )
-
-
 class DepositChoiceView(discord.ui.View):
     def __init__(self, user: discord.User):
         super().__init__(timeout=60)
@@ -2689,57 +2717,52 @@ class DepositChoiceView(discord.ui.View):
     async def gems_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(DepositGemsModal(self.target))
 
-    @discord.ui.button(label="⭐ EXP Deposit", style=discord.ButtonStyle.secondary)
-    async def exp_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DepositExpModal(self.target))
 
-
-@bot.command()
-async def deposit(ctx):
+@bot.tree.command()
+async def deposit(interaction):
     """
     Player command:
-    !deposit  -> opens panel with Gems / EXP deposit (forms)
+    /deposit  -> opens panel with Gems deposit (forms)
     """
-    ensure_user(ctx.author.id)
-    if _loan_is_restricted(ctx.author.id):
+    ensure_user_sync(interaction.user.id)
+    if _loan_is_restricted(interaction.user.id):
         embed = discord.Embed(
             title="🚫 Deposits Locked — Active Debt",
             description=(
-                "🌌 Your ledger is tethered by a loan. Clear it with `!payback` "
+                "🌌 Your ledger is tethered by a loan. Clear it with `/payback` "
                 "before depositing more riches."
             ),
             color=discord.Color.red(),
         )
         embed.set_footer(text="Galaxy Treasury • Settle debts to resume deposits")
-        return await ctx.send(embed=embed)
+        return await send_response(interaction, embed=embed)
 
     embed = discord.Embed(
         title="🏦 Deposit Panel",
         description=(
             "Create a **pending** deposit request:\n\n"
-            "💎 **Gems** — Roblox username required (avatar check every time)\n"
-            "⭐ **EXP** — No username here, staff uses panel side\n\n"
+            "💎 **Gems** — Roblox username required (avatar check every time)\n\n"
             "Deposits **do not change your balance automatically**.\n"
             "Staff accepts them in the admin panel and then adds the amount.\n\n"
-            "EXP rewards mirror withdraw odds: **1.2× EXP** for Roblox deposits, **1.9× EXP** for others."
+            "Withdraw fee is **1.2×** for gems."
         ),
         color=galaxy_color()
     )
-    view = DepositChoiceView(ctx.author)
-    await ctx.send(embed=embed, view=view)
+    view = DepositChoiceView(interaction.user)
+    await send_response(interaction, embed=embed, view=view)
 
 
 # ==============================================================
 #                       LOAN SYSTEM
 # ==============================================================
 
-@bot.command()
-async def loan(ctx, amount: str):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command()
+async def loan(interaction, amount: str):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
     limit = _loan_limit(u)
     if u.get("lifetime_wagered", 0) <= 0 or limit <= 0:
-        return await ctx.send(embed=_loan_embed(
+        return await send_response(interaction, embed=_loan_embed(
             "🚫 Loan Unavailable",
             "🌌 You need wagering history before the bureau opens your cosmic credit line.",
             discord.Color.red(),
@@ -2747,19 +2770,19 @@ async def loan(ctx, amount: str):
 
     current = u.get("loan")
     if current and current.get("status") in {"active", "defaulted"}:
-        return await ctx.send(embed=_loan_embed(
+        return await send_response(interaction, embed=_loan_embed(
             "🚫 Existing Loan",
-            "🌠 You already have a loan tethered. Use `!payback` to clear it first.",
+            "🌠 You already have a loan tethered. Use `/payback` to clear it first.",
             discord.Color.red(),
         ))
 
     val = parse_amount(amount, allow_all=False)
     if val is None or val <= 0:
-        return await ctx.send("❌ Invalid amount.")
+        return await send_response(interaction, "❌ Invalid amount.")
 
     val = int(val)
     if val > limit:
-        return await ctx.send(embed=_loan_embed(
+        return await send_response(interaction, embed=_loan_embed(
             "🚫 Above Limit",
             f"You can borrow up to **{fmt(limit)}** gems (10% of your lifetime wagers).",
             discord.Color.red(),
@@ -2776,14 +2799,14 @@ async def loan(ctx, amount: str):
         "last_reminder": now,
     }
 
-    _set_loan(ctx.author.id, loan_data)
+    _set_loan(interaction.user.id, loan_data)
     u["gems"] = u.get("gems", 0) + val
-    save_data(data)
+    persist_state(data)
 
-    await _send_loan_notification(ctx.author, loan_data, "taken", val)
+    await _send_loan_notification(interaction.user, loan_data, "taken", val)
 
-    grant_achievement(ctx.author.id, "first_loan")
-    refresh_achievements(ctx.author.id)
+    grant_achievement(interaction.user.id, "first_loan")
+    refresh_achievements(interaction.user.id)
 
     embed = discord.Embed(
         title="💠 Loan Approved",
@@ -2791,32 +2814,32 @@ async def loan(ctx, amount: str):
             f"🌌 You borrowed **{fmt(val)}** gems.\n"
             f"💎 Payback: **{fmt(payback)}** gems.\n"
             f"⏳ Due: <t:{int(loan_data['due_at'])}:R>\n"
-            "Use `!payback` to clear your cosmic credit."
+            "Use `/payback` to clear your cosmic credit."
         ),
         color=galaxy_color(),
     )
     embed.set_footer(text="Galaxy Credit Bureau • 72h repayment window")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
-@bot.command()
-async def payback(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    is_admin = ctx.guild and ctx.author.guild_permissions.manage_guild
+@bot.tree.command()
+async def payback(interaction, member: discord.Member = None):
+    target = member or interaction.user
+    is_admin = interaction.guild and interaction.user.guild_permissions.manage_guild
 
     if member and not is_admin:
-        return await ctx.send(embed=_loan_embed(
+        return await send_response(interaction, embed=_loan_embed(
             "🚫 Admin Only",
             "🌠 Only admins can repay loans for other users.",
             discord.Color.red(),
         ))
 
-    ensure_user(target.id)
+    ensure_user_sync(target.id)
     u = data[str(target.id)]
     loan = u.get("loan")
 
     if not loan or loan.get("status") not in {"active", "defaulted"}:
-        return await ctx.send(embed=_loan_embed(
+        return await send_response(interaction, embed=_loan_embed(
             "🚫 No Outstanding Loan",
             "🌟 This account is already debt-free among the stars!",
             discord.Color.green(),
@@ -2824,7 +2847,7 @@ async def payback(ctx, member: discord.Member = None):
 
     needed = int(loan.get("payback_amount", 0))
     if u.get("gems", 0) < needed:
-        return await ctx.send(embed=_loan_embed(
+        return await send_response(interaction, embed=_loan_embed(
             "❌ Not Enough Gems",
             f"<@{target.id}> needs **{fmt(needed)}** gems to repay. Keep grinding, star voyager!",
             discord.Color.red(),
@@ -2833,7 +2856,7 @@ async def payback(ctx, member: discord.Member = None):
     u["gems"] -= needed
     loan["status"] = "paid"
     loan["paid_at"] = time.time()
-    save_data(data)
+    persist_state(data)
 
     add_history(target.id, {
         "game": "loan_payback",
@@ -2849,10 +2872,10 @@ async def payback(ctx, member: discord.Member = None):
         f"💎 Paid **{fmt(needed)}** gems from <@{target.id}>'s balance.\n"
         "🌠 The cosmic credit tether is released."
     )
-    if member and ctx.author.id != target.id:
+    if member and interaction.user.id != target.id:
         description = (
             f"💎 Paid **{fmt(needed)}** gems from <@{target.id}>'s balance.\n"
-            f"🤝 Repayment processed by {ctx.author.mention}.\n"
+            f"🤝 Repayment processed by {interaction.user.mention}.\n"
             "🌠 The cosmic credit tether is released."
         )
 
@@ -2862,15 +2885,15 @@ async def payback(ctx, member: discord.Member = None):
         color=discord.Color.green(),
     )
     embed.set_footer(text="Galaxy Credit Bureau • Debt-free horizon")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
     await _send_loan_notification(target, loan, "paid", needed)
 
 
-@bot.command(aliases=["ach"], name="achievements")
-async def achievements_cmd(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    ensure_user(target.id)
+@bot.tree.command(name="achievements")
+async def achievements_cmd(interaction, member: discord.Member = None):
+    target = member or interaction.user
+    ensure_user_sync(target.id)
     refresh_achievements(target.id)
     ach = achievement_record(target.id)
 
@@ -2889,15 +2912,15 @@ async def achievements_cmd(ctx, member: discord.Member = None):
         color=galaxy_color(),
     )
     embed.set_footer(text="Galaxy Milestones • 🌌 Track your legend")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 # ==============================================================
-#               ADMIN WITHDRAW PANEL (!withdrawpanel)
+#               ADMIN WITHDRAW PANEL (/withdrawpanel)
 # ==============================================================
 
 class WithdrawAdminView(discord.ui.View):
-    def __init__(self, ctx: commands.Context, entries: list[dict]):
+    def __init__(self, interaction: discord.Interaction, entries: list[dict]):
         super().__init__(timeout=300)
-        self.ctx = ctx
+        self.interaction = interaction
         self.entries = entries
         self.index = 0
 
@@ -2929,7 +2952,7 @@ class WithdrawAdminView(discord.ui.View):
         e.add_field(name="Type", value=cur["type"], inline=True)
         e.add_field(name="Requested", value=fmt(cur["amount"]), inline=True)
         e.add_field(name="Deducted", value=fmt(cur["deducted"]), inline=True)
-        e.add_field(name="Roblox Username", value=cur.get("roblox_username") or "None (EXP?)", inline=False)
+        e.add_field(name="Roblox Username", value=cur.get("roblox_username") or "None", inline=False)
         ts = datetime.utcfromtimestamp(cur["created_at"]).strftime("%Y-%m-%d %H:%M:%S UTC")
         e.add_field(name="Created", value=ts, inline=False)
         e.set_footer(text=f"Entry {self.index+1} / {len(self.entries)} — use buttons below.")
@@ -2944,7 +2967,7 @@ class WithdrawAdminView(discord.ui.View):
 
     @discord.ui.button(label="⬅ Prev", style=discord.ButtonStyle.secondary)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         if not self.entries:
             return await interaction.response.send_message("No entries.", ephemeral=True)
@@ -2953,7 +2976,7 @@ class WithdrawAdminView(discord.ui.View):
 
     @discord.ui.button(label="Next ➡", style=discord.ButtonStyle.secondary)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         if not self.entries:
             return await interaction.response.send_message("No entries.", ephemeral=True)
@@ -2962,7 +2985,7 @@ class WithdrawAdminView(discord.ui.View):
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
     async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         cur = self.current()
         if not cur:
@@ -2971,7 +2994,7 @@ class WithdrawAdminView(discord.ui.View):
             return await interaction.response.send_message("Already handled.", ephemeral=True)
 
         cur["status"] = "accepted"
-        save_data(data)
+        persist_state(data)
 
         await interaction.response.send_message(
             f"✅ Withdraw **#{cur['id']}** marked as **ACCEPTED**.\n"
@@ -2993,7 +3016,7 @@ class WithdrawAdminView(discord.ui.View):
 
     @discord.ui.button(label="❌ Deny + Refund", style=discord.ButtonStyle.danger)
     async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         cur = self.current()
         if not cur:
@@ -3003,16 +3026,13 @@ class WithdrawAdminView(discord.ui.View):
 
         # Refund deducted amount
         uid = str(cur["user_id"])
-        ensure_user(uid)
+        ensure_user_sync(uid)
         u = data[uid]
-        if cur["type"] == "gems":
-            u["gems"] = float(u.get("gems", 0)) + cur["deducted"]
-        else:
-            u["exp"] = float(u.get("exp", 0)) + cur["deducted"]
-        save_data(data)
+        u["gems"] = float(u.get("gems", 0)) + cur["deducted"]
+        persist_state(data)
 
         cur["status"] = "denied"
-        save_data(data)
+        persist_state(data)
 
         await interaction.response.send_message(
             f"❌ Withdraw **#{cur['id']}** denied. "
@@ -3033,7 +3053,7 @@ class WithdrawAdminView(discord.ui.View):
 
     @discord.ui.button(label="🛑 Close", style=discord.ButtonStyle.secondary)
     async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         for b in self.children:
             b.disabled = True
@@ -3041,29 +3061,31 @@ class WithdrawAdminView(discord.ui.View):
         self.stop()
 
 
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def withdrawpanel(ctx):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def withdrawpanel(interaction: discord.Interaction):
     """
     Admin command:
-    !withdrawpanel  -> open admin viewer for pending withdraws
+    /withdrawpanel  -> open admin viewer for pending withdraws
     """
     pending = [w for w in data.get("withdrawals", []) if w.get("status") == "pending"]
     if not pending:
-        return await ctx.send("✅ No pending withdraws.")
+        return await send_response(interaction, "✅ No pending withdraws.")
 
-    view = WithdrawAdminView(ctx, pending)
-    await ctx.send(embed=view.make_embed(), view=view)
+    view = WithdrawAdminView(interaction, pending)
+    await send_response(interaction, embed=view.make_embed(), view=view)
 
 
 # ==============================================================
-#               ADMIN DEPOSIT PANEL (!depositpanel)
+#               ADMIN DEPOSIT PANEL (/depositpanel)
 # ==============================================================
 
 class DepositAdminView(discord.ui.View):
-    def __init__(self, ctx: commands.Context, entries: list[dict]):
+    def __init__(self, interaction: discord.Interaction, entries: list[dict]):
         super().__init__(timeout=300)
-        self.ctx = ctx
+        self.interaction = interaction
         self.entries = entries
         self.index = 0
 
@@ -3094,7 +3116,7 @@ class DepositAdminView(discord.ui.View):
         e.add_field(name="User", value=f"<@{user_id}> (`{user_id}`)", inline=False)
         e.add_field(name="Type", value=cur["type"], inline=True)
         e.add_field(name="Amount", value=fmt(cur["amount"]), inline=True)
-        e.add_field(name="Roblox Username", value=cur.get("roblox_username") or "None (EXP / not provided)", inline=False)
+        e.add_field(name="Roblox Username", value=cur.get("roblox_username") or "None", inline=False)
         ts = datetime.utcfromtimestamp(cur["created_at"]).strftime("%Y-%m-%d %H:%M:%S UTC")
         e.add_field(name="Created", value=ts, inline=False)
         e.set_footer(text=f"Entry {self.index+1} / {len(self.entries)} — use buttons below.")
@@ -3109,7 +3131,7 @@ class DepositAdminView(discord.ui.View):
 
     @discord.ui.button(label="⬅ Prev", style=discord.ButtonStyle.secondary)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         if not self.entries:
             return await interaction.response.send_message("No entries.", ephemeral=True)
@@ -3118,7 +3140,7 @@ class DepositAdminView(discord.ui.View):
 
     @discord.ui.button(label="Next ➡", style=discord.ButtonStyle.secondary)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         if not self.entries:
             return await interaction.response.send_message("No entries.", ephemeral=True)
@@ -3127,7 +3149,7 @@ class DepositAdminView(discord.ui.View):
 
     @discord.ui.button(label="✅ Accept + Add Balance", style=discord.ButtonStyle.success)
     async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         cur = self.current()
         if not cur:
@@ -3136,29 +3158,18 @@ class DepositAdminView(discord.ui.View):
             return await interaction.response.send_message("Already handled.", ephemeral=True)
 
         uid = str(cur["user_id"])
-        ensure_user(uid)
+        ensure_user_sync(uid)
         u = data[uid]
 
-        exp_multiplier = (
-            DEPOSIT_EXP_MULT_ROBLOX
-            if cur["type"] == "gems"
-            else DEPOSIT_EXP_MULT_OTHER
-        )
-        exp_award = int(cur["amount"] * exp_multiplier)
-
-        if cur["type"] == "gems":
-            u["gems"] = float(u.get("gems", 0)) + cur["amount"]
-
-        u["exp"] = float(u.get("exp", 0)) + exp_award
-        save_data(data)
+        u["gems"] = float(u.get("gems", 0)) + cur["amount"]
+        persist_state(data)
 
         cur["status"] = "accepted"
-        save_data(data)
+        persist_state(data)
 
         await interaction.response.send_message(
             f"✅ Deposit **#{cur['id']}** accepted.\n"
-            f"Added **{fmt(cur['amount'])} {cur['type']}** to user balance.\n"
-            f"Awarded **{fmt(exp_award)} EXP** using synced deposit odds.",
+            f"Added **{fmt(cur['amount'])} {cur['type']}** to user balance.",
             ephemeral=True
         )
 
@@ -3169,13 +3180,12 @@ class DepositAdminView(discord.ui.View):
                 ("User", f"<@{cur['user_id']}> (`{cur['user_id']}`)", False),
                 ("Type", cur["type"], True),
                 ("Amount", fmt(cur["amount"]), True),
-                ("EXP Awarded", fmt(exp_award), True),
             ],
         )
 
     @discord.ui.button(label="❌ Deny (no balance change)", style=discord.ButtonStyle.danger)
     async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         cur = self.current()
         if not cur:
@@ -3184,7 +3194,7 @@ class DepositAdminView(discord.ui.View):
             return await interaction.response.send_message("Already handled.", ephemeral=True)
 
         cur["status"] = "denied"
-        save_data(data)
+        persist_state(data)
 
         await interaction.response.send_message(
             f"❌ Deposit **#{cur['id']}** denied. No balance change.",
@@ -3203,7 +3213,7 @@ class DepositAdminView(discord.ui.View):
 
     @discord.ui.button(label="🛑 Close", style=discord.ButtonStyle.secondary)
     async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("❌ Only the panel opener can use this.", ephemeral=True)
         for b in self.children:
             b.disabled = True
@@ -3211,19 +3221,21 @@ class DepositAdminView(discord.ui.View):
         self.stop()
 
 
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def depositpanel(ctx):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def depositpanel(interaction: discord.Interaction):
     """
     Admin command:
-    !depositpanel  -> open admin viewer for pending deposits
+    /depositpanel  -> open admin viewer for pending deposits
     """
     pending = [d for d in data.get("deposits", []) if d.get("status") == "pending"]
     if not pending:
-        return await ctx.send("✅ No pending deposits.")
+        return await send_response(interaction, "✅ No pending deposits.")
 
-    view = DepositAdminView(ctx, pending)
-    await ctx.send(embed=view.make_embed(), view=view)
+    view = DepositAdminView(interaction, pending)
+    await send_response(interaction, embed=view.make_embed(), view=view)
 
 
 
@@ -3259,7 +3271,7 @@ def get_user_quests(uid):
             "completed": False
         }
         data["quests"][uid] = q
-        save_data(data)
+        persist_state(data)
     return q
 
 
@@ -3269,7 +3281,7 @@ def get_user_quests(uid):
 def reset_quests():
     data["quests"] = {}
     data["quest_last_reset"] = time.time()
-    save_data(data)
+    persist_state(data)
 
 def check_daily_reset():
     last = data.get("quest_last_reset", 0)
@@ -3284,29 +3296,29 @@ def _quest_add_earn(uid, amount):
     check_daily_reset()
     q = get_user_quests(uid)
     q["earn"] += amount
-    save_data(data)
+    persist_state(data)
 
 def _quest_add_deposit(uid, amount):
     check_daily_reset()
     q = get_user_quests(uid)
     q["deposit"] += amount
-    save_data(data)
+    persist_state(data)
 
 def _quest_add_wager(uid, amount):
     check_daily_reset()
     q = get_user_quests(uid)
     q["wager"] += amount
-    save_data(data)
+    persist_state(data)
 
 
  # --------------------------------------------------------------
-#                       !quest COMMAND
+#                       /quest COMMAND
 # --------------------------------------------------------------
-@bot.command()
-async def quest(ctx):
+@bot.tree.command()
+async def quest(interaction):
 
     check_daily_reset()
-    uid = str(ctx.author.id)
+    uid = str(interaction.user.id)
     q = get_user_quests(uid)
 
     def bar(current, goal):
@@ -3347,7 +3359,7 @@ async def quest(ctx):
         if not q["completed"]:
             embed.add_field(
                 name="🎉 Reward Ready!",
-                value="Use **!questclaim** to collect.",
+                value="Use **/questclaim** to collect.",
                 inline=False
             )
         else:
@@ -3357,22 +3369,22 @@ async def quest(ctx):
                 inline=False
             )
 
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
-#                    !questclaim COMMAND
+#                    /questclaim COMMAND
 # --------------------------------------------------------------
-@bot.command()
-async def questclaim(ctx):
+@bot.tree.command()
+async def questclaim(interaction):
 
     check_daily_reset()
-    uid = str(ctx.author.id)
+    uid = str(interaction.user.id)
     q = get_user_quests(uid)
 
     # Already claimed
     if q["completed"]:
-        return await ctx.send("❌ You already claimed your reward today.")
+        return await send_response(interaction, "❌ You already claimed your reward today.")
 
     # Not completed
     if (
@@ -3380,10 +3392,10 @@ async def questclaim(ctx):
         q["deposit"] < q["deposit_goal"] or
         q["wager"] < q["wager_goal"]
     ):
-        return await ctx.send("❌ You haven't completed all quests yet.")
+        return await send_response(interaction, "❌ You haven't completed all quests yet.")
 
     # Reward
-    ensure_user(uid)
+    ensure_user_sync(uid)
     data[uid]["gems"] += 100_000_000
 
     # Count quest reward as free income
@@ -3393,9 +3405,9 @@ async def questclaim(ctx):
     data["deposit_bonuses"][uid] = data["deposit_bonuses"].get(uid, 0) + 10
 
     q["completed"] = True
-    save_data(data)
+    persist_state(data)
 
-    await ctx.send("🎉 You claimed **100m gems + 10% deposit bonus**! Nice work!")
+    await send_response(interaction, "🎉 You claimed **100m gems + 10% deposit bonus**! Nice work!")
 
 
 
@@ -3472,19 +3484,19 @@ def build_spin_sequence(prize_index: int, num_slots: int) -> list[int]:
 
 
 # --------------------------------------------------------------
-#                           !wheel
+#                           /wheel
 # --------------------------------------------------------------
-@bot.command()
-async def wheel(ctx):
+@bot.tree.command()
+async def wheel(interaction):
     """
     Daily wheel:
     - 1 spin / 24h
-    - Extra spins (no cooldown) from !adminwheel
+    - Extra spins (no cooldown) from /adminwheel
     - Animated arrow in embed
     """
 
-    uid = str(ctx.author.id)
-    ensure_user(uid)
+    uid = str(interaction.user.id)
+    ensure_user_sync(uid)
 
     # ---------------------------
     # SAFETY: Ensure structures exist
@@ -3503,7 +3515,7 @@ async def wheel(ctx):
 
     if extra_spins > 0:
         data["wheel_extra_spins"][uid] = extra_spins - 1
-        save_data(data)
+        persist_state(data)
         bypass_cooldown = True
 
     # --------------------------------------------------
@@ -3517,13 +3529,13 @@ async def wheel(ctx):
             rem = int(WHEEL_COOLDOWN - (now - last))
             h, rem = divmod(rem, 3600)
             m, s = divmod(rem, 60)
-            return await ctx.send(
-                f"⏳ You already used **!wheel**.\n"
+            return await send_response(interaction, 
+                f"⏳ You already used **/wheel**.\n"
                 f"Next spin in **{h}h {m}m {s}s**."
             )
 
         data["wheel_last_spin"][uid] = now
-        save_data(data)
+        persist_state(data)
 
     # --------------------------------------------------
     # SPIN ANIMATION SETUP
@@ -3543,7 +3555,7 @@ async def wheel(ctx):
         description="Spinning...",
         color=galaxy_color()
     )
-    msg = await ctx.send(embed=embed)
+    msg = await send_response(interaction, embed=embed)
 
     # --------------------------------------------------
     # ANIMATION LOOP
@@ -3555,7 +3567,7 @@ async def wheel(ctx):
             lines.append(f"{prefix} {name}")
 
         desc = (
-            f"**Player:** {ctx.author.mention}\n"
+            f"**Player:** {interaction.user.mention}\n"
             f"**Spin:** {'extra (no cooldown)' if bypass_cooldown else 'daily'}\n\n"
             "🎡 **Wheel is spinning...**\n\n" +
             "\n".join(lines)
@@ -3576,9 +3588,9 @@ async def wheel(ctx):
     # --------------------------------------------------
     if prize_obj["type"] == "gems":
         data[uid]["gems"] = data[uid].get("gems", 0) + prize_obj["amount"]
-        save_data(data)
+        persist_state(data)
 
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "wheel",
             "bet": 0,
             "result": prize_obj["name"],
@@ -3592,9 +3604,9 @@ async def wheel(ctx):
 
         bonus_map = data["deposit_bonuses"]
         bonus_map[uid] = bonus_map.get(uid, 0) + prize_obj["bonus"]
-        save_data(data)
+        persist_state(data)
 
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "wheel",
             "bet": 0,
             "result": f"deposit_bonus_{prize_obj['bonus']}%",
@@ -3607,7 +3619,7 @@ async def wheel(ctx):
     # --------------------------------------------------
     lines_final = [f"• {n}" for n in names]
     final_desc = (
-        f"**Player:** {ctx.author.mention}\n\n"
+        f"**Player:** {interaction.user.mention}\n\n"
         f"🎁 **Result:** **{prize_obj['name']}**\n\n"
         "**Visible rewards:**\n" +
         "\n".join(lines_final)
@@ -3624,16 +3636,18 @@ async def wheel(ctx):
 
 
 # --------------------------------------------------------------
-#                        !adminwheel
+#                        /adminwheel
 # --------------------------------------------------------------
-@bot.command(name="adminwheel")
-@commands.has_guild_permissions(manage_guild=True)
-async def adminwheel(ctx, target: str, spins: int):
+@bot.tree.command(name="adminwheel")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def adminwheel(interaction: discord.Interaction, spins: int, member: discord.Member | None = None, everyone: bool = False):
     """
     Give extra wheel spins (ignore cooldown)
     Usage:
-      !adminwheel @user 3
-      !adminwheel everyone 2
+      /adminwheel spins:3 member:@user
+      /adminwheel spins:2 everyone:true
     """
 
     # -------------------------
@@ -3643,41 +3657,41 @@ async def adminwheel(ctx, target: str, spins: int):
         data["wheel_extra_spins"] = {}
 
     if spins <= 0:
-        return await ctx.send("❌ Spins must be a positive number.")
+        return await send_response(interaction, "❌ Spins must be a positive number.")
 
     # -------------------------
     # GIVE TO EVERYONE
     # -------------------------
-    if target.lower() == "everyone":
+    if everyone:
         count = 0
-        for member in ctx.guild.members:
+        for member in interaction.guild.members:
             if member.bot:
                 continue
             uid = str(member.id)
-            ensure_user(uid)
+            ensure_user_sync(uid)
 
             data["wheel_extra_spins"][uid] = data["wheel_extra_spins"].get(uid, 0) + spins
             count += 1
 
-        save_data(data)
-        return await ctx.send(
+        persist_state(data)
+        return await send_response(interaction, 
             f"🌍 Gave **{spins} extra spins** to **{count} users**."
         )
 
     # -------------------------
     # GIVE TO ONE USER (mention)
     # -------------------------
-    if not ctx.message.mentions:
-        return await ctx.send("❌ Mention a user or use `everyone`.")
+    if not member:
+        return await send_response(interaction, "❌ Provide a member or set everyone to true.")
 
-    user = ctx.message.mentions[0]
+    user = member
     uid = str(user.id)
-    ensure_user(uid)
+    ensure_user_sync(uid)
 
     data["wheel_extra_spins"][uid] = data["wheel_extra_spins"].get(uid, 0) + spins
-    save_data(data)
+    persist_state(data)
 
-    await ctx.send(
+    await send_response(interaction, 
         f"🎡 Gave **{spins} extra spins** to {user.mention}."
     )
 
@@ -3690,19 +3704,21 @@ async def adminwheel(ctx, target: str, spins: int):
 # --------------------------------------------------------------
 #     GUESS THE NUMBER (1–10) — ADMIN EVENT
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def guessthenumber(ctx, prize: str):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def guessthenumber(interaction, prize: str):
     """
     Admin-only infinite guess-the-number event.
-    Usage: !guessthenumber 100m
+    Usage: /guessthenumber 100m
     Runs until someone guesses the correct number (1–10).
     """
 
     # Parse prize
     parsed_prize = parse_amount(prize, None, allow_all=False)
     if parsed_prize is None or parsed_prize <= 0:
-        return await ctx.send("❌ Invalid prize amount!")
+        return await send_response(interaction, "❌ Invalid prize amount!")
 
     # Pick secret number
     secret = random.randint(1, 10)
@@ -3718,7 +3734,7 @@ async def guessthenumber(ctx, prize: str):
         color=galaxy_color()
     )
 
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
     # Loop until winner
     while True:
@@ -3739,14 +3755,14 @@ async def guessthenumber(ctx, prize: str):
 
         # WRONG GUESS
         if guess != secret:
-            await ctx.send(f"❌ {msg.author.mention} wrong guess!")
+            await send_response(interaction, f"❌ {msg.author.mention} wrong guess!")
             continue
 
         # CORRECT GUESS
         winner = msg.author
-        ensure_user(winner.id)
+        ensure_user_sync(winner.id)
         data[str(winner.id)]["gems"] += parsed_prize
-        save_data(data)
+        persist_state(data)
 
         add_history(winner.id, {
             "game": "guess_number",
@@ -3764,19 +3780,19 @@ async def guessthenumber(ctx, prize: str):
             ),
             color=discord.Color.green()
         )
-        await ctx.send(embed=win_embed)
+        await send_response(interaction, embed=win_embed)
         break
 
 
 # --------------------------------------------------------------
-#                      !loanhelp
+#                      /loanhelp
 # --------------------------------------------------------------
 
 
 
-@bot.command()
-async def loanhelp(ctx):
-    """Explain loan defaults and consequences."""
+@bot.tree.command()
+async def loanhelp(interaction):
+    """Describe loan defaults and consequences."""
     embed = discord.Embed(
         title="📘 Loan Help",
         description=(
@@ -3785,12 +3801,12 @@ async def loanhelp(ctx):
             "🔒 While active or defaulted: no new loans, withdrawals, or deposits.\n"
             "📢 Staff is alerted when a default occurs for manual follow-up.\n\n"
             "Repayment required: **1.5×** of the borrowed amount.\n"
-            "Clear the debt anytime with `!payback` to regain full access."
+            "Clear the debt anytime with `/payback` to regain full access."
         ),
         color=discord.Color.red(),
     )
     embed.set_footer(text="Galaxy Credit Bureau • Stay current to keep playing")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 
@@ -3799,9 +3815,9 @@ async def loanhelp(ctx):
 # --------------------------------------------------------------
 #                      MEMBERS (server stats)
 # --------------------------------------------------------------
-@bot.command(aliases=["member", "members"])
-async def membercount(ctx):
-    guild = ctx.guild
+@bot.tree.command(name="membercount")
+async def membercount(interaction):
+    guild = interaction.guild
 
     total = guild.member_count
     humans = len([m for m in guild.members if not m.bot])
@@ -3836,7 +3852,7 @@ async def membercount(ctx):
     embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
     embed.set_footer(text="Galaxy Casino • Server Stats 🌌")
 
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
@@ -3872,14 +3888,16 @@ def parse_clean_duration(text: str):
 
 
 
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def cleanhistory(ctx, time_str: str):
-    """Usage: !cleanhistory <time>   Example: 30d, 12h, 10m"""
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def cleanhistory(interaction, time_str: str):
+    """Usage: /cleanhistory <time>   Example: 30d, 12h, 10m"""
 
     seconds = parse_clean_duration(time_str)
     if seconds is None:
-        return await ctx.send("❌ Invalid time format! Use: `30s`, `10m`, `4h`, `7d`, `30d`.")
+        return await send_response(interaction, "❌ Invalid time format! Use: `30s`, `10m`, `4h`, `7d`, `30d`.")
 
     now = time.time()
     limit = now - seconds
@@ -3887,7 +3905,7 @@ async def cleanhistory(ctx, time_str: str):
     cleaned = []
     total_gems_removed = 0
 
-    for member in ctx.guild.members:
+    for member in interaction.guild.members:
         if member.bot:
             continue
 
@@ -3916,7 +3934,7 @@ async def cleanhistory(ctx, time_str: str):
             user_data["gems"] = 0
             cleaned.append((member, removed))
 
-    save_data(data)
+    persist_state(data)
 
     if not cleaned:
         embed = discord.Embed(
@@ -3924,7 +3942,7 @@ async def cleanhistory(ctx, time_str: str):
             description=f"No users inactive for **{time_str}**.",
             color=discord.Color.orange()
         )
-        return await ctx.send(embed=embed)
+        return await send_response(interaction, embed=embed)
 
     # Create detailed list file
     output = f"Inactive users cleaned (inactive for {time_str}):\n\n"
@@ -3948,7 +3966,7 @@ async def cleanhistory(ctx, time_str: str):
         color=discord.Color.red()
     )
 
-    await ctx.send(embed=embed, file=file)
+    await send_response(interaction, embed=embed, file=file)
 
 
 
@@ -3958,9 +3976,11 @@ async def cleanhistory(ctx, time_str: str):
 # --------------------------------------------------------------
 #                      Lock Category (Admin)
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def lockcat(ctx, category_id: int):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def lockcat(interaction, category_id: int):
     DISABLED_CATEGORIES.add(category_id)
 
     embed = discord.Embed(
@@ -3969,15 +3989,17 @@ async def lockcat(ctx, category_id: int):
         color=discord.Color.red()
     )
 
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
 #                      Unlock Category (Admin)
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def unlockcat(ctx, category_id: int):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def unlockcat(interaction, category_id: int):
     DISABLED_CATEGORIES.discard(category_id)
 
     embed = discord.Embed(
@@ -3986,21 +4008,21 @@ async def unlockcat(ctx, category_id: int):
         color=discord.Color.green()
     )
 
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
 #              GLOBAL COMMAND BLOCKER (AUTO DELETE)
 # --------------------------------------------------------------
-@bot.check
-async def block_commands_in_locked_category(ctx):
+@bot.tree.check
+async def block_commands_in_locked_category(interaction: discord.Interaction):
 
     # Admins can always use commands
-    if ctx.author.guild_permissions.manage_guild:
+    if interaction.user.guild_permissions.manage_guild:
         return True
 
     # Category locked?
-    if ctx.channel.category_id in DISABLED_CATEGORIES:
+    if interaction.channel.category_id in DISABLED_CATEGORIES:
 
         embed = discord.Embed(
             title="🚫 Commands Disabled Here",
@@ -4008,21 +4030,15 @@ async def block_commands_in_locked_category(ctx):
                 "You cannot use bot commands in **this category**.\n\n"
                 "✨ **Admins** (Manage Server) can still use commands anywhere.\n"
                 "🛠 To re-enable commands here, an admin can use:\n"
-                "``!unlockcat <category_id>``\n\n"
-                f"📁 Category ID: `{ctx.channel.category_id}`\n\n"
+                "``/unlockcat <category_id>``\n\n"
+                f"📁 Category ID: `{interaction.channel.category_id}`\n\n"
                 "Commands remain enabled in all other categories."
             ),
             color=discord.Color.red()
         )
 
         # Send block message
-        block_msg = await ctx.send(embed=embed)
-
-        # DELETE user's command message
-        try:
-            await ctx.message.delete()
-        except:
-            pass  # In case bot doesn't have permission
+        block_msg = await send_response(interaction, embed=embed)
 
         # DELETE block embed after 10 seconds
         await asyncio.sleep(10)
@@ -4046,21 +4062,21 @@ async def block_commands_in_locked_category(ctx):
 #                      SELL COMMAND (NO x50 RULE)
 # --------------------------------------------------------------
 
-@bot.command()
-async def sell(ctx, name: str, income: str, price: str):
+@bot.tree.command()
+async def sell(interaction, name: str, income: str, price: str):
     try:
         income_val = parse_market_number(income)
         price_val = parse_market_number(price)
     except:
-        return await ctx.send("❌ Invalid number. Use: 5m, 10m, 250k, 1b, etc.")
+        return await send_response(interaction, "❌ Invalid number. Use: 5m, 10m, 250k, 1b, etc.")
 
-    ensure_user(ctx.author.id)
+    ensure_user_sync(interaction.user.id)
 
     income_disp = short(income_val) + "/s"
     price_disp = short(price_val)
 
     embed = discord.Embed(
-        title=f"Listing from {ctx.author.display_name}",
+        title=f"Listing from {interaction.user.display_name}",
         color=discord.Color.blue()
     )
     embed.add_field(name="🧾 Item Name", value=name, inline=False)
@@ -4070,7 +4086,7 @@ async def sell(ctx, name: str, income: str, price: str):
         value=f"{price_disp} gems",
         inline=False
     )
-    embed.set_footer(text="Use !sell to create your own listing.")
+    embed.set_footer(text="Use /sell to create your own listing.")
 
     market_channel = bot.get_channel(1442936279644897381)
 
@@ -4086,8 +4102,8 @@ async def sell(ctx, name: str, income: str, price: str):
         @discord.ui.button(label="🛒 Buy", style=discord.ButtonStyle.blurple)
         async def buy(self, interaction: discord.Interaction, button):
             buyer = interaction.user
-            ensure_user(buyer.id)
-            ensure_user(self.owner_id)
+            ensure_user_sync(buyer.id)
+            ensure_user_sync(self.owner_id)
 
             buyer_data = data[str(buyer.id)]
 
@@ -4102,7 +4118,7 @@ async def sell(ctx, name: str, income: str, price: str):
 
             # Remove gems from buyer
             buyer_data["gems"] -= required
-            save_data(data)
+            persist_state(data)
 
             guild = interaction.guild
             seller = guild.get_member(self.owner_id)
@@ -4145,7 +4161,7 @@ async def sell(ctx, name: str, income: str, price: str):
             await interaction.response.send_message("🗑 Listing removed.", ephemeral=True)
 
     view = ListingButtons(
-        owner_id=ctx.author.id,
+        owner_id=interaction.user.id,
         price_raw=price_val,
         income_display=income_disp.replace("/s", ""),
         price_display=price_disp,
@@ -4153,7 +4169,7 @@ async def sell(ctx, name: str, income: str, price: str):
     )
 
     await market_channel.send(embed=embed, view=view)
-    await ctx.send("✅ Listing created!")
+    await send_response(interaction, "✅ Listing created!")
 
 
 
@@ -4162,18 +4178,18 @@ async def sell(ctx, name: str, income: str, price: str):
 # --------------------------------------------------------------
 #                      BALANCE / BAL
 # --------------------------------------------------------------
-@bot.command(aliases=["bal"])
-async def balance(ctx, member: discord.Member = None):
+@bot.tree.command(name="balance")
+async def balance(interaction, member: discord.Member = None):
     """
-    !balance -> your balance
-    !balance @user / !bal @user -> other's balance
+    /balance -> your balance
+    /balance @user -> other's balance
     """
-    target = member or ctx.author
-    ensure_user(target.id)
+    target = member or interaction.user
+    ensure_user_sync(target.id)
     u = data[str(target.id)]
     gems = u["gems"]
 
-    if target.id == ctx.author.id:
+    if target.id == interaction.user.id:
         desc = f"✨ {target.mention}\nYou currently hold **{fmt(gems)}** gems."
     else:
         desc = f"✨ {target.mention}\nThey currently hold **{fmt(gems)}** gems."
@@ -4184,16 +4200,16 @@ async def balance(ctx, member: discord.Member = None):
         color=galaxy_color()
     )
     embed.set_footer(text="Galaxy Casino • Reach for the stars ✨")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
 #                      DAILY (25m)
 # --------------------------------------------------------------
-@bot.command()
-async def daily(ctx):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command()
+async def daily(interaction):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
     now = time.time()
     cooldown = 24 * 3600
     last = u.get("last_daily", 0)
@@ -4207,15 +4223,15 @@ async def daily(ctx):
             description=f"Come back in **{hours}h {minutes}m**.",
             color=galaxy_color()
         )
-        await ctx.send(embed=embed)
+        await send_response(interaction, embed=embed)
         return
 
     reward = 25_000_000  # 25m
     u["gems"] += reward
     u["last_daily"] = now
-    save_data(data)
+    persist_state(data)
 
-    add_history(ctx.author.id, {
+    add_history(interaction.user.id, {
         "game": "daily",
         "bet": 0,
         "result": "claim",
@@ -4225,29 +4241,31 @@ async def daily(ctx):
 
     embed = discord.Embed(
         title="🎁 Daily Reward",
-        description=f"{ctx.author.mention} claimed **{fmt(reward)}** gems from the galaxy!",
+        description=f"{interaction.user.mention} claimed **{fmt(reward)}** gems from the galaxy!",
         color=galaxy_color()
     )
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
 #                      ADMIN CODE SYSTEM
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def code(ctx, code_name: str, max_claims: str, reward_amount: str):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def code(interaction, code_name: str, max_claims: str, reward_amount: str):
     code_name = code_name.strip()
     if not code_name:
-        return await ctx.send("❌ Code name cannot be empty.")
+        return await send_response(interaction, "❌ Code name cannot be empty.")
 
     claims_value = parse_amount(max_claims)
     if claims_value is None or claims_value <= 0 or not float(claims_value).is_integer():
-        return await ctx.send("❌ Usage amount must be a positive whole number.")
+        return await send_response(interaction, "❌ Usage amount must be a positive whole number.")
 
     reward_value = parse_amount(reward_amount)
     if reward_value is None or reward_value <= 0:
-        return await ctx.send("❌ Reward amount must be a positive number.")
+        return await send_response(interaction, "❌ Reward amount must be a positive number.")
 
     normalized = normalize_code_name(code_name)
     data.setdefault("codes", {})[normalized] = {
@@ -4258,7 +4276,7 @@ async def code(ctx, code_name: str, max_claims: str, reward_amount: str):
         "active": True,
         "reward": int(reward_value),
     }
-    save_data(data)
+    persist_state(data)
 
     announcement = (
         "🎉 NEW CODE AVAILABLE 🎉\n"
@@ -4266,20 +4284,20 @@ async def code(ctx, code_name: str, max_claims: str, reward_amount: str):
         f"Claims remaining: {int(claims_value)}\n"
         f"Reward: {fmt(int(reward_value))} gems"
     )
-    await ctx.send(announcement)
+    await send_response(interaction, announcement)
 
 
-@bot.command()
-async def redeem(ctx, code_name: str):
+@bot.tree.command()
+async def redeem(interaction, code_name: str):
     normalized = normalize_code_name(code_name)
     codes = data.get("codes", {})
     code_entry = codes.get(normalized)
 
     if not code_entry or not code_entry.get("active", True):
-        return await ctx.send("❌ That code doesn't exist or is no longer active.")
+        return await send_response(interaction, "❌ That code doesn't exist or is no longer active.")
 
-    ensure_user(ctx.author.id)
-    uid = str(ctx.author.id)
+    ensure_user_sync(interaction.user.id)
+    uid = str(interaction.user.id)
     u = data[uid]
 
     if (
@@ -4287,34 +4305,34 @@ async def redeem(ctx, code_name: str):
         or normalize_code_name(code_entry.get("name", "")) in
         {normalize_code_name(c) for c in u.get("redeemed_codes", [])}
     ):
-        return await ctx.send("❌ You already redeemed this code.")
+        return await send_response(interaction, "❌ You already redeemed this code.")
 
     remaining = code_entry.get("max_claims", 0) - code_entry.get("current_claims", 0)
     if remaining <= 0:
         code_entry["active"] = False
-        save_data(data)
-        return await ctx.send("❌ This code has expired.")
+        persist_state(data)
+        return await send_response(interaction, "❌ This code has expired.")
 
     reward_amount = int(code_entry.get("reward", CODE_REWARD_GEMS))
     u["gems"] = float(u.get("gems", 0)) + reward_amount
     code_entry["current_claims"] = code_entry.get("current_claims", 0) + 1
-    code_entry.setdefault("redeemed_users", []).append(ctx.author.id)
+    code_entry.setdefault("redeemed_users", []).append(interaction.user.id)
     if code_entry.get("name") not in u.get("redeemed_codes", []):
         u.setdefault("redeemed_codes", []).append(code_entry.get("name"))
 
     if code_entry["current_claims"] >= code_entry.get("max_claims", 0):
         code_entry["active"] = False
 
-    save_data(data)
+    persist_state(data)
 
     claims_left = max(0, code_entry.get("max_claims", 0) - code_entry.get("current_claims", 0))
-    await ctx.send(
+    await send_response(interaction, 
         f"✅ Code **{code_entry.get('name')}** redeemed!\n"
         f"You received **{fmt(reward_amount)}** gems.\n"
         f"Claims remaining: **{claims_left}**"
     )
 
-    add_history(ctx.author.id, {
+    add_history(interaction.user.id, {
         "game": "code_redeem",
         "bet": 0,
         "result": code_entry.get("name", normalized),
@@ -4326,9 +4344,11 @@ async def redeem(ctx, code_name: str):
 # --------------------------------------------------------------
 #     GUESS THE COLOR (RUNS UNTIL SOMEONE GUESSES CORRECTLY)
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def guessthecolor(ctx, prize: str):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def guessthecolor(interaction, prize: str):
     """
     Admin-only infinite guess-the-color event.
     Usage: !guessthecolor 100m
@@ -4339,7 +4359,7 @@ async def guessthecolor(ctx, prize: str):
     # Parse prize
     parsed_prize = parse_amount(prize, None, allow_all=False)
     if parsed_prize is None or parsed_prize <= 0:
-        return await ctx.send("❌ Invalid prize amount!")
+        return await send_response(interaction, "❌ Invalid prize amount!")
 
     colors = [
         "red", "blue", "green", "yellow", "purple",
@@ -4360,7 +4380,7 @@ async def guessthecolor(ctx, prize: str):
         color=galaxy_color()
     )
 
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
     # Loop until someone gets the correct answer
     while True:
@@ -4377,14 +4397,14 @@ async def guessthecolor(ctx, prize: str):
 
         # WRONG GUESS
         if guess != secret:
-            await ctx.send(f"❌ {msg.author.mention} wrong guess!")
+            await send_response(interaction, f"❌ {msg.author.mention} wrong guess!")
             continue
 
         # CORRECT GUESS
         winner = msg.author
-        ensure_user(winner.id)
+        ensure_user_sync(winner.id)
         data[str(winner.id)]["gems"] += parsed_prize
-        save_data(data)
+        persist_state(data)
 
         add_history(winner.id, {
             "game": "guess_color",
@@ -4402,7 +4422,7 @@ async def guessthecolor(ctx, prize: str):
             ),
             color=discord.Color.green()
         )
-        await ctx.send(embed=win_embed)
+        await send_response(interaction, embed=win_embed)
         break
 
 
@@ -4410,25 +4430,25 @@ async def guessthecolor(ctx, prize: str):
 # --------------------------------------------------------------
 #                      GIFT
 # --------------------------------------------------------------
-@bot.command()
-async def gift(ctx, member: discord.Member, amount: str):
-    ensure_user(ctx.author.id)
-    ensure_user(member.id)
-    sender = data[str(ctx.author.id)]
+@bot.tree.command()
+async def gift(interaction, member: discord.Member, amount: str):
+    ensure_user_sync(interaction.user.id)
+    ensure_user_sync(member.id)
+    sender = data[str(interaction.user.id)]
     receiver = data[str(member.id)]
 
     val = parse_amount(amount, sender["gems"], allow_all=False)
     if val is None or val <= 0:
-        return await ctx.send("❌ Invalid amount.")
+        return await send_response(interaction, "❌ Invalid amount.")
     if val > sender["gems"]:
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
 
     sender["gems"] -= val
     receiver["gems"] += val
-    save_data(data)
+    persist_state(data)
 
     now = time.time()
-    add_history(ctx.author.id, {
+    add_history(interaction.user.id, {
         "game": "gift",
         "bet": val,
         "result": f"gift_to_{member.id}",
@@ -4438,17 +4458,17 @@ async def gift(ctx, member: discord.Member, amount: str):
     add_history(member.id, {
         "game": "gift_received",
         "bet": val,
-        "result": f"gift_from_{ctx.author.id}",
+        "result": f"gift_from_{interaction.user.id}",
         "earned": val,
         "timestamp": now
     })
 
     embed = discord.Embed(
         title="🎁 Gift Sent",
-        description=f"{ctx.author.mention} sent **{fmt(val)}** gems to {member.mention}.",
+        description=f"{interaction.user.mention} sent **{fmt(val)}** gems to {member.mention}.",
         color=galaxy_color()
     )
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
@@ -4516,9 +4536,9 @@ class HiLoExit(Button):
 
 
 class HiLoSession:
-    def __init__(self, ctx, amount: int, bet_input: str, rig: str | None):
-        self.ctx = ctx
-        self.user_id = ctx.author.id
+    def __init__(self, interaction, amount: int, bet_input: str, rig: str | None):
+        self.interaction = interaction
+        self.user_id = interaction.user.id
         self.amount = int(amount)
         self.bet_input = bet_input
         self.rig = rig
@@ -4589,7 +4609,7 @@ class HiLoSession:
     async def start(self):
         hilo_sessions[self.user_id] = self
         embed = self._build_embed("Make your prediction!")
-        self.message = await self.ctx.send(embed=embed, view=self.view)
+        self.message = await self.send_response(interaction, embed=embed, view=self.view)
 
     def _build_embed(self, status: str, final: bool = False, final_card: int | None = None, payout_override: int | None = None):
         payout = payout_override if payout_override is not None else int(self.amount * self.multiplier)
@@ -4632,7 +4652,7 @@ class HiLoSession:
         if status:
             description += f"\n\n{status}"
 
-        title = f"♦️ Galaxy Hi-Lo | {self.ctx.author.name}"
+        title = f"♦️ Galaxy Hi-Lo | {self.interaction.user.name}"
         color = galaxy_color()
         embed = discord.Embed(title=title, description=description, color=color)
         embed.set_footer(text="Galaxy Hi-Lo • Ride the cosmic ladder ⭐️")
@@ -4888,12 +4908,12 @@ class HiLoSession:
         except Exception:
             pass
 
-    async def stop_via_command(self, ctx):
+    async def stop_via_command(self, interaction):
         if self.ended:
-            return await ctx.send("ℹ️ Your Hi-Lo game already ended.")
+            return await send_response(interaction, "ℹ️ Your Hi-Lo game already ended.")
         payout = int(self.amount * self.multiplier)
         final_payout, status = await self._end_game(
-            f"⛔ Stopped via !stop. Payout: **{fmt(payout)}**", payout=payout
+            f"⛔ Stopped via /stop. Payout: **{fmt(payout)}**", payout=payout
         )
         try:
             if self.message:
@@ -4903,7 +4923,7 @@ class HiLoSession:
                 )
         except Exception:
             pass
-        await ctx.send(f"✅ Stopped your Hi-Lo game. You received **{fmt(final_payout)}** gems.")
+        await send_response(interaction, f"✅ Stopped your Hi-Lo game. You received **{fmt(final_payout)}** gems.")
 
     async def force_terminate(self):
         if self.ended:
@@ -4927,7 +4947,7 @@ class HiLoSession:
             return 0, status
         self.ended = True
         hilo_sessions.pop(self.user_id, None)
-        ensure_user(self.user_id)
+        ensure_user_sync(self.user_id)
 
         fee_applied = 0
         skip_fee = 0
@@ -4947,7 +4967,7 @@ class HiLoSession:
 
         user = data[str(self.user_id)]
         user["gems"] += final_payout
-        save_data(data)
+        persist_state(data)
 
         profit = final_payout - self.amount
         add_history(
@@ -4978,7 +4998,7 @@ class HiLoSession:
     def _end_view(self):
         view = View(timeout=None)
         play_again = create_play_again_button(
-            self.ctx, "hilo", self.amount, lambda: globals()["hilo"](self.ctx, str(int(self.amount)))
+            self.interaction, "hilo", self.amount, lambda: globals()["hilo"](self.interaction, str(int(self.amount)))
         )
         if play_again:
             view.add_item(play_again)
@@ -5072,97 +5092,97 @@ def _build_hilo_help_embed() -> discord.Embed:
     return embed
 
 
-@bot.command()
-async def hilocards(ctx):
+@bot.tree.command()
+async def hilocards(interaction):
     """Show Hi-Lo odds, multipliers, and gameplay tips."""
 
-    await ctx.send(embed=_build_hilo_help_embed())
+    await send_response(interaction, embed=_build_hilo_help_embed())
 
 
-@bot.command()
-async def hilo(ctx, bet: str):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command()
+async def hilo(interaction, bet: str):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
 
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
-        return await ctx.send("❌ Invalid bet.")
+        return await send_response(interaction, "❌ Invalid bet.")
     amount = int(amount)
     if amount < MIN_GAMBLE_AMOUNT:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
     if amount > u.get("gems", 0):
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "hilo")
+        success, conflicts = await claim_active_game([interaction.user.id], "hilo")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     try:
         u["gems"] -= amount
-        save_data(data)
+        persist_state(data)
 
         if not ignore_active:
-            await register_active_bet([ctx.author.id], "hilo", amount)
+            await register_active_bet([interaction.user.id], "hilo", amount)
 
         rig = consume_rig(u)
-        session = HiLoSession(ctx, amount, bet, rig)
+        session = HiLoSession(interaction, amount, bet, rig)
         await session.start()
     except Exception:
         u["gems"] += amount
-        save_data(data)
-        await release_active_game([ctx.author.id])
-        return await ctx.send("❌ Failed to start Hi-Lo. Please try again.")
+        persist_state(data)
+        await release_active_game([interaction.user.id])
+        return await send_response(interaction, "❌ Failed to start Hi-Lo. Please try again.")
 # --------------------------------------------------------------
 #                      COINFLIP
 # --------------------------------------------------------------
 
 
-@bot.command(aliases=["cf"])
-async def coinflip(ctx, bet: str, choice: str):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command(name="coinflip")
+async def coinflip(interaction, bet: str, choice: str):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
-        return await ctx.send("❌ Invalid bet.")
+        return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
     if amount > u["gems"]:
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
 
     choice = choice.lower()
     if choice not in ["heads", "tails"]:
-        return await ctx.send("❌ Choose `heads` or `tails`.")
+        return await send_response(interaction, "❌ Choose `heads` or `tails`.")
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "coinflip")
+        success, conflicts = await claim_active_game([interaction.user.id], "coinflip")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     try:
         u["gems"] -= amount
-        save_data(data)
+        persist_state(data)
 
         if not ignore_active:
-            await register_active_bet([ctx.author.id], "coinflip", amount)
+            await register_active_bet([interaction.user.id], "coinflip", amount)
 
         rig = consume_rig(u)
 
@@ -5185,7 +5205,7 @@ async def coinflip(ctx, bet: str, choice: str):
             title = "🪙 Coinflip — You Lost"
             color = discord.Color.red()
 
-        save_data(data)
+        persist_state(data)
 
         embed = discord.Embed(
             title=title,
@@ -5197,9 +5217,9 @@ async def coinflip(ctx, bet: str, choice: str):
             color=color
         )
         embed.set_footer(text="Galaxy Coinflip • 50/50 in the void 🌌")
-        await ctx.send(embed=embed)
+        await send_response(interaction, embed=embed)
 
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "coinflip",
             "bet": amount,
             "result": res,
@@ -5207,48 +5227,48 @@ async def coinflip(ctx, bet: str, choice: str):
             "timestamp": time.time()
         })
     finally:
-        await release_active_game([ctx.author.id])
+        await release_active_game([interaction.user.id])
 
 
-@bot.command(aliases=["pvpcf"])
-async def pvpcoinflip(ctx, amount: str, side: str | None = None):
-    ensure_user(ctx.author.id)
-    requester = data[str(ctx.author.id)]
+@bot.tree.command(name="pvpcf")
+async def pvpcoinflip(interaction, amount: str, side: str | None = None):
+    ensure_user_sync(interaction.user.id)
+    requester = data[str(interaction.user.id)]
 
     bet_amount = parse_amount(amount, requester["gems"], allow_all=False)
     if bet_amount is None or bet_amount <= 0:
-        return await ctx.send("❌ Invalid bet.")
+        return await send_response(interaction, "❌ Invalid bet.")
     if side is None:
-        return await ctx.send("❌ Please choose a side: `heads` or `tails`.")
+        return await send_response(interaction, "❌ Please choose a side: `heads` or `tails`.")
     if bet_amount < MIN_GAMBLE_AMOUNT:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if bet_amount > MAX_BET:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
     if bet_amount > requester["gems"]:
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
 
     chosen_side = side.lower()
     if chosen_side not in ["heads", "tails"]:
-        return await ctx.send("❌ Choose `heads` or `tails`.")
+        return await send_response(interaction, "❌ Choose `heads` or `tails`.")
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "pvp_coinflip")
+        success, conflicts = await claim_active_game([interaction.user.id], "pvp_coinflip")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     opposite = "tails" if chosen_side == "heads" else "heads"
 
     embed = discord.Embed(
         title="🪙 PvP Coinflip Lobby",
         description=(
-            f"{ctx.author.mention} opened a PvP coinflip!\n"
+            f"{interaction.user.mention} opened a PvP coinflip!\n"
             f"💵 Bet: **{fmt(bet_amount)}** each\n"
             f"🎯 Requester side: **{chosen_side.title()}**\n"
             f"🤝 Joiners get: **{opposite.title()}**"
@@ -5260,7 +5280,7 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
         def __init__(self):
             super().__init__(timeout=300)
             self.message: discord.Message | None = None
-            self.requester_id = ctx.author.id
+            self.requester_id = interaction.user.id
 
         def _set_disabled(self, disabled: bool):
             for child in self.children:
@@ -5285,7 +5305,7 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
             await release_active_game([self.requester_id])
 
         async def finalize_match(self, interaction: discord.Interaction, joiner_id: int):
-            requester_user = data[str(ctx.author.id)]
+            requester_user = data[str(interaction.user.id)]
             joiner_user = data[str(joiner_id)]
 
             if requester_user["gems"] < bet_amount:
@@ -5313,7 +5333,7 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
 
             requester_user["gems"] -= bet_amount
             joiner_user["gems"] -= bet_amount
-            save_data(data)
+            persist_state(data)
 
             if not ignore_active:
                 await register_active_bet([self.requester_id, joiner_id], "pvp_coinflip", bet_amount)
@@ -5323,22 +5343,22 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
             joiner_side = opposite
 
             if result == requester_side:
-                winner_id = ctx.author.id
+                winner_id = interaction.user.id
                 loser_id = joiner_id
                 winner_side = requester_side
             else:
                 winner_id = joiner_id
-                loser_id = ctx.author.id
+                loser_id = interaction.user.id
                 winner_side = joiner_side
 
             data[str(winner_id)]["gems"] += bet_amount * 2
-            save_data(data)
+            persist_state(data)
 
-            add_history(ctx.author.id, {
+            add_history(interaction.user.id, {
                 "game": "pvp_coinflip",
                 "bet": bet_amount,
-                "result": "win" if winner_id == ctx.author.id else "loss",
-                "earned": bet_amount if winner_id == ctx.author.id else -bet_amount,
+                "result": "win" if winner_id == interaction.user.id else "loss",
+                "earned": bet_amount if winner_id == interaction.user.id else -bet_amount,
                 "timestamp": time.time(),
                 "side": requester_side,
             })
@@ -5362,12 +5382,12 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
                     f"💔 Loser: <@{loser_id}>\n"
                     f"💰 Total Pot: **{fmt(bet_amount * 2)}**"
                 ),
-                color=discord.Color.green() if winner_id == ctx.author.id else discord.Color.blue(),
+                color=discord.Color.green() if winner_id == interaction.user.id else discord.Color.blue(),
             )
             result_embed.add_field(
                 name="Sides",
                 value=(
-                    f"{ctx.author.mention}: **{requester_side.title()}**\n"
+                    f"{interaction.user.mention}: **{requester_side.title()}**\n"
                     f"<@{joiner_id}>: **{joiner_side.title()}**"
                 ),
                 inline=False,
@@ -5384,7 +5404,7 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
             if any(getattr(child, "disabled", False) for child in self.children):
                 return await interaction.response.send_message("❌ This match is already taken.", ephemeral=True)
 
-            ensure_user(interaction.user.id)
+            ensure_user_sync(interaction.user.id)
             joiner_data = data[str(interaction.user.id)]
             if joiner_data.get("gems", 0) < bet_amount:
                 return await interaction.response.send_message("❌ You don't have enough gems to join.", ephemeral=True)
@@ -5406,49 +5426,49 @@ async def pvpcoinflip(ctx, amount: str, side: str | None = None):
             await self.finalize_match(interaction, interaction.user.id)
 
     view = PvPCoinflipView()
-    sent_message = await ctx.send(embed=embed, view=view)
+    sent_message = await send_response(interaction, embed=embed, view=view)
     view.message = sent_message
 
 
 # --------------------------------------------------------------
 #                      CRASH (rig-aware)
 # --------------------------------------------------------------
-@bot.command()
-async def crash(ctx, bet: str):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command()
+async def crash(interaction, bet: str):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
 
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
-        return await ctx.send("❌ Invalid bet.")
+        return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
     if amount > u["gems"]:
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "crash")
+        success, conflicts = await claim_active_game([interaction.user.id], "crash")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
-    save_data(data)
+    persist_state(data)
 
     if not ignore_active:
-        await register_active_bet([ctx.author.id], "crash", amount)
+        await register_active_bet([interaction.user.id], "crash", amount)
 
     rig = consume_rig(u)
 
-    owner = ctx.author.id
+    owner = interaction.user.id
     CRASH_STEPS = [
         {"mult": 0.2, "chance": 0},   # 0/4 clicks
         {"mult": 0.4, "chance": 5},   # 1/4 clicks
@@ -5483,7 +5503,7 @@ async def crash(ctx, bet: str):
         base_chance = CRASH_STEPS[next_click_index]["chance"]
         adjusted_chance = rigged_chance(base_chance)
         e = discord.Embed(
-            title=f"🚀 Galaxy Crash | {ctx.author.name}",
+            title=f"🚀 Galaxy Crash | {interaction.user.name}",
             description=(
                 f"💵 Bet: **{fmt(amount)}**\n"
                 f"🧮 Multiplier: **{multiplier:.2f}x**\n"
@@ -5508,14 +5528,14 @@ async def crash(ctx, bet: str):
         game_over = True
         for child in view.children:
             child.disabled = True
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "crash",
             "bet": amount,
             "result": "crash",
             "earned": -amount,
             "timestamp": time.time(),
         })
-        play_again_view = build_play_again_view(ctx, "crash", amount, lambda: crash(ctx, bet))
+        play_again_view = build_play_again_view(interaction, "crash", amount, lambda: crash(interaction, bet))
         try:
             await interaction.response.edit_message(
                 embed=embed_update(f"💥 Crashed! Lost **{fmt(amount)}** gems."),
@@ -5571,11 +5591,11 @@ async def crash(ctx, bet: str):
             reward = int(amount * multiplier)
             profit = reward - amount
             u["gems"] += reward
-            save_data(data)
+            persist_state(data)
             for child in view.children:
                 child.disabled = True
 
-            add_history(ctx.author.id, {
+            add_history(interaction.user.id, {
                 "game": "crash",
                 "bet": amount,
                 "result": "cashout",
@@ -5583,7 +5603,7 @@ async def crash(ctx, bet: str):
                 "timestamp": time.time(),
             })
 
-            play_again_view = build_play_again_view(ctx, "crash", amount, lambda: crash(ctx, bet))
+            play_again_view = build_play_again_view(interaction, "crash", amount, lambda: crash(interaction, bet))
             try:
                 await interaction.response.edit_message(
                     embed=embed_update(f"💰 Cashed out at **{multiplier:.2f}x** | Profit **{fmt(profit)}** gems."),
@@ -5607,8 +5627,8 @@ async def crash(ctx, bet: str):
                     for child in view.children:
                         child.disabled = True
                     u["gems"] += amount
-                    save_data(data)
-                    add_history(ctx.author.id, {
+                    persist_state(data)
+                    add_history(interaction.user.id, {
                         "game": "crash",
                         "bet": amount,
                         "result": "timeout",
@@ -5630,46 +5650,46 @@ async def crash(ctx, bet: str):
         except Exception:
             pass
 
-    message = await ctx.send(embed=embed_update("🟣 Active"), view=view)
+    message = await send_response(interaction, embed=embed_update("🟣 Active"), view=view)
     _watchdog_task = bot.loop.create_task(inactivity_watchdog())
 
 
 # --------------------------------------------------------------
 #                      SLOTS (3x4, rig-aware, 2x max)
 # --------------------------------------------------------------
-@bot.command()
-async def slots(ctx, bet: str):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command()
+async def slots(interaction, bet: str):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
 
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
-        return await ctx.send("❌ Invalid bet.")
+        return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
     if amount > u["gems"]:
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "slots")
+        success, conflicts = await claim_active_game([interaction.user.id], "slots")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     try:
         u["gems"] -= amount
-        save_data(data)
+        persist_state(data)
 
         if not ignore_active:
-            await register_active_bet([ctx.author.id], "slots", amount)
+            await register_active_bet([interaction.user.id], "slots", amount)
 
         rig = consume_rig(u)
 
@@ -5734,7 +5754,7 @@ async def slots(ctx, bet: str):
             result_text = "No match."
             res = "lose"
 
-        save_data(data)
+        persist_state(data)
 
         grid = (
             f"{row1[0]} {row1[1]} {row1[2]} {row1[3]}\n"
@@ -5755,10 +5775,10 @@ async def slots(ctx, bet: str):
         )
         embed.add_field(name="Reels", value=f"```{grid}```", inline=False)
         embed.set_footer(text="Galaxy Slots • Spin among the stars 🌌")
-        play_again_view = build_play_again_view(ctx, "slots", amount, lambda: slots(ctx, bet))
-        await ctx.send(embed=embed, view=play_again_view)
+        play_again_view = build_play_again_view(interaction, "slots", amount, lambda: slots(interaction, bet))
+        await send_response(interaction, embed=embed, view=play_again_view)
 
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "slots",
             "bet": amount,
             "result": res,
@@ -5766,49 +5786,49 @@ async def slots(ctx, bet: str):
             "timestamp": time.time()
         })
     finally:
-        await release_active_game([ctx.author.id])
+        await release_active_game([interaction.user.id])
 
 
 # --------------------------------------------------------------
 #                      MINES (rig-aware)
 # --------------------------------------------------------------
-@bot.command()
-async def mines(ctx, bet: str, mines: int = 3):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command()
+async def mines(interaction, bet: str, mines: int = 3):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
 
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
-        return await ctx.send("❌ Invalid bet!")
+        return await send_response(interaction, "❌ Invalid bet!")
     if amount < MIN_GAMBLE_AMOUNT:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
     if amount > u["gems"]:
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
     if not 1 <= mines <= 15:
-        return await ctx.send("❌ Mines must be between **1 and 15**.")
+        return await send_response(interaction, "❌ Mines must be between **1 and 15**.")
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "mines")
+        success, conflicts = await claim_active_game([interaction.user.id], "mines")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
-    save_data(data)
+    persist_state(data)
 
     if not ignore_active:
-        await register_active_bet([ctx.author.id], "mines", amount)
+        await register_active_bet([interaction.user.id], "mines", amount)
 
     rig = consume_rig(u)  # 'bless', 'curse', or None
-    owner = ctx.author.id
+    owner = interaction.user.id
 
     TOTAL = 24
     ROW_SLOTS = 5
@@ -5852,7 +5872,7 @@ async def mines(ctx, bet: str, mines: int = 3):
     def embed_update():
         reward_display = reward_on_end if game_over else calc_reward()
         e = discord.Embed(
-            title=f"💣 Galaxy Mines | {ctx.author.name}",
+            title=f"💣 Galaxy Mines | {interaction.user.name}",
             description=(
                 f"💵 Bet: **{fmt(amount)}**\n"
                 f"💰 Current: **{fmt(reward_display)}**\n"
@@ -5872,7 +5892,7 @@ async def mines(ctx, bet: str, mines: int = 3):
     def attach_play_again():
         nonlocal cashout_button
         play_again = create_play_again_button(
-            ctx, "mines", amount, lambda: globals()["mines"](ctx, bet, mines)
+            interaction, "mines", amount, lambda: globals()["mines"](interaction, bet, mines)
         )
         if not play_again:
             return
@@ -5901,8 +5921,8 @@ async def mines(ctx, bet: str, mines: int = 3):
                     for child in view.children:
                         child.disabled = True
                     u["gems"] += amount
-                    save_data(data)
-                    add_history(ctx.author.id, {
+                    persist_state(data)
+                    add_history(interaction.user.id, {
                         "game": "mines",
                         "bet": amount,
                         "result": "timeout",
@@ -5940,7 +5960,7 @@ async def mines(ctx, bet: str, mines: int = 3):
                 bomb_positions.add(explosion_index)
 
         finalize_board(explosion_index)
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "mines",
             "bet": amount,
             "result": reason,
@@ -5959,9 +5979,9 @@ async def mines(ctx, bet: str, mines: int = 3):
         game_over = True
         reward_on_end = calc_reward()
         u["gems"] += reward_on_end
-        save_data(data)
+        persist_state(data)
         finalize_board(random.choice(list(bomb_positions)) if bomb_positions else None)
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "mines",
             "bet": amount,
             "result": reason,
@@ -6051,43 +6071,43 @@ async def mines(ctx, bet: str, mines: int = 3):
 
     cashout_button = Cashout()
     view.add_item(cashout_button)
-    message = await ctx.send(embed=embed_update(), view=view)
+    message = await send_response(interaction, embed=embed_update(), view=view)
     bot.loop.create_task(inactivity_watchdog())
 # --------------------------------------------------------------
 #                      TOWER (rig-aware)
 # --------------------------------------------------------------
-@bot.command()
-async def tower(ctx, bet: str):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command()
+async def tower(interaction, bet: str):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
 
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
-        return await ctx.send("❌ Invalid bet.")
+        return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
     if amount > u["gems"]:
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "tower")
+        success, conflicts = await claim_active_game([interaction.user.id], "tower")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     u["gems"] -= amount
-    save_data(data)
+    persist_state(data)
 
     if not ignore_active:
-        await register_active_bet([ctx.author.id], "tower", amount)
+        await register_active_bet([interaction.user.id], "tower", amount)
 
     rig = consume_rig(u)
 
@@ -6095,7 +6115,7 @@ async def tower(ctx, bet: str):
     current_row = 0
     correct_count = 0
     game_over = False
-    owner = ctx.author.id
+    owner = interaction.user.id
     status_text = "🟣 Active"
     inactivity_limit = 10 * 60  # 10 minutes
     start_time = time.time()
@@ -6103,7 +6123,7 @@ async def tower(ctx, bet: str):
 
     SAFE = "✅"
     BOMB = "💣"
-    EXPLODE = "💥"
+    BOMB_EMOJI = "💥"
 
     grid = [[None, None, None] for _ in range(TOTAL_ROWS)]
     bomb_positions = [random.randrange(3) for _ in range(TOTAL_ROWS)]
@@ -6124,7 +6144,7 @@ async def tower(ctx, bet: str):
     def embed_update(reveal=False):
         earned = earned_on_end if reveal else (calc_reward() if correct_count > 0 else 0)
         e = discord.Embed(
-            title=f"🏰 Galaxy Tower | {ctx.author.name}",
+            title=f"🏰 Galaxy Tower | {interaction.user.name}",
             color=galaxy_color()
         )
         e.add_field(name="Bet", value=fmt(amount))
@@ -6145,7 +6165,7 @@ async def tower(ctx, bet: str):
                     line += SAFE + " "
                 elif cell is False:
                     if exploded_cell == (r, c):
-                        line += EXPLODE + " "
+                        line += BOMB_EMOJI + " "
                     else:
                         line += BOMB + " " if reveal else "⬛ "
                 else:
@@ -6169,7 +6189,7 @@ async def tower(ctx, bet: str):
         nonlocal play_again_button
         if play_again_button:
             return
-        play_again_button = create_play_again_button(ctx, "tower", amount, lambda: tower(ctx, bet))
+        play_again_button = create_play_again_button(interaction, "tower", amount, lambda: tower(interaction, bet))
         if play_again_button:
             try:
                 view.add_item(play_again_button)
@@ -6195,8 +6215,8 @@ async def tower(ctx, bet: str):
                     for b in view.children:
                         b.disabled = True
                     u["gems"] += amount
-                    save_data(data)
-                    add_history(ctx.author.id, {
+                    persist_state(data)
+                    add_history(interaction.user.id, {
                         "game": "tower",
                         "bet": amount,
                         "result": "timeout",
@@ -6262,7 +6282,7 @@ async def tower(ctx, bet: str):
                 for b in view.children:
                     b.disabled = True
 
-                add_history(ctx.author.id, {
+                add_history(interaction.user.id, {
                     "game": "tower",
                     "bet": amount,
                     "result": "lose",
@@ -6283,7 +6303,7 @@ async def tower(ctx, bet: str):
                 reward = calc_reward()
                 earned_on_end = reward
                 u["gems"] += reward
-                save_data(data)
+                persist_state(data)
                 status_text = f"🏆 Cleared all rows! Profit **{fmt(reward - amount)}** gems."
 
                 for r in range(TOTAL_ROWS):
@@ -6294,7 +6314,7 @@ async def tower(ctx, bet: str):
                 for b in view.children:
                     b.disabled = True
 
-                add_history(ctx.author.id, {
+                add_history(interaction.user.id, {
                     "game": "tower",
                     "bet": amount,
                     "result": "win",
@@ -6335,7 +6355,7 @@ async def tower(ctx, bet: str):
                 for b in view.children:
                     b.disabled = True
 
-                add_history(ctx.author.id, {
+                add_history(interaction.user.id, {
                     "game": "tower",
                     "bet": amount,
                     "result": "lose_cashout",
@@ -6355,7 +6375,7 @@ async def tower(ctx, bet: str):
             reward = calc_reward()
             earned_on_end = reward
             u["gems"] += reward
-            save_data(data)
+            persist_state(data)
             status_text = f"💰 Cashed out **{fmt(reward - amount)}** gems."
 
             for r in range(TOTAL_ROWS):
@@ -6366,7 +6386,7 @@ async def tower(ctx, bet: str):
             for b in view.children:
                 b.disabled = True
 
-            add_history(ctx.author.id, {
+            add_history(interaction.user.id, {
                 "game": "tower",
                 "bet": amount,
                 "result": "cashout",
@@ -6382,7 +6402,7 @@ async def tower(ctx, bet: str):
     view.add_item(Choice(2))
     view.add_item(Cashout())
 
-    message = await ctx.send(embed=embed_update(False), view=view)
+    message = await send_response(interaction, embed=embed_update(False), view=view)
     bot.loop.create_task(inactivity_watchdog())
 
 
@@ -6410,39 +6430,39 @@ def hand_value(hand):
     return total
 
 
-@bot.command(aliases=["bj"])
-async def blackjack(ctx, bet: str):
-    ensure_user(ctx.author.id)
-    u = data[str(ctx.author.id)]
+@bot.tree.command(name="blackjack")
+async def blackjack(interaction, bet: str):
+    ensure_user_sync(interaction.user.id)
+    u = data[str(interaction.user.id)]
 
     amount = parse_amount(bet, u["gems"], allow_all=True)
     if amount is None or amount <= 0:
-        return await ctx.send("❌ Invalid bet.")
+        return await send_response(interaction, "❌ Invalid bet.")
     if amount < MIN_GAMBLE_AMOUNT:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Minimum bet is **{fmt(MIN_GAMBLE_AMOUNT)}** gems."
         )
     if amount > MAX_BET:
-        return await ctx.send(
+        return await send_response(interaction, 
             f"❌ Maximum bet is **{fmt(MAX_BET)}** gems."
         )
     if amount > u["gems"]:
-        return await ctx.send("❌ You don't have enough gems.")
+        return await send_response(interaction, "❌ You don't have enough gems.")
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "blackjack")
+        success, conflicts = await claim_active_game([interaction.user.id], "blackjack")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     rig = consume_rig(u)
     u["gems"] -= amount
-    save_data(data)
+    persist_state(data)
 
     if not ignore_active:
-        await register_active_bet([ctx.author.id], "blackjack", amount)
+        await register_active_bet([interaction.user.id], "blackjack", amount)
 
     # Rigged: instant-looking game
     if rig in ("bless", "curse"):
@@ -6470,7 +6490,7 @@ async def blackjack(ctx, bet: str):
                 dealer = random_hand(15, 19)
             profit = int(amount * 1.7)
             u["gems"] += amount + profit
-            save_data(data)
+            persist_state(data)
             result_text = "Your hand is higher. You win."
             res = "win"
 
@@ -6489,17 +6509,17 @@ async def blackjack(ctx, bet: str):
             color=galaxy_color()
         )
         embed.set_footer(text="Galaxy Blackjack • Game finished.")
-        play_again_view = build_play_again_view(ctx, "blackjack", amount, lambda: blackjack(ctx, bet))
-        await ctx.send(embed=embed, view=play_again_view)
+        play_again_view = build_play_again_view(interaction, "blackjack", amount, lambda: blackjack(interaction, bet))
+        await send_response(interaction, embed=embed, view=play_again_view)
 
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "blackjack",
             "bet": amount,
             "result": res,
             "earned": profit,
             "timestamp": time.time()
         })
-        await release_active_game([ctx.author.id])
+        await release_active_game([interaction.user.id])
         return
 
     # Normal interactive blackjack
@@ -6588,9 +6608,9 @@ async def blackjack(ctx, bet: str):
             u["gems"] += amount + profit
         elif profit == 0:
             u["gems"] += amount
-        save_data(data)
+        persist_state(data)
 
-        add_history(ctx.author.id, {
+        add_history(interaction.user.id, {
             "game": "blackjack",
             "bet": amount,
             "result": res,
@@ -6599,12 +6619,12 @@ async def blackjack(ctx, bet: str):
         })
 
         final_embed = make_embed(show_dealer=True, final=True, extra_msg=f"{text}\n**Profit:** {fmt(profit)} gems")
-        play_again_view = build_play_again_view(ctx, "blackjack", amount, lambda: blackjack(ctx, bet))
+        play_again_view = build_play_again_view(interaction, "blackjack", amount, lambda: blackjack(interaction, bet))
         if interaction:
             await interaction.response.edit_message(embed=final_embed, view=play_again_view)
         else:
-            await ctx.send(embed=final_embed, view=play_again_view)
-        await release_active_game([ctx.author.id])
+            await send_response(interaction, embed=final_embed, view=play_again_view)
+        await release_active_game([interaction.user.id])
 
     async def inactivity_watchdog():
         nonlocal game_over, start_time
@@ -6617,15 +6637,15 @@ async def blackjack(ctx, bet: str):
                     for child in view.children:
                         child.disabled = True
                     u["gems"] += amount
-                    save_data(data)
-                    add_history(ctx.author.id, {
+                    persist_state(data)
+                    add_history(interaction.user.id, {
                         "game": "blackjack",
                         "bet": amount,
                         "result": "timeout",
                         "earned": 0,
                         "timestamp": time.time()
                     })
-                    play_again_view = build_play_again_view(ctx, "blackjack", amount, lambda: blackjack(ctx, bet))
+                    play_again_view = build_play_again_view(interaction, "blackjack", amount, lambda: blackjack(interaction, bet))
                     try:
                         if message:
                             await message.edit(
@@ -6634,7 +6654,7 @@ async def blackjack(ctx, bet: str):
                             )
                     except Exception:
                         pass
-                    await release_active_game([ctx.author.id])
+                    await release_active_game([interaction.user.id])
                     break
                 try:
                     if message and not game_over:
@@ -6651,7 +6671,7 @@ async def blackjack(ctx, bet: str):
         async def callback(self, interaction):
             nonlocal start_time
 
-            if interaction.user.id != ctx.author.id:
+            if interaction.user.id != interaction.user.id:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             start_time = time.time()
             player.append(draw_card())
@@ -6669,7 +6689,7 @@ async def blackjack(ctx, bet: str):
         async def callback(self, interaction):
             nonlocal start_time
 
-            if interaction.user.id != ctx.author.id:
+            if interaction.user.id != interaction.user.id:
                 return await interaction.response.send_message("❌ Not your game!", ephemeral=True)
             start_time = time.time()
             for b in view.children:
@@ -6679,27 +6699,27 @@ async def blackjack(ctx, bet: str):
     view.add_item(Hit())
     view.add_item(Stand())
 
-    message = await ctx.send(embed=make_embed(), view=view)
+    message = await send_response(interaction, embed=make_embed(), view=view)
     bot.loop.create_task(inactivity_watchdog())
 
 
 # --------------------------------------------------------------
 #                      MATCH (live football)
 # --------------------------------------------------------------
-@bot.command()
-async def match(ctx):
-    ensure_user(ctx.author.id)
+@bot.tree.command()
+async def match(interaction):
+    ensure_user_sync(interaction.user.id)
 
     BETTING_WINDOW = 20
     MATCH_DURATION = 90
 
-    ignore_active = skip_active_game_tracking(ctx)
+    ignore_active = skip_active_game_tracking(interaction)
     if ignore_active:
         success, conflicts = True, {}
     else:
-        success, conflicts = await claim_active_game([ctx.author.id], "match")
+        success, conflicts = await claim_active_game([interaction.user.id], "match")
     if not success:
-        return await ctx.send(active_game_blocked_message(conflicts))
+        return await send_response(interaction, active_game_blocked_message(conflicts))
 
     team_colors = [
         ("🔴", "Red"), ("🔵", "Blue"), ("🟢", "Green"), ("🟡", "Yellow"),
@@ -6805,16 +6825,16 @@ async def match(ctx):
             await match_message.edit(embed=embed, view=view)
         except discord.Forbidden:
             # Can't edit (e.g., missing permissions) — surface the issue and keep going.
-            await ctx.send("❌ I can't edit the match message here (missing permissions).")
+            await send_response(interaction, "❌ I can't edit the match message here (missing permissions).")
         except discord.NotFound:
             # Message was deleted; send a new one so the match can continue.
-            match_message = await ctx.send(embed=embed, view=view)
+            match_message = await send_response(interaction, embed=embed, view=view)
         except discord.HTTPException:
             # Rate limit or similar; skip this tick but keep the loop alive.
             pass
         except Exception as exc:
             # Unexpected issue; surface it so the match isn't silently stuck.
-            await ctx.send(f"❌ Match update failed: {exc}")
+            await send_response(interaction, f"❌ Match update failed: {exc}")
 
     async def update_message(status: str, remaining: int, locked: bool, view):
         embed = build_embed(status, remaining, locked)
@@ -6833,7 +6853,7 @@ async def match(ctx):
             if bets_locked:
                 return await interaction.response.send_message("❌ Bets are locked for this match.", ephemeral=True)
 
-            ensure_user(interaction.user.id)
+            ensure_user_sync(interaction.user.id)
             uid = str(interaction.user.id)
             if uid in bets:
                 return await interaction.response.send_message("❌ You already placed a bet for this match.", ephemeral=True)
@@ -6856,7 +6876,7 @@ async def match(ctx):
                 return await interaction.response.send_message("❌ You don't have enough gems.", ephemeral=True)
 
             u["gems"] -= amount
-            save_data(data)
+            persist_state(data)
 
             if not ignore_active:
                 await register_active_bet([interaction.user.id], "match", int(amount))
@@ -6883,7 +6903,7 @@ async def match(ctx):
     bet_view.add_item(BetButton(f"{team_b[0]} {team_b[1]} Win", "B", discord.ButtonStyle.primary))
     bet_view.add_item(BetButton("⚪ Draw", "D", discord.ButtonStyle.secondary))
 
-    match_message = await ctx.send(embed=build_embed("⚽ Betting open — choose an outcome!", BETTING_WINDOW, False), view=bet_view)
+    match_message = await send_response(interaction, embed=build_embed("⚽ Betting open — choose an outcome!", BETTING_WINDOW, False), view=bet_view)
 
     await asyncio.sleep(BETTING_WINDOW)
     bets_locked = True
@@ -7029,7 +7049,7 @@ async def match(ctx):
 
     winners = []
     for uid, info in bets.items():
-        ensure_user(uid)
+        ensure_user_sync(uid)
         u = data[str(uid)]
         bet_amount = info["amount"]
 
@@ -7053,7 +7073,7 @@ async def match(ctx):
         if profit > 0:
             winners.append(f"<@{uid}> — {fmt(profit)}")
 
-    save_data(data)
+    persist_state(data)
 
     await update_message(
         "🏁 Full time — match finished!",
@@ -7083,32 +7103,34 @@ async def match(ctx):
         result_embed.add_field(name="Winners", value="No winning bets this time.", inline=False)
     result_embed.set_footer(text="Payout: 2.5x for correct predictions")
 
-    await ctx.send(embed=result_embed)
-    await release_active_game([ctx.author.id] + [int(uid) for uid in bets.keys()])
+    await send_response(interaction, embed=result_embed)
+    await release_active_game([interaction.user.id] + [int(uid) for uid in bets.keys()])
 
 
 # --------------------------------------------------------------
 #                      LOTTERY (ticket system)
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def lottery(ctx, ticket_price: str, duration: str):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def lottery(interaction, ticket_price: str, duration: str):
     """
     Start a lottery.
-    Usage: !lottery 50m 10m
+    Usage: /lottery 50m 10m
     - ticket_price: 50m, 10m, 1b, etc.
     - duration: 30s, 10m, 2h, 1d
     Users buy tickets via button, pot +10% goes to winner.
     """
     price = parse_amount(ticket_price, None, allow_all=False)
     if price is None or price <= 0:
-        return await ctx.send("❌ Invalid ticket price.")
+        return await send_response(interaction, "❌ Invalid ticket price.")
 
     seconds = parse_duration(duration)
     if seconds is None:
-        return await ctx.send("❌ Invalid duration. Use like `30s`, `10m`, `2h`, `1d`.")
+        return await send_response(interaction, "❌ Invalid duration. Use like `30s`, `10m`, `2h`, `1d`.")
     if seconds > 7 * 24 * 3600:
-        return await ctx.send("❌ Maximum duration is 7 days.")
+        return await send_response(interaction, "❌ Maximum duration is 7 days.")
 
     end_ts = int(time.time()) + seconds
 
@@ -7138,7 +7160,7 @@ async def lottery(ctx, ticket_price: str, duration: str):
             super().__init__(timeout=min(timeout_value, 86400))
             self.ticket_price = price_value
             self.end_ts = end_timestamp
-            self.ctx = ctx_obj
+            self.interaction = ctx_obj
             self.tickets: dict[int, int] = {}  # user_id -> count
             self.message: discord.Message | None = None
             self.finished: bool = False       # prevent double-finish
@@ -7156,7 +7178,7 @@ async def lottery(ctx, ticket_price: str, duration: str):
             if self.message is None:
                 return
 
-            channel = self.ctx.channel
+            channel = self.interaction.channel
             total_tickets = sum(self.tickets.values())
 
             # Disable all buttons
@@ -7182,9 +7204,9 @@ async def lottery(ctx, ticket_price: str, duration: str):
             winner_id = random.choice(entries)
             prize = int(self.ticket_price * total_tickets * (1 + LOTTERY_BONUS))
 
-            ensure_user(winner_id)
+            ensure_user_sync(winner_id)
             data[str(winner_id)]["gems"] += prize
-            save_data(data)
+            persist_state(data)
 
             add_history(winner_id, {
                 "game": "lottery",
@@ -7212,7 +7234,7 @@ async def lottery(ctx, ticket_price: str, duration: str):
                 f"🎉 Congrats <@{winner_id}>! You won **{fmt(prize)}** gems in the lottery!"
             )
 
-    view = LotteryView(price, end_ts, ctx, seconds)
+    view = LotteryView(price, end_ts, interaction, seconds)
 
     class BuyTicket(Button):
         def __init__(self):
@@ -7220,7 +7242,7 @@ async def lottery(ctx, ticket_price: str, duration: str):
 
         async def callback(self, interaction: discord.Interaction):
             user = interaction.user
-            ensure_user(user.id)
+            ensure_user_sync(user.id)
             u = data[str(user.id)]
 
             if u["gems"] < view.ticket_price:
@@ -7230,7 +7252,7 @@ async def lottery(ctx, ticket_price: str, duration: str):
                 )
 
             u["gems"] -= view.ticket_price
-            save_data(data)
+            persist_state(data)
 
             view.tickets[user.id] = view.tickets.get(user.id, 0) + 1
 
@@ -7267,7 +7289,7 @@ async def lottery(ctx, ticket_price: str, duration: str):
     view.add_item(ShowParticipants())
 
     embed = make_lottery_embed(price, view, end_ts)
-    msg = await ctx.send(embed=embed, view=view)
+    msg = await send_response(interaction, embed=embed, view=view)
     view.message = msg
 
     # Manual timer to guarantee finish at the correct time,
@@ -7281,11 +7303,11 @@ async def lottery(ctx, ticket_price: str, duration: str):
 # --------------------------------------------------------------
 #                      LEADERBOARD
 # --------------------------------------------------------------
-@bot.command(aliases=["lb"])
-async def leaderboard(ctx, page: int | None = None):
+@bot.tree.command(name="leaderboard")
+async def leaderboard(interaction, page: int | None = None):
     requested_page = 1 if page is None else page
     if requested_page < 1 or requested_page > 50:
-        return await ctx.send("❌ Invalid page. Choose a page between **1** and **50**.")
+        return await send_response(interaction, "❌ Invalid page. Choose a page between **1** and **50**.")
 
     def build_leaderboard():
         entries = []
@@ -7351,7 +7373,7 @@ async def leaderboard(ctx, page: int | None = None):
 
     embed, total_pages = await build_embed(requested_page)
     if embed is None:
-        return await ctx.send("❌ That page has no data yet.")
+        return await send_response(interaction, "❌ That page has no data yet.")
 
     class LBView(View):
         def __init__(self, current_page: int, max_pages: int):
@@ -7395,22 +7417,22 @@ async def leaderboard(ctx, page: int | None = None):
             await self.change_page(interaction, 1)
 
     view = LBView(requested_page, total_pages)
-    await ctx.send(embed=embed, view=view)
+    await send_response(interaction, embed=embed, view=view)
 
 
 # --------------------------------------------------------------
 #                      HISTORY
 # --------------------------------------------------------------
-@bot.command()
-async def history(ctx):
-    ensure_user(ctx.author.id)
-    hist = data[str(ctx.author.id)].get("history", [])
+@bot.tree.command()
+async def history(interaction):
+    ensure_user_sync(interaction.user.id)
+    hist = data[str(interaction.user.id)].get("history", [])
 
     if not hist:
-        return await ctx.send("📜 No game history found.")
+        return await send_response(interaction, "📜 No game history found.")
 
     embed = discord.Embed(
-        title=f"📜 {ctx.author.name}'s Game History",
+        title=f"📜 {interaction.user.name}'s Game History",
         color=galaxy_color()
     )
 
@@ -7422,16 +7444,16 @@ async def history(ctx):
             inline=False
         )
 
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
 #                      WAGER RANK
 # --------------------------------------------------------------
-@bot.command(name="rank")
-async def rank(ctx):
-    ensure_user(ctx.author.id)
-    total = int(data[str(ctx.author.id)].get("lifetime_wagered", 0))
+@bot.tree.command(name="rank")
+async def rank(interaction):
+    ensure_user_sync(interaction.user.id)
+    total = int(data[str(interaction.user.id)].get("lifetime_wagered", 0))
 
     sorted_tiers = sorted(WAGER_ROLE_TIERS, key=lambda t: t[0])
 
@@ -7474,7 +7496,7 @@ async def rank(ctx):
         inline=False,
     )
 
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await send_response(interaction, embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 # --------------------------------------------------------------
@@ -7483,15 +7505,15 @@ async def rank(ctx):
 
 
 
-@bot.command()
-async def check(ctx, member: discord.Member = None):
+@bot.tree.command()
+async def check(interaction, member: discord.Member = None):
     """
     !check           -> kendi durumunu gösterir
     !check @user     -> başka birini gösterir
     35% kuralı SADECE bilgi içindir, otomatık block yok.
     """
-    user = member or ctx.author
-    ensure_user(user.id)
+    user = member or interaction.user
+    ensure_user_sync(user.id)
 
     free_total, gambled_total, ratio = compute_gamble_ratio(user.id)
     percent = ratio * 100 if free_total > 0 else 0
@@ -7537,19 +7559,19 @@ async def check(ctx, member: discord.Member = None):
 
     embed.add_field(name="✅ Status", value=status, inline=False)
     embed.set_footer(text="This is only for tracking. Bot does NOT block anything automatically.")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 
 # --------------------------------------------------------------
 #                      STATS
 # --------------------------------------------------------------
-@bot.command()
-async def stats(ctx):
-    ensure_user(ctx.author.id)
-    hist = data[str(ctx.author.id)].get("history", [])
+@bot.tree.command()
+async def stats(interaction):
+    ensure_user_sync(interaction.user.id)
+    hist = data[str(interaction.user.id)].get("history", [])
     if not hist:
-        return await ctx.send("📊 No stats yet. Play some games first!")
+        return await send_response(interaction, "📊 No stats yet. Play some games first!")
 
     total_games = len(hist)
     total_bet = sum(e.get("bet", 0) for e in hist)
@@ -7562,7 +7584,7 @@ async def stats(ctx):
     win_rate = (wins / total_games * 100) if total_games > 0 else 0
 
     embed = discord.Embed(
-        title=f"📊 Galaxy Stats — {ctx.author.name}",
+        title=f"📊 Galaxy Stats — {interaction.user.name}",
         color=galaxy_color()
     )
     embed.add_field(name="Total Games", value=str(total_games))
@@ -7573,7 +7595,7 @@ async def stats(ctx):
     embed.add_field(name="Biggest Win", value=f"{fmt(biggest_win)}")
     embed.add_field(name="Worst Loss", value=f"{fmt(biggest_loss)}")
     embed.set_footer(text="Galaxy Stats • May the odds be ever in your favor 🌌")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 
@@ -7590,16 +7612,18 @@ def add_gems(uid, amount):
     return data[uid]["gems"]
 
 
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def admin(ctx, action: str, member: discord.Member, amount: str):
-    ensure_user(member.id)
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def admin(interaction, action: str, member: discord.Member, amount: str):
+    ensure_user_sync(member.id)
     uid = str(member.id)
     u = data[uid]
 
     val = parse_amount(amount, u["gems"], allow_all=False)
     if val is None or val <= 0:
-        return await ctx.send("❌ Invalid amount.")
+        return await send_response(interaction, "❌ Invalid amount.")
 
     # ---- GIVE ----
     if action.lower() == "give":
@@ -7609,7 +7633,7 @@ async def admin(ctx, action: str, member: discord.Member, amount: str):
         add_history(member.id, {
             "game": "admin_give",
             "bet": 0,
-            "result": f"admin_give_{ctx.author.id}",
+            "result": f"admin_give_{interaction.user.id}",
             "earned": val,
             "timestamp": time.time()
         })
@@ -7629,16 +7653,16 @@ async def admin(ctx, action: str, member: discord.Member, amount: str):
         )
 
     else:
-        return await ctx.send("❌ Use: `!admin give/remove @user amount`")
+        return await send_response(interaction, "❌ Use: `/admin give/remove @user amount`")
 
-    save_data(data)
+    persist_state(data)
 
     embed = discord.Embed(
         title="🛠 Admin Action",
         description=msg,
         color=galaxy_color()
     )
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 
@@ -7648,16 +7672,18 @@ async def admin(ctx, action: str, member: discord.Member, amount: str):
 # --------------------------------------------------------------
 #                      BLESS / CURSE (invisible rig)
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def bless(ctx, user_id: int, amount: str = None):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def bless(interaction, user_id: int, amount: str = None):
     """
     Usage:
       !bless 1234567890          -> infinite bless
       !bless 1234567890 5        -> 5 blessed games
       !bless 1234567890 off      -> turn off bless
     """
-    ensure_user(user_id)
+    ensure_user_sync(user_id)
     u = data[str(user_id)]
 
     if amount is None:
@@ -7672,30 +7698,32 @@ async def bless(ctx, user_id: int, amount: str = None):
             try:
                 n = int(a)
             except ValueError:
-                return await ctx.send("❌ Amount must be a number, or `off`.")
+                return await send_response(interaction, "❌ Amount must be a number, or `off`.")
             if n <= 0:
-                return await ctx.send("❌ Amount must be > 0.")
+                return await send_response(interaction, "❌ Amount must be > 0.")
             u["bless_infinite"] = False
             u["bless_charges"] = n
 
-    save_data(data)
+    persist_state(data)
     embed = discord.Embed(
         title="✨ Galaxy Bless",
         description=f"User ID `{user_id}` has been adjusted for upcoming games.",
         color=galaxy_color()
     )
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def curse(ctx, user_id: int, amount: str = None):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def curse(interaction, user_id: int, amount: str = None):
     """
     Usage:
       !curse 1234567890          -> infinite curse
       !curse 1234567890 5        -> 5 cursed games
       !curse 1234567890 off      -> turn off curse
     """
-    ensure_user(user_id)
+    ensure_user_sync(user_id)
     u = data[str(user_id)]
 
     if amount is None:
@@ -7710,26 +7738,28 @@ async def curse(ctx, user_id: int, amount: str = None):
             try:
                 n = int(a)
             except ValueError:
-                return await ctx.send("❌ Amount must be a number, or `off`.")
+                return await send_response(interaction, "❌ Amount must be a number, or `off`.")
             if n <= 0:
-                return await ctx.send("❌ Amount must be > 0.")
+                return await send_response(interaction, "❌ Amount must be > 0.")
             u["curse_infinite"] = False
             u["curse_charges"] = n
 
-    save_data(data)
+    persist_state(data)
     embed = discord.Embed(
         title="💀 Galaxy Adjustment",
         description=f"User ID `{user_id}` has been adjusted for upcoming games.",
         color=galaxy_color()
     )
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 # --------------------------------------------------------------
 #                      STATUS (admin-only)
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def status(ctx):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def status(interaction):
     """Shows which users are blessed or cursed."""
     embed = discord.Embed(
         title="🌌 Galaxy Rig Status",
@@ -7789,221 +7819,25 @@ async def status(ctx):
         embed.add_field(name="💀 Cursed Users", value="None", inline=False)
 
     embed.set_footer(text="Only visible to admins • Invisible rig remains secret 🔒")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 # --------------------------------------------------------------
-#                      BACKUP RESTORE COMMANDS
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def restorelatest(ctx):
-    """Restore data from the latest backup file in the backup channel."""
-    channel = bot.get_channel(BACKUP_CHANNEL_ID)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
-        except Exception:
-            return await ctx.send("❌ Cannot access backup channel.")
-
-    latest_msg = None
-    latest_time = None
-
-    async for msg in channel.history(limit=50):
-        if not msg.attachments:
-            continue
-        att = msg.attachments[0]
-        if att.filename.startswith("casino_backup_") and att.filename.endswith(".json"):
-            if latest_time is None or msg.created_at > latest_time:
-                latest_msg = msg
-                latest_time = msg.created_at
-
-    if latest_msg is None:
-        return await ctx.send("❌ No backup files found in the backup channel.")
-
-    att = latest_msg.attachments[0]
-    try:
-        raw = await att.read()
-        new_data = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return await ctx.send("❌ Failed to load backup file (invalid JSON).")
-
-    try:
-        apply_restored_data(new_data)
-    except ValueError:
-        return await ctx.send("❌ Backup file must be a JSON object at the root level.")
-
-    embed = discord.Embed(
-        title="✅ Restore Complete",
-        description=f"Restored from latest backup: `{att.filename}`.",
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed)
-
-
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def restorebackup(ctx):
-    """
-    Restore from a backup JSON attached to this command.
-    Usage: attach a backup file and run !restorebackup
-    """
-    if not ctx.message.attachments:
-        return await ctx.send("❌ Please attach a backup JSON file to this command.")
-
-    att = ctx.message.attachments[0]
-    try:
-        raw = await att.read()
-        new_data = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return await ctx.send("❌ Failed to read or parse the attached file.")
-
-    try:
-        apply_restored_data(new_data)
-    except ValueError:
-        return await ctx.send("❌ Backup file must be a JSON object at the root level.")
-
-    embed = discord.Embed(
-        title="✅ Manual Restore Complete",
-        description=f"Restored data from file: `{att.filename}`.",
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed)
-
-
-# --------------------------------------------------------------
-#        GIVE GEMS TO EVERYONE WITH A ROLE (SMART NAME)
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def giverole(ctx, *, role_and_amount: str):
-    """
-    Give gems to all human members with the specified role.
-    Usage: !giverole j4j 20m
-           !giverole "J4J level 5" 50m
-    Role name can have spaces and emojis, case-insensitive.
-    """
-    parts = role_and_amount.rsplit(" ", 1)
-    if len(parts) != 2:
-        return await ctx.send("❌ Usage: `!giverole <role name> <amount>`")
-    role_query, amount = parts
-
-    role = find_role_by_query(ctx.guild, role_query)
-    if role is None:
-        return await ctx.send("❌ I couldn't find that role.")
-
-    parsed = parse_amount(amount, None, allow_all=False)
-    if parsed is None or parsed <= 0:
-        return await ctx.send("❌ Invalid amount.")
-
-    members_to_give = []
-    for member in ctx.guild.members:
-        if role in member.roles and not member.bot:
-            members_to_give.append(member)
-
-    if len(members_to_give) == 0:
-        return await ctx.send("❌ That role has **0 human members** I can detect.")
-
-    for member in members_to_give:
-        ensure_user(member.id)
-        data[str(member.id)]["gems"] += parsed
-
-    save_data(data)
-
-    embed = discord.Embed(
-        title="💎 Gems Distributed",
-        description=(
-            f"Role: {role.mention}\n"
-            f"Members rewarded: **{len(members_to_give)}**\n"
-            f"Amount each: **{fmt(parsed)} gems**"
-        ),
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed)
-
-
-# --------------------------------------------------------------
-#        REMOVE GEMS FROM EVERYONE WITH A ROLE (SMART NAME)
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def removerole(ctx, *, role_and_amount: str):
-    """
-    Remove gems from all human members with the specified role.
-    Usage: !removerole j4j 20m
-    """
-    parts = role_and_amount.rsplit(" ", 1)
-    if len(parts) != 2:
-        return await ctx.send("❌ Usage: `!removerole <role name> <amount>`")
-    role_query, amount = parts
-
-    role = find_role_by_query(ctx.guild, role_query)
-    if role is None:
-        return await ctx.send("❌ I couldn't find that role.")
-
-    parsed = parse_amount(amount, None, allow_all=False)
-    if parsed is None or parsed <= 0:
-        return await ctx.send("❌ Invalid amount.")
-
-    members_to_tax = []
-    for member in ctx.guild.members:
-        if role in member.roles and not member.bot:
-            members_to_tax.append(member)
-
-    if len(members_to_tax) == 0:
-        return await ctx.send("❌ That role has **0 human members** I can detect.")
-
-    for member in members_to_tax:
-        ensure_user(member.id)
-        uid = str(member.id)
-        current = data[uid].get("gems", 0)
-        data[uid]["gems"] = max(0, current - parsed)
-
-    save_data(data)
-
-    embed = discord.Embed(
-        title="💸 Gems Removed",
-        description=(
-            f"Role: {role.mention}\n"
-            f"Members affected: **{len(members_to_tax)}**\n"
-            f"Amount each: **{fmt(parsed)} gems**"
-        ),
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed)
-
-
-# --------------------------------------------------------------
-#                MANUAL BACKUP COMMAND
-# --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def savebackup(ctx):
-    """Create an instant backup and upload it to the backup channel."""
-    await backup_to_channel("manual")
-
-    embed = discord.Embed(
-        title="💾 Manual Backup Saved",
-        description="A fresh backup has been uploaded to the backup channel.",
-        color=galaxy_color()
-    )
-    await ctx.send(embed=embed)
-
-
- # --------------------------------------------------------------
 #                      TAX COMMAND
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def tax(ctx, percent: float):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def tax(interaction, percent: float):
     """
     Apply a tax to all members in this server.
     Usage: !tax 5   -> removes 5% from each member's gems
     """
     if percent <= 0 or percent > 50:
-        return await ctx.send("❌ Tax percent must be between **0** and **50**.")
+        return await send_response(interaction, "❌ Tax percent must be between **0** and **50**.")
 
-    guild = ctx.guild
+    guild = interaction.guild
     total_taxed = 0
     affected = 0
 
@@ -8034,7 +7868,7 @@ async def tax(ctx, percent: float):
             "timestamp": time.time()
         })
 
-    save_data(data)
+    persist_state(data)
 
     embed = discord.Embed(
         title="💸 Galactic Tax Applied",
@@ -8045,24 +7879,24 @@ async def tax(ctx, percent: float):
         ),
         color=galaxy_color()
     )
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 
 # ==============================================================
 #                          MUSIC
 # ==============================================================
-@bot.command()
-async def play(ctx, *, name: str | None = None):
+@bot.tree.command()
+async def play(interaction, *, name: str | None = None):
     if not name:
-        await ctx.send("!play <song name>")
+        await send_response(interaction, "/play <song name>")
         return
 
-    async with ctx.typing():
+    async with interaction.typing():
         result = select_youtube_music_result(name)
 
         if not result:
-            await ctx.send("❌ No matching song found. Try a different name.")
+            await send_response(interaction, "❌ No matching song found. Try a different name.")
             return
 
         try:
@@ -8071,7 +7905,7 @@ async def play(ctx, *, name: str | None = None):
             audio_path = None
 
         if not audio_path or not os.path.exists(audio_path):
-            await ctx.send("❌ No matching song found. Try a different name.")
+            await send_response(interaction, "❌ No matching song found. Try a different name.")
             return
 
     embed = discord.Embed(
@@ -8084,7 +7918,7 @@ async def play(ctx, *, name: str | None = None):
 
     file = discord.File(audio_path, filename=os.path.basename(audio_path))
     try:
-        await ctx.send(embed=embed, file=file)
+        await send_response(interaction, embed=embed, file=file)
     finally:
         if os.path.exists(audio_path):
             os.remove(audio_path)
@@ -8096,11 +7930,11 @@ async def play(ctx, *, name: str | None = None):
 # ==============================================================
 #                       HELP (PLAYER)
 # ==============================================================
-@bot.command()
-async def help(ctx):
+@bot.tree.command()
+async def help(interaction):
     embed = discord.Embed(
         title="🌌 Galaxy Casino — Player Commands",
-        description="Use `!command` to play.\nHere are your main commands:",
+        description="Use `/command` to play.\nHere are your main commands:",
         color=galaxy_color()
     )
 
@@ -8108,8 +7942,8 @@ async def help(ctx):
     embed.add_field(
         name="🧭 General",
         value=(
-            "**!help** — Show this command list\n"
-            "**!play <song name>** — Search YouTube Music and play the best matching song"
+            "**/help** — Show this command list\n"
+            "**/play <song name>** — Search YouTube Music and play the best matching song"
         ),
         inline=False
     )
@@ -8118,17 +7952,17 @@ async def help(ctx):
     embed.add_field(
         name="💰 Economy",
         value=(
-            "**!balance / !bal [@user]** — Check your gems/exp\n"
-            "**!daily** — Claim daily 25m\n"
-            "**!wheel** — Spin the daily wheel\n"
-            "**!gift @user amount** — Gift gems\n"
-            "**!sell <name> <income> <price>** — Create a listing\n"
-            "**!loan <amount>** — Borrow up to 10% of lifetime wagers\n"
-            "**!loanhelp** — What happens if you don't repay in 72h\n"
-            "**!payback** — Repay your cosmic credit (1.5x payback)\n"
-            "**!withdraw** — Start a withdraw request (form)\n"
-            "**!deposit** — Start a deposit request (form; EXP: 1.2× Roblox / 1.9× others)\n"
-            "**!redeem <code>** — Claim active reward codes"
+            "**/balance [@user]** — Check your gems\n"
+            "**/daily** — Claim daily 25m\n"
+            "**/wheel** — Spin the daily wheel\n"
+            "**/gift @user amount** — Gift gems\n"
+            "**/sell <name> <income> <price>** — Create a listing\n"
+            "**/loan <amount>** — Borrow up to 10% of lifetime wagers\n"
+            "**/loanhelp** — What happens if you don't repay in 72h\n"
+            "**/payback** — Repay your cosmic credit (1.5x payback)\n"
+            "**/withdraw** — Start a withdraw request (form)\n"
+            "**/deposit** — Start a deposit request (form)\n"
+            "**/redeem <code>** — Claim active reward codes"
         ),
         inline=False
     )
@@ -8137,16 +7971,16 @@ async def help(ctx):
     embed.add_field(
         name="🎮 Games",
         value=(
-            "**!coinflip/!cf amount heads/tails** — 50/50 game\n"
-            "**!pvpcf amount heads/tails** — PvP coinflip lobby; joiners auto-get the other side\n"
-            "**!blackjack/!bj amount** — Blackjack game\n"
-            "**!slots amount** — Slot machine\n"
-            "**!mines amount [mines]** — Mines game\n"
-            "**!tower amount** — 10-floor tower\n"
-            "**!hilo amount** — Classic Hi-Lo with multipliers\n"
-            "**!hilocards** — Hi-Lo odds, payouts, and cash-out guide\n"
-            "**!crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses.\n"
-            "**!match** — 90-second live football match with Team A / Team B / Draw bets (2.5x payout on correct picks)\n"
+            "**/coinflip amount heads/tails** — 50/50 game\n"
+            "**/pvpcf amount heads/tails** — PvP coinflip lobby; joiners auto-get the other side\n"
+            "**/blackjack amount** — Blackjack game\n"
+            "**/slots amount** — Slot machine\n"
+            "**/mines amount [mines]** — Mines game\n"
+            "**/tower amount** — 10-floor tower\n"
+            "**/hilo amount** — Classic Hi-Lo with multipliers\n"
+            "**/hilocards** — Hi-Lo odds, payouts, and cash-out guide\n"
+            "**/crash amount** — Crash game where multiplier and crash chance double every click. Cash out before the galaxy collapses.\n"
+            "**/match** — 90-second live football match with Team A / Team B / Draw bets (2.5x payout on correct picks)\n"
             "Minimum bet: **1,000,000** gems • Maximum bet: **200,000,000** gems"
         ),
         inline=False
@@ -8155,7 +7989,7 @@ async def help(ctx):
     # ---------------- Music ----------------
     embed.add_field(
         name="🎵 Music",
-        value="**!play <song name>** — Search YouTube Music and play the best matching song",
+        value="**/play <song name>** — Search YouTube Music and play the best matching song",
         inline=False
     )
 
@@ -8174,7 +8008,7 @@ async def help(ctx):
     embed.add_field(
         name="🏆 Progress",
         value=(
-            "**!achievements [@user]** — View unlocked galaxy milestones"
+            "**/achievements [@user]** — View unlocked galaxy milestones"
         ),
         inline=False
     )
@@ -8183,8 +8017,8 @@ async def help(ctx):
     embed.add_field(
         name="📘 Daily Quests",
         value=(
-            "**!quest** — Check daily quest progress\n"
-            "**!questclaim** — Claim quest reward (100m + 10% deposit bonus)"
+            "**/quest** — Check daily quest progress\n"
+            "**/questclaim** — Claim quest reward (100m + 10% deposit bonus)"
         ),
         inline=False
     )
@@ -8193,12 +8027,12 @@ async def help(ctx):
     embed.add_field(
         name="📊 Player Information",
         value=(
-            "**!history** — Last 10 games\n"
-            "**!stats** — Player stats\n"
-            "**!leaderboard / !lb** — Top richest players\n"
-            "**!rank** — See your wager rank and next milestone\n"
-            "**!check [@user]** — Track free vs gambled gems ratio\n"
-            "**!membercount** — Server statistics"
+            "**/history** — Last 10 games\n"
+            "**/stats** — Player stats\n"
+            "**/leaderboard** — Top richest players\n"
+            "**/rank** — See your wager rank and next milestone\n"
+            "**/check [@user]** — Track free vs gambled gems ratio\n"
+            "**/membercount** — Server statistics"
         ),
         inline=False
     )
@@ -8207,23 +8041,25 @@ async def help(ctx):
     embed.add_field(
         name="🎟 Events",
         value=(
-            "**!guessthecolor amount** — Guess the color\n"
-            "**!rainbow** — Send a rainbow spam (fun)"
+            "**/guessthecolor amount** — Guess the color\n"
+            "**/rainbow** — Send a rainbow spam (fun)"
         ),
         inline=False
     )
 
     embed.set_footer(text="Galaxy Casino • Good luck 💎🌌")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 
 # ==============================================================
 #                       HELP (ADMIN)
 # ==============================================================
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def helpadmin(ctx):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def helpadmin(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🛠 Galaxy Casino — Admin Commands",
         description="Full administrative command panel:",
@@ -8232,15 +8068,15 @@ async def helpadmin(ctx):
 
     # ---------------- Currency Management ----------------
     embed.add_field(
-        name="💰 Gem / EXP Management",
+        name="💰 Gem Management",
         value=(
-            "**!admin give @user amount** — Add gems/exp manually\n"
-            "**!admin remove @user amount** — Remove gems/exp (can go negative)\n"
-            "**!giverole <role> amount** — Give gems to everyone with a role\n"
-            "**!removerole <role> amount** — Remove gems from everyone with a role\n"
-            "**!giveall amount** — Give gems to the entire server\n"
-            "**!tax percent** — Tax all balances by %\n"
-            "**!code \"<code_name>\" <usage_amount> <reward>** — Publish a redeemable code"
+            "**/admin give @user amount** — Add gems manually\n"
+            "**/admin remove @user amount** — Remove gems (can go negative)\n"
+            "**/giverole <role> amount** — Give gems to everyone with a role\n"
+            "**/removerole <role> amount** — Remove gems from everyone with a role\n"
+            "**/giveall amount** — Give gems to the entire server\n"
+            "**/tax percent** — Tax all balances by %\n"
+            "**/code \"<code_name>\" <usage_amount> <reward>** — Publish a redeemable code"
         ),
         inline=False
     )
@@ -8249,16 +8085,14 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🏦 Withdraw & Deposit System",
         value=(
-            "**!withdrawpanel** — Open withdraw admin panel (Accept / Deny)\n"
-            "**!depositpanel** — Open deposit admin panel (Accept / Deny)\n\n"
-            "✔ Withdraw auto-fees: **1.2× for gems**, **1.9× for EXP**\n"
-            "✔ Deposit EXP awards: **1.2×** for Roblox deposits, **1.9×** for others\n"
+            "**/withdrawpanel** — Open withdraw admin panel (Accept / Deny)\n"
+            "**/depositpanel** — Open deposit admin panel (Accept / Deny)\n\n"
+            "✔ Withdraw auto-fees: **1.2× for gems**\n"
             "✔ Gems withdraws require Roblox avatar confirmation\n"
-            "✔ EXP withdraws do NOT require Roblox username\n"
             "✔ Owner receives DM for EVERY action\n"
             "✔ Users may only have ONE active request\n"
             "✔ 30-minute cooldown between withdraws\n"
-            "✔ Max 500m per request, 750m every 2 days\n"
+            "✔ Max 500m per request, 500m every 2 days\n"
             "✔ Global bets: min **1,000,000** gems / max **200,000,000** gems"
         ),
         inline=False
@@ -8267,10 +8101,10 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🎮 Games & Leaderboard",
         value=(
-            "Aliases: **!bj** (blackjack), **!cf** (coinflip), **!lb** (leaderboard), **!pvpcf** (PvP coinflip)\n"
+            "Aliases: **/bj** (blackjack), **/cf** (coinflip), **/lb** (leaderboard), **/pvpcf** (PvP coinflip)\n"
             "Leaderboard: sorted by holding, 50 pages, 10 users per page (top 500)\n"
-            "Bet limits apply to: coinflip/!cf, blackjack/!bj, slots, mines, tower, crash, match, pvpcf\n"
-            "**!match** — 90s live football sim with Team A / Team B / Draw bets, one bet per user, fixed **2.5x** payout on correct predictions"
+            "Bet limits apply to: coinflip, blackjack, slots, mines, tower, crash, match, pvpcf\n"
+            "**/match** — 90s live football sim with Team A / Team B / Draw bets, one bet per user, fixed **2.5x** payout on correct predictions"
         ),
         inline=False
     )
@@ -8278,7 +8112,7 @@ async def helpadmin(ctx):
     embed.add_field(
         name="⚙️ Systems & Automation",
         value=(
-            "Loan notifications: posted in <#1440730206187950122> for !loan, !payback, defaults, and daily overdue reminders; queued with retries and no rate limit.\n"
+            "Loan notifications: posted in <#1440730206187950122> for /loan, /payback, defaults, and daily overdue reminders; queued with retries and no rate limit.\n"
             "Red cards: 0.1% chance per team each second, max 3; every card permanently reduces that team's goal chance by 1% (floor 0.5%), pauses play for 2–3s, logs to timeline and post-match results.\n"
             "VAR: Only if a goal is in the first/last 10s; 10% trigger, max 3 reviews; 50% stand / 50% disallow; cannot trigger twice on a goal or during red-card pauses; all decisions logged and shown post-match.\n"
             "Form bias: random W/D/L pre-match strings are cosmetic only and lock when betting opens; shown in betting UI.\n"
@@ -8291,7 +8125,7 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🎡 Wheel System",
         value=(
-            "**!wheel** — Daily spin (24h cooldown)\n"
+            "**/wheel** — Daily spin (24h cooldown)\n"
             "Weighted rewards: 5m, 10m, 10% bonus, 25% bonus, 100m, 200m\n"
             "Jackpots shown visually but 0% chance"
         ),
@@ -8302,9 +8136,9 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🎡 Admin Wheel Controls",
         value=(
-            "**!adminwheel @user <spins>** — Give extra wheel spins\n"
-            "**!adminwheel everyone <spins>** — Give spins to all players\n\n"
-            "Extra spins stored and consumed on next `!wheel` use."
+            "**/adminwheel spins:<count> member:@user** — Give extra wheel spins\n"
+            "**/adminwheel spins:<count> everyone:true** — Give spins to all players\n\n"
+            "Extra spins stored and consumed on next `/wheel` use."
         ),
         inline=False
     )
@@ -8313,16 +8147,12 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🛡 Moderation & Tools",
         value=(
-            "**!savebackup** — Force a JSON backup upload\n"
-            "**!restorelatest** — Restore the newest backup from the backup channel\n"
-            "**!restorebackup** — Restore from an attached backup JSON\n"
-            "**!cleanhistory <time>** — Zero balances for inactive users (e.g., 30d)\n"
-            "**!robloxdupes** — List Roblox accounts linked to multiple Discord users\n"
-            "**!lockcat / !unlockcat <category_id>** — Disable/enable commands in a category\n"
-            "**!dm \"message\" \"roleID\"** — DM every human with a role\n"
-            "**!membercount** — Show server stats\n"
-            "**!stop** — Force-stop and refund all active games (owner only)\n"
-            "Automatic backups every 10 minutes."
+            "**/cleanhistory <time>** — Zero balances for inactive users (e.g., 30d)\n"
+            "**/robloxdupes** — List Roblox accounts linked to multiple Discord users\n"
+            "**/lockcat / /unlockcat <category_id>** — Disable/enable commands in a category\n"
+            "**/dm \"message\" \"roleID\"** — DM every human with a role\n"
+            "**/membercount** — Show server stats\n"
+            "**/stop** — Force-stop and refund all active games (owner only)\n"
         ),
         inline=False
     )
@@ -8330,9 +8160,9 @@ async def helpadmin(ctx):
     embed.add_field(
         name="✨ Rig Controls",
         value=(
-            "**!bless <user_id> [amount/off]** — Guarantee wins for a user\n"
-            "**!curse <user_id> [amount/off]** — Force losses for a user\n"
-            "**!status** — View current bless/curse adjustments"
+            "**/bless <user_id> [amount/off]** — Guarantee wins for a user\n"
+            "**/curse <user_id> [amount/off]** — Force losses for a user\n"
+            "**/status** — View current bless/curse adjustments"
         ),
         inline=False
     )
@@ -8340,16 +8170,16 @@ async def helpadmin(ctx):
     embed.add_field(
         name="🎟 Admin Events & Giveaways",
         value=(
-            "**!lottery <ticket_price> <duration>** — Launch a ticket lottery (+10% prize)\n"
-            "**!guessthenumber <prize>** — Run an infinite 1–10 guessing event\n"
-            "**!splitorsteal <prize>** — Two-player split-or-steal event\n"
-            "**!taco** — Broadcast the raining tacos song"
+            "**/lottery <ticket_price> <duration>** — Launch a ticket lottery (+10% prize)\n"
+            "**/guessthenumber <prize>** — Run an infinite 1–10 guessing event\n"
+            "**/splitorsteal <prize>** — Two-player split-or-steal event\n"
+            "**/taco** — Broadcast the raining tacos song"
         ),
         inline=False
     )
 
     embed.set_footer(text="Admins require 'Manage Server' permission.")
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 
@@ -8366,37 +8196,39 @@ async def helpadmin(ctx):
 # --------------------------------------------------------------
 #                      DM ROLE MEMBERS (STRICT)
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def dm(ctx, message: str, role_id: str):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def dm(interaction, message: str, role_id: str):
     """
     Only users with MANAGE SERVER can use this command.
     Usage:
-    !dm "message here" "roleID"
+    /dm "message here" "roleID"
     """
 
     # Final hard-check (no bypass)
-    if not ctx.author.guild_permissions.manage_guild:
-        return await ctx.send("❌ You must have **Manage Server** permission to use this command.")
+    if not interaction.user.guild_permissions.manage_guild:
+        return await send_response(interaction, "❌ You must have **Manage Server** permission to use this command.")
 
     # Clean the role ID from input
     digits = "".join(ch for ch in role_id if ch.isdigit())
     if not digits:
-        return await ctx.send("❌ Invalid role ID.")
+        return await send_response(interaction, "❌ Invalid role ID.")
 
-    role = ctx.guild.get_role(int(digits))
+    role = interaction.guild.get_role(int(digits))
     if role is None:
-        return await ctx.send("❌ That role does not exist.")
+        return await send_response(interaction, "❌ That role does not exist.")
 
     # Only humans
     members = [m for m in role.members if not m.bot]
     if not members:
-        return await ctx.send("❌ No human members found with that role.")
+        return await send_response(interaction, "❌ No human members found with that role.")
 
     sent = 0
     failed = 0
 
-    status_msg = await ctx.send(f"📨 Sending DMs to **{len(members)}** members…")
+    status_msg = await send_response(interaction, f"📨 Sending DMs to **{len(members)}** members…")
 
     for member in members:
         try:
@@ -8424,12 +8256,14 @@ async def dm(ctx, message: str, role_id: str):
 
 
 # --------------------------------------------------------------
-#                      !taco (Admin Fun)
+#                      /taco (Admin Fun)
 # --------------------------------------------------------------
 
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def taco(ctx):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def taco(interaction):
 
     blank = "‎ "  # ← invisible safe character (NOT empty)
 
@@ -8471,7 +8305,7 @@ async def taco(ctx):
     for line in taco_lines:
         # Discord rejects empty messages → this fixes everything
         safe_line = line if line.strip() != "" else blank
-        await ctx.send(safe_line)
+        await send_response(interaction, safe_line)
         await asyncio.sleep(1)
 
 
@@ -8483,8 +8317,8 @@ async def taco(ctx):
 # --------------------------------------------------------------
 #                      !rainbow (Admin Fun)
 # --------------------------------------------------------------
-@bot.command()
-async def rainbow(ctx):
+@bot.tree.command()
+async def rainbow(interaction):
     colors = [
         ("❤️", "RED"),
         ("🧡", "ORANGE"),
@@ -8497,7 +8331,7 @@ async def rainbow(ctx):
     msg = ""
     for emoji, name in colors:
         msg += f"{emoji} **{name}** {emoji}\n"
-        await ctx.send(msg)
+        await send_response(interaction, msg)
         await asyncio.sleep(0.8)
         msg = ""  # reset so it doesn't spam multiple lines
 
@@ -8508,12 +8342,14 @@ async def rainbow(ctx):
 # --------------------------------------------------------------
 #                   SPLIT OR STEAL (ADMIN)
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def splitorsteal(ctx, prize: str):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def splitorsteal(interaction, prize: str):
     parsed_prize = parse_amount(prize, None, allow_all=False)
     if parsed_prize is None or parsed_prize <= 0:
-        return await ctx.send("❌ Invalid prize amount.")
+        return await send_response(interaction, "❌ Invalid prize amount.")
 
     join_list = []  # store all participants
 
@@ -8552,7 +8388,7 @@ async def splitorsteal(ctx, prize: str):
     )
 
     view = JoinButton()
-    message = await ctx.send(embed=embed, view=view)
+    message = await send_response(interaction, embed=embed, view=view)
 
     # Wait 30 seconds for join phase to end
     await asyncio.sleep(30)
@@ -8561,13 +8397,13 @@ async def splitorsteal(ctx, prize: str):
     # PICK RANDOM 2 PARTICIPANTS
     # ----------------------------
     if len(join_list) < 2:
-        return await ctx.send("❌ **Event cancelled — not enough participants.**")
+        return await send_response(interaction, "❌ **Event cancelled — not enough participants.**")
 
     p1_id, p2_id = random.sample(join_list, 2)
-    p1 = ctx.guild.get_member(p1_id)
-    p2 = ctx.guild.get_member(p2_id)
+    p1 = interaction.guild.get_member(p1_id)
+    p2 = interaction.guild.get_member(p2_id)
 
-    await ctx.send(
+    await send_response(interaction, 
         f"🎉 **Participants Selected:**\n"
         f"1️⃣ {p1.mention}\n"
         f"2️⃣ {p2.mention}\n"
@@ -8611,11 +8447,11 @@ async def splitorsteal(ctx, prize: str):
             self._disable_all()
 
     # Send secret choices
-    await ctx.send(f"🔐 Sending secret choices to {p1.mention}…")
-    await ctx.send(f"🔐 Sending secret choices to {p2.mention}…")
+    await send_response(interaction, f"🔐 Sending secret choices to {p1.mention}…")
+    await send_response(interaction, f"🔐 Sending secret choices to {p2.mention}…")
 
-    await ctx.send(f"{p1.mention}", view=ChoiceView(p1))
-    await ctx.send(f"{p2.mention}", view=ChoiceView(p2))
+    await send_response(interaction, f"{p1.mention}", view=ChoiceView(p1))
+    await send_response(interaction, f"{p2.mention}", view=ChoiceView(p2))
 
     # ---------------- WAIT FOR BOTH CHOICES ----------------
     while choices[p1_id] is None or choices[p2_id] is None:
@@ -8628,22 +8464,22 @@ async def splitorsteal(ctx, prize: str):
     if c1 == "steal" and c2 == "steal":
         result = "💀 **Both players stole — nobody gets anything!**"
     elif c1 == "steal" and c2 == "split":
-        ensure_user(p1_id)
+        ensure_user_sync(p1_id)
         data[str(p1_id)]["gems"] += parsed_prize
-        save_data(data)
+        persist_state(data)
         result = f"🔴 {p1.mention} **stole everything** and gets **{fmt(parsed_prize)}**!"
     elif c1 == "split" and c2 == "steal":
-        ensure_user(p2_id)
+        ensure_user_sync(p2_id)
         data[str(p2_id)]["gems"] += parsed_prize
-        save_data(data)
+        persist_state(data)
         result = f"🔴 {p2.mention} **stole everything** and gets **{fmt(parsed_prize)}**!"
     else:  # both split
         half = parsed_prize / 2
-        ensure_user(p1_id)
-        ensure_user(p2_id)
+        ensure_user_sync(p1_id)
+        ensure_user_sync(p2_id)
         data[str(p1_id)]["gems"] += half
         data[str(p2_id)]["gems"] += half
-        save_data(data)
+        persist_state(data)
         result = (
             f"🟢 Both players split!\n"
             f"{p1.mention} gets **{fmt(half)}**\n"
@@ -8651,7 +8487,7 @@ async def splitorsteal(ctx, prize: str):
         )
 
     # ---------------- SEND RESULT ----------------
-    await ctx.send(
+    await send_response(interaction, 
         embed=discord.Embed(
             title="🎭 Split or Steal — Results",
             description=result,
@@ -8667,18 +8503,20 @@ async def splitorsteal(ctx, prize: str):
 # --------------------------------------------------------------
 #         GIVE GEMS TO EVERYONE IN THE SERVER
 # --------------------------------------------------------------
-@bot.command()
-@commands.has_guild_permissions(manage_guild=True)
-async def giveall(ctx, amount: str):
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def giveall(interaction, amount: str):
     """
     Give gems to every human (non-bot) member in the server.
     Uses fetch_members() — needs MEMBERS intent enabled in bot settings.
     """
     parsed = parse_amount(amount, None, allow_all=False)
     if parsed is None or parsed <= 0:
-        return await ctx.send("❌ Invalid amount.")
+        return await send_response(interaction, "❌ Invalid amount.")
 
-    guild = ctx.guild
+    guild = interaction.guild
     count = 0
 
     members = [m async for m in guild.fetch_members(limit=None)]
@@ -8686,23 +8524,23 @@ async def giveall(ctx, amount: str):
     for member in members:
         if member.bot:
             continue
-        ensure_user(member.id)
+        ensure_user_sync(member.id)
         data[str(member.id)]["gems"] += parsed
         count += 1
 
-    save_data(data)
+    persist_state(data)
 
     embed = discord.Embed(
         title="💎 Gems Given To EVERYONE",
         description=(
             f"Distributed **{fmt(parsed)}** gems to **{count}** human members "
-            f"in **{ctx.guild.name}**!\n"
+            f"in **{interaction.guild.name}**!\n"
             f"(Forced full member fetch successful)"
         ),
         color=galaxy_color()
     )
 
-    await ctx.send(embed=embed)
+    await send_response(interaction, embed=embed)
 
 
 
